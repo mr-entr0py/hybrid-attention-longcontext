@@ -10,7 +10,7 @@
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
 | S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 22:12; at integrator / verify |
-| Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | resumed 22:12; at critic B / PI |
+| Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
 ## Detached jobs
 | Job | Launch / resume | Log | State |
@@ -41,3 +41,9 @@
   - Attention reaches ≥ 0.9997 at both widths.
   - GDN reaches 0.989 at d128 and 0.994 at d256. It is non-decreasing in d, and it diverged at LR 3.2e-2.
   - Criterion (a) looks met; the gate report will confirm it formally.
+
+**2026-11-09 ~23:30 IST**
+
+- The reproduction plan is done: R1 (passed) through R10, plus a new gate G-RV that opens FEAS.
+- **Next, after S0 finishes:** run R2 through R7 as a workflow, then compute G-RV.
+- **Flag:** two Xid-8 GPU faults happened during S1. R2 should check for a display-watchdog cause (the desktop runs on this GPU). The longest kernel must stay under 1 s.
