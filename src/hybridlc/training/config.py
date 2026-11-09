@@ -12,6 +12,7 @@ A *run YAML* (what ``scripts/train.py --config`` takes) composes three things::
     parent: null                                # parent run YAML (branch point) or {run_id, ckpt}
     continue_parent_step: false                 # TEF-4000: continue step counter of the parent
     config_name: null                           # override of the model YAML's name (e.g. C12ssmax)
+    branch: main                                # analysis branch: main | tef4000 | stageB2x (non-semantic)
     model_overrides: {}                         # e.g. {ssmax: true}
     overrides: {}                               # dotted keys into the training recipe
 
@@ -200,6 +201,7 @@ class RunConfig:
     model_meta: dict[str, Any] = field(default_factory=dict)  # k, tier, ... (informational)
     source: str | None = None
     tag: str | None = None         # optional non-semantic suffix (e.g. VT-13 replicate "p2")
+    branch: str = "main"           # analysis branch label (main | tef4000 | stageB2x); non-semantic
     run_id: str = ""
 
     # -- identity ---------------------------------------------------------------------------
@@ -208,7 +210,7 @@ class RunConfig:
         memory cap and other bookkeeping (protocol §18: "SHA-256 of the semantic config")."""
         d = asdict(self)
         for k in ("run_id", "paths", "logging", "checkpoint", "oom", "validation", "source",
-                  "parent_ckpt", "model_meta", "tag"):
+                  "parent_ckpt", "model_meta", "tag", "branch"):
             d.pop(k, None)
         for k in ("mem_fraction", "g0_tok_s", "throughput_tolerance", "throughput_alert_after_s", "cpu_threads"):
             d["runtime"].pop(k, None)
@@ -394,7 +396,7 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
     run = load_yaml(path)
     allowed = {"exp_stage", "model", "training", "seed_index", "lr", "steps_option", "steps_multiplier",
                "parent", "continue_parent_step", "config_name", "model_overrides", "overrides", "paths",
-               "notes", "tag"}
+               "notes", "tag", "branch"}
     unknown = set(run) - allowed
     if unknown:
         raise ValueError(f"{path}: unknown run keys {sorted(unknown)}")
@@ -448,6 +450,7 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
         paths=paths or _build(PathsConfig, run.get("paths")),
         model_meta={k: mdoc[k] for k in mdoc if k not in ("fields",)}, source=str(path),
         tag=tag if tag is not None else run.get("tag"),
+        branch=str(run.get("branch") or "main"),
     )
 
     # parent (branch point)

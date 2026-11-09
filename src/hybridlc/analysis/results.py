@@ -98,7 +98,12 @@ def load_registry(path: str | Path) -> dict[str, RunInfo]:
     out: dict[str, RunInfo] = {}
     for rid, row in merged.items():
         parsed = parse_run_id(rid)
-        config = row.get("config") or (parsed.config if parsed else None)
+        # ``config_name`` (training rows) wins; the runner's ``queued`` rows store the run-YAML *path*
+        # under ``config``, which is never a configuration name.
+        cfg_field = row.get("config")
+        if isinstance(cfg_field, str) and ("/" in cfg_field or cfg_field.endswith((".yaml", ".yml"))):
+            cfg_field = None
+        config = row.get("config_name") or cfg_field or (parsed.config if parsed else None)
         seed = row.get("seed_index", row.get("seed", parsed.seed if parsed else None))
         if config is None or seed is None:
             warnings.warn(f"registry row {rid!r} has no config/seed; skipped", stacklevel=2)

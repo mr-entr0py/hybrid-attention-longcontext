@@ -470,7 +470,11 @@ class Trainer:
         self.registry.append(c.run_id, "running", pid=os.getpid(), attempt=attempt, start_step=start_step,
                              resumed_from=resumed_from, host=os.uname().nodename, allow_dirty=self.allow_dirty,
                              git_commit=meta["git_commit"], config_hash=meta["config_hash"],
-                             activation_checkpointing=ac_mode, peak_lr=peak_lr)
+                             activation_checkpointing=ac_mode, peak_lr=peak_lr,
+                             # run identity for the analysis registry reader (hybridlc.analysis.results)
+                             config_name=c.config_name, scale=c.scale, seed_index=c.seed_index,
+                             k=c.model_meta.get("k"), stage=c.stage, exp_stage=c.exp_stage, branch=c.branch,
+                             parent_run_id=c.parent_run_id)
         metrics.write({"kind": "start", "step": start_step, "attempt": attempt, "resumed_from": resumed_from,
                        "ts": time.time(), "optimizer": opt_summary, "activation_checkpointing": ac_mode,
                        "n_params": sum(p.numel() for p in model.parameters()), "peak_lr": peak_lr})

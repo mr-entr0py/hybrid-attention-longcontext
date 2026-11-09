@@ -1,255 +1,278 @@
-# Critique B: engineering feasibility and cost of the two reproduction proposals
+# Critique B (revision 2): engineering feasibility and cost of the two reproduction proposals
 
-**Reviewer:** adversarial reviewer B (engineering feasibility and cost). **Date:** 2026-11-09, written 18:20–18:50 IST while the S1 queue was running.
+**Reviewer:** adversarial reviewer B (engineering feasibility and cost).
+**Written:** 2026-11-09, 22:15–22:45 IST. By then S1(a) had finished (final table regenerated at 22:26) and the S0 builders had reported done.
+**Supersedes** the 18:50 draft of this file. That draft was written while S1 was still running, and its workflow step was cut off by the usage limit. Every fact below was re-checked in this session, and every target number was re-opened by me.
 
-**Proposals reviewed:**
-- `proposal_pipeline-validation.md` ("PV"; items M1–M7, S1–S4, N1–N4);
-- `proposal_phenomenon-replication.md` ("PR"; items P1–P4, S1–S5, N1–N5).
+**Reviewed:**
+- `proposal_pipeline-validation.md` ("PV": M1–M7, S1–S4, N1–N4);
+- `proposal_phenomenon-replication.md` ("PR": P1–P4, S1–S5, N1–N5);
+- read alongside `critique_A.md`. §8 lists where I disagree with it.
 
-**What I did:**
-- Read both proposals and protocol v1.0 (§2–§20, mainly §13, §16 and §17).
-- Read `INTERFACES.md`, `s1_reproduction.md`, `decisions.md`, the S1 run JSONs and logs, the S0 test files and the relevant third-party code.
-- Re-opened the primary source for 11 target numbers (§2).
-
-**What I did not do:**
-- I ran no GPU job.
-- I edited nothing except this file.
-- My only system queries were:
-  - `nvidia-smi`;
-  - one driver-API attribute read (`cuDeviceGetAttribute`, which creates no CUDA context);
-  - HF Hub metadata (the tree API and `config.json`);
-  - arXiv and transformer-circuits HTML, downloaded to the scratchpad and parsed with `python -I`.
+**Constraints kept.** I ran no GPU job and edited nothing except this file. My system use was limited to:
+- `nvidia-smi`, `ps` and a read of `journalctl -k`;
+- HF Hub metadata, plus the tokenizer files of one checkpoint;
+- arXiv and transformer-circuits HTML and one arXiv PDF, downloaded to the scratchpad and parsed with `python -I`;
+- one CPU-only instantiation of our `TokenSpace` with that downloaded tokenizer.
 
 **Tags.**
-- [read-section]: primary source opened by me in this step.
+- [read-section]: primary source opened and parsed by me in this session.
 - [code-inspected]: a file or HF config read by me.
-- [MEAS-S1]: read by me from `experiments/s1_zoology/` between 18:18 and 18:40. These are interim, single-seed numbers.
-- [MEAS-R]: observed by me in this review, without using the GPU.
+- [MEAS-S1]: read by me from `experiments/s1_zoology/` (final state, 22:26).
+- [MEAS-S0]: from S0's own benchmark, `runs/bench_train_step/*.jsonl` (contended, 8 timed steps).
+- [MEAS-R]: observed by me in this review, without the GPU.
 - [INF]: my own inference or arithmetic.
 
-No number below is read off a figure.
+No number in this file is read off a figure.
 
 ---
 
 ## 0. Bottom line
 
-1. **The must tiers ask for ≈ 14 GPU-h of new work and a lot of new engineering before FEAS.**
-   - New must-tier GPU time: PV ≈ 8.0 h, PR ≈ 5.8 h, partly overlapping. Should tiers add 6–8 h more.
-   - New engineering on the path to FEAS:
-     - lm-eval and RULER installs;
-     - a `flash_attn` shim and an untied-embedding wrapper;
-     - foreign-tokenizer generators;
-     - a nanoGPT-in-our-trainer adapter;
-     - a 50-step snapshot cadence.
-   - Most must-tier items fall into at least one of these categories (§3):
-     - they **cannot fail**, because they sit at ceiling;
-     - they **can fail with no bug in our code**;
-     - they **test code paths production does not use**;
-     - they **re-test what S0 already tests**.
-2. **A much cheaper set covers the same risks, plus two that both proposals miss** (§5):
-   - ≈ 0.4–0.8 GPU-h of new GPU work;
-   - one LM item of ≈ 1.05 h (D384) or 1.4 h (D512);
-   - an optional should tier of ≈ 1.6–2.1 h.
-3. **Urgent: decide before any GDN d256 result is read** (§6). The queue reaches d256 at about 18:45–18:50.
-   - GDN d128 at lr 1e-2 has **failed twice** with `cudaErrorLaunchTimeout`.
-   - The GPU's kernel watchdog is enabled.
-   - The S1 cut that both proposals recommend **cannot run as coded**.
+1. **Most must-tier items do not validate what they claim, and both proposals under-price them.** Every such item fails at least one of six tests:
+   - **CF:** it cannot fail at the observed ceiling;
+   - **FB:** it can fail with no bug in our code;
+   - **NU:** it tests a component we do not use;
+   - **RD:** an existing S0 test already covers it;
+   - **IF:** it is infeasible here as specified;
+   - **SD:** scaling down removes the phenomenon.
 
-**Findings not in either proposal:**
-- **F1.** Watchdog crashes in S1, with `KERNEL_EXEC_TIMEOUT` = 1 on this GPU (§1.1).
-- **F2.** The "Need to install causal_conv1d" line is harmless. This closes PV R-S1-4 and the STATUS note without using the GPU (§1.2).
-- **F3.** Zoology's GDN is not fla's layer, so the null hypothesis of PV-M7 is wrong (§1.3).
-- **F4.** Wang et al.'s own per-subtask Table 5 contradicts PR-P2(a)'s RULER subset (§3.2a).
-- **F5.** PV-M5's flatness criterion conflicts with its own Mamba-2 anchor (§3.2b).
-- **F6.** Most reproduction tooling is not installed. The Wang 1.3B checkpoints are fp32 (≈ 33 GB for the sweep), and fp32 scoring does not fit under the memory cap (§1.5).
-- **F7.** Nothing in either suite checks our models at the 16K–32K lengths of the primary cell (§4).
+   Re-priced with S0's measured throughput (§1.3), the new must-tier work comes to:
+   - PV: **≈ 10–12 GPU-h** (stated 8.0);
+   - PR: **≈ 11–15 GPU-h** (stated 5.8).
+2. **A cheaper set covers more of the real risk** (§5):
+   - ≈ 0.3–0.5 new GPU-h of must-tier work, almost all of it deterministic tests in S0's own files;
+   - plus S1(b), already budgeted;
+   - plus a ≈ 1.3–1.5 GPU-h should tier.
+
+   It adds checks that neither proposal has:
+   - answerability of our 16K/32K items;
+   - the fla conv kernel against a reference;
+   - the full model at long T;
+   - GPU-fault hygiene.
+3. **The one literature reproduction that runs our mixers is done.** S1(a) passed G-RP(a) on all 16 cells. What remains of S1 is S1(b), and a weight-copy identity test (X2) should run before it.
+
+**New facts since the proposals were written** (all verified in this session):
+
+- **F1. S1(a) finished: PASS, 16 of 16 cells.**
+  - Cost: 1.48 h of completed-run wall time, ≈ 1.75 GPU-h with the crashed attempts and smoke runs, against 3.0 budgeted.
+  - Forecasts: PV ≈ 5.5 h, PR 3–5 h.
+  - Waste: 41% of completed-run time went to two lr 3.2e-2 runs that collapsed at epoch 1 and still trained all 32 epochs [MEAS-S1].
+- **F2. The d128 lr 1e-2 cell has completed.**
+  - It crashed twice, with Xid 8 and `cudaErrorLaunchTimeout`, at 18:16 and 18:25.
+  - A third attempt (22:13–22:26) completed next to CARLA, with no Xid event, scoring 0.9877. So the crash is not deterministic at this LR.
+  - That attempt came from an uncommitted change to `run_queue.py` (6 attempts per run, per-epoch resume), made after the verdict had been computed.
+  - The verdict is unchanged either way: the best LR stays 1e-3 [MEAS-S1, MEAS-R].
+- **F3. S0's training benchmark is far below the planning rates, so LM-training items are under-priced by ≈ 1.7–2.3×.**
+  - Contended Stage-A throughput, measured with the S1 queue and CARLA on the GPU [MEAS-S0]:
+    - D384: 52.7–70.1K tok/s (plan 120K; G0 needs ≥ 95K);
+    - D512: 63.2–66.6K (plan 88.9K; G0 needs ≥ 70K).
+  - Both proposals price their LM-training items at the planning rate.
+  - For example, PR-P3 becomes ≈ 6.0 GPU-h, not 3.2.
+- **F4. Our item generators cannot use the Wang checkpoints' tokenizer.**
+  - `TokenSpace(tok)` raises `ValueError: digit 0 is not a single token: [28705 28734]`. The Mistral-style SentencePiece tokenizer adds a dummy-prefix "▁".
+  - PR-P2(b) and PV-M3 therefore need changes inside `src/hybridlc/eval` before they can run [MEAS-R].
+- **F5. GPT-2 weights are not cached.** Only its tokenizer and config are (2.8 MB), so PR-S3's "needs no model download" is wrong [MEAS-R].
+- **F6. The Wang 1.3B sweep is stored in fp32, at ≈ 33.4 GB for six repos** [code-inspected].
+  - Sizes: 5.6–5.9 GB per GDN repo, 4.6 GB for the Transformer. PR-P2 assumed 6 × 2.7 GB in bf16.
+  - Attention heads differ by ratio: the 3-1 model has 16 heads (head_dim 128); 24-1, 12-1 and 6-1 have 32 (head_dim 64).
+  - Repo names: the 1.3B pure model is `m-a-p/1.3B-100B-GatedDeltaNet-pure`; the 340M sweep's 24-1 model is a "New-hybrid-24-1".
+- **F7. VT-12 already has an answerability oracle, but only at 2K** [code-inspected].
+  - `InductionLM` is an order-6 copy model, run end to end through our scorer.
+  - R1, R-load and R3 must score EM_tf = 1 with exact logp; M-hop must fail.
+  - Extending it to the 16K/32K cells costs no GPU time.
+- **F8. Three S0 gaps matter more than any proposed reproduction** [code-inspected]:
+  - no test compares fla's Triton `causal_conv1d`, which GDN-A and F_gc use, with our own `causal_dwconv_reference` on the GPU;
+  - VT-03 has no test file. VT-09's packed cases cover document isolation for C12 and C0 at ≤ 200 tokens, but not F_gc, hybrids or bf16;
+  - no full-model transplant runs beyond T = 256.
+- **F9. The documentation lags the runs** [code-inspected]:
+  - `s1_reproduction.md` still says "Status: BLOCKED. No training run has been executed".
+  - It also calls the micro-batch fallback "not implemented", yet all 16 runs used `micro_batch = 64`.
+  - `decisions.md` has no row for the S1 deviations, the crash or the retry policy.
 
 ---
 
 ## 1. Facts established in this review
 
-### 1.1 S1 status and the kernel watchdog [MEAS-S1, MEAS-R]
+### 1.1 S1 outcome, and what the S1 forecasts got wrong [MEAS-S1]
 
-**The lr 1e-2 run fails reproducibly.**
-- `gated_delta_net-d128-lr1.0e-02` crashed on both attempts:
-  - attempt 1 at epoch 15 (t ≈ 337 s);
-  - attempt 2 at epoch 25 (t ≈ 525 s).
-- Both raised `torch.AcceleratorError: CUDA error: the launch timed out and was terminated`, reported at the first host sync (`zoology_compat.py` L195). The faulting kernel is therefore unknown.
-- The queue logged `FAILED … after 2 attempts` at 18:25:42.
+| | PV (R-S1-1) | PR (§2.1) | Actual |
+|---|---|---|---|
+| S1(a) GPU-h | ≈ 5.5 uncut / 3.3 cut | 3–5 | 1.48 completed + ≈ 0.25 crashed attempts + ≈ 0.05 smoke ≈ **1.75** |
+| GDN d256, per run | ≈ 65 min (32 epochs) | ≈ 1.1 h without early stop | **0.6–1.2 min** (early stop after 1–2 epochs); lr 3.2e-2: 18.3 min (collapsed) |
 
-**The watchdog is on.**
-- `nvidia-smi -q` shows "Display Attached: Yes" and "Display Active: Enabled". Xorg, gnome-shell and gnome-remote-desktop all run on this GPU.
-- `CU_DEVICE_ATTRIBUTE_KERNEL_EXEC_TIMEOUT` = 1, so the driver's run-time limit on kernels is enabled.
+**Why the forecasts failed.**
+- Early stopping makes run time bimodal: one epoch, or 32. A single-run projection fails in both directions.
+- Collapsed runs train to the end. The two lr 3.2e-2 runs took 1,090 s + 1,101 s, which is 41% of the 5,341 s of completed-run time.
 
-**The lr 3.2e-2 run diverged.** It scored 0.9686 at epoch 0 and ≈ 0.0003 from epoch 1 on. Nothing stops a collapsed run early, so it trains all 32 epochs.
+**What the gate sees.** Overall accuracy is the unweighted mean of the 7 test cells (I checked this against the run JSON to 1e-7).
 
-**Other GPU jobs ran beside the queue.**
-- At 18:39 there were three project compute processes: 2.5 GB (S1), 3.9 GB and 0.4 GB.
-- At about 18:24 another agent's ad-hoc run (`scratchpad/s1new/run_one.py --run-id gated_delta_net-d128-lr1.0e-02 --max-epochs 3`) ran next to the queue.
-- GDN d128 epoch time varied with contention: 21 s, 31 s and 35.5 s per epoch in different runs. Every timing used by the cut rule and by both proposals' budgets is affected.
+| Model | Best overall | Best LR | 1024/256 cell |
+|---|---|---|---|
+| GDN d128 | 0.98924 | 1e-3 | 0.925 |
+| GDN d256 | 0.99377 | 1e-3 | 0.957 |
+| Attention (all runs) | ≥ 0.9997 | — | — |
 
-**Consequences.**
-- **(a) The cut cannot run as coded.** `s1_analysis.best_lrs()` raises `ValueError(… only 3 of 4 LRs complete)` (L59–60), so the cut that PV R-S1-1 and PR §2.1 recommend fails. The protocol's own precondition ("the first d_model completed at 4 LRs") can no longer be met as written.
-- **(b) The missing LR needs a rule.** `best_over_lr()` silently uses the 3 completed LRs (`n_lrs` = 3), so G-RP(a) will still be computed. The best is lr 1e-3, at 0.9892.
-- **(c) Crashes in main runs are not defined.**
-  - The main runner resumes crashed runs: in `training/queue.py`, `crashed` triggers auto-resume, with `max_crash_retries` = 2 before the run is marked `failed`.
-  - Protocol §8.1 defines permanent failure only for divergence.
-  - If watchdog crashes were correlated with k (for example, through attention-heavy 32K steps), infrastructure failures would become missing data correlated with k. Nobody has measured kernel durations at 32K.
-- **(d) Neither proposal budgets for retries.** So far S1 has had 2 crashes in 9 queue attempts (11 if the two smoke runs are counted).
+**Ceiling arithmetic.**
+- ±0.03 on overall accuracy equals ±0.21 on the only cell that moves.
+- Doubling the state (d128 → d256) moved that cell by just +0.032.
+- So G-RP(b) cannot detect a mixer defect smaller than ≈ 6.6× the state-size effect that S1 exists to show.
+- S1 is a smoke test. Both critiques reach this independently; it should be labelled as such.
 
-### 1.2 The "Need to install causal_conv1d" message is harmless [code-inspected]
+### 1.2 The crash, the re-run and the queue change [MEAS-S1, MEAS-R]
 
-- The message comes from Zoology's `_compute_state_size` (`zoology/model.py` L270–277).
-  - That function imports `zoology.mixers.mamba` and `zoology.mixers.mamba2` inside bare `try/except` blocks, in order to run an `isinstance` test.
-  - Both modules run `assert 0, print("Need to install causal_conv1d …")` at import (`mamba.py` L14, `mamba2.py` L26).
-  - The message prints, the `AssertionError` is swallowed, and the block class is set to `None`. This explains why the message appears twice per run.
-- `BaseConv` uses Zoology's own pure-torch `ShortConvolution` and `ImplicitLongConvolution`.
-- **No fallback path is involved in S1's attention or GDN models.** PV R-S1-4 and the STATUS.md note can be closed with no test.
+**Kernel log:**
+- 18:03:09: Xid 31 MMU fault (pid 799092).
+- 18:16:50 and 18:25:42: RC watchdog "GPU is probably locked! Notify Timeout Seconds: 7", plus Xid 8. These match attempt 1 (died after epoch 15, t = 337 s) and attempt 2 (died after epoch 25, t = 525 s).
+- No Xid events since 18:25.
 
-### 1.3 Zoology's GDN is not fla's `GatedDeltaNet` layer [code-inspected]
+**GPU state:** `nvidia-smi -q` shows "Display Attached: Yes" and "Display Active: Enabled".
 
-- `zoology/mixers/gated_delta_net.py` is Zoology's own layer wrapped around fla's `chunk_gated_delta_rule`.
-- **Precision.** It casts q, k, v, β and g to **bf16** before calling the kernel (L246–250). Zoology trains with no autocast.
-- **Weight decay.** `Trainer.fit` builds `AdamW(model.parameters(), weight_decay=0.1)` (`train.py` L185–189). This applies decay to *every* parameter, including `A_log`, `dt_bias` and the norm gains, and ignores `_no_weight_decay`.
-- **Early stopping** triggers when `valid/accuracy > 0.99` (`config.py` L133–134).
-- **Consequences.**
-  - S1(b) and PV-M7 test our module inside Zoology's optimiser and precision regime. They do not test our trainer's weight-decay groups (§7.1) or our bf16-autocast path.
-  - "Ours vs Zoology" differs by design, through fp32 vs bf16 kernel inputs, even when our code is correct.
+**Attempt 3** started at 22:13 alongside CARLA (CarlaUE4 ≈ 5.9 GB, plus ≈ 1.4 GB of other CARLA processes). It completed 32 epochs in 775 s, with `resumed_at_epochs` = [].
 
-### 1.4 How close to ceiling G-RP is [MEAS-S1, INF]
+**Interpretation [INF].**
+- The two crashes coincided with several project GPU jobs running at once: the S1 queue plus VT-13, the benchmark and an ad-hoc `run_one.py`, as both earlier critiques observed.
+- The clean re-run had only CARLA beside it.
+- This is consistent with contention-triggered hangs. It is not established.
 
-**What "overall accuracy" is.** Zoology's overall `valid/accuracy` is the unweighted mean of the 7 per-config accuracies. Check on GDN d128 at lr 1e-3:
+**Process issue.**
+- The re-run was launched after the verdict had been computed, by an uncommitted queue change (`git status`: `M scripts/s1_zoology/run_queue.py`).
+- It is harmless here: the new cell can only enter best-over-LR, and it scored 0.9877 < 0.9892.
+- But re-run policy should be declared before verdicts are read (§7).
 
-(1 + 0.999875 + 1 + 1 + 1 + 0.9998125 + 0.92501)/7 = 0.98924, against a reported 0.9892427.
+### 1.3 S0 throughput, and re-pricing the LM-training items [MEAS-S0, INF]
 
-**Measured accuracies.**
+The benchmark comes from files `20261109T130432Z` and `…131220Z` (18:34–18:43 IST): 8 timed steps after 3 warm-up steps, reporting the median. In most rows the S1 queue was also on the GPU, alongside CARLA. The first sweep (`…130402Z`) ran out of memory in every cell.
 
-| Run | Overall accuracy | Notes |
-|---|---|---|
-| Attention d64, all 4 LRs | 0.99998 after epoch 0 | Every cell ≥ 0.99988; early-stopped at epoch 0 |
-| GDN d128, lr 1e-3 | 0.945 after one epoch | 1024/256 cell 0.925 at the end; the other six cells ≥ 0.9998 |
-| GDN d128, lr 3.2e-3 | 0.965 after one epoch | 1024/256 cell 0.913 at the end |
-| GDN d256 smoke | 0.987 after epoch 0 | 1024/256 cell 0.911 |
+| Scale | Config | Shape | Median tok/s | Best tok/s | Plan (§13.2) | G0 |
+|---|---|---|---|---|---|---|
+| D384 | C0 | 2 × 4K | 70,124 | 96,817 | 120.0K | ≥ 95K |
+| D384 | C3 | 2 × 4K | 61,367 | 75,980 | 120.0K | ≥ 95K |
+| D384 | C12 | 2 × 4K | 52,679 | 62,752 | 120.0K | ≥ 95K |
+| D384 | C0 | 1 × 32K, ckpt | 41,021 | 46,017 | 93.8K | — |
+| D384 | C12 | 1 × 32K, ckpt | 26,371 | 30,703 | 42.4K | ≥ 27K |
+| D512 | C0 | 2 × 4K | 66,580 | 69,214 | 88.9K | ≥ 70K |
+| D512 | C12 | 2 × 4K | 63,240 | 65,149 | 88.9K | ≥ 70K |
+| D512 | C12 | 1 × 32K, ckpt | 34,029 | 35,645 | 31.9K | ≥ 20K |
 
-**What follows.**
-- With six cells pinned at ceiling, G-RP(b)'s ±0.03 tolerance on overall accuracy **allows ±0.21 on the only cell that moves.**
-- G-RP(a)'s 0.95 threshold is reached by GDN after about one epoch, and by attention after one epoch at every LR.
-- S1 therefore catches only gross failures: no training, NaN, or wrong wiring.
-- At ceiling, MQAR is also blind to bugs that make the model *too good*. A causal-mask leak raises accuracy rather than lowering it; VT-02 covers that case.
-- **S1 is a smoke test, not a calibration.** That is worth having, but should be labelled as such.
+This is not a valid G0 measurement, because another project job shared the GPU. But it is the only measurement we have.
 
-### 1.5 Tooling and checkpoint facts [code-inspected]
+**Re-pricing at D384** [INF]. k = 1, 2 and 6 are interpolated at 68K, 65K and 57K tok/s. Small models are scaled by FLOPs: the LM head (2·d·V ≈ 12.6 MFLOP per token, forward) and per-step overheads do not shrink with depth.
 
-**Packages missing from `.venv`:** `lm_eval`, `datasets`, `accelerate`, `nltk`, `html2text`, as well as `flash_attn`, `causal_conv1d` and `mamba_ssm`. Present: `wonderwords`, `transformers` 5.22.2, `requests`.
+| Item | Stated GPU-h | Re-priced GPU-h | Basis |
+|---|---|---|---|
+| PV-M5 (k = 1, 6; seeds at k = 0, 12) | 1.4 | ≈ 2.7 | 0.61 + 0.73 + 0.59 + 0.79 |
+| PR-P3 (9 runs) | 3.2 | ≈ 6.0 | 1.99 + 2 × 2.00 |
+| PV-M6 (10 × 0.2B tokens, 1–2 layers) | 1.9 | ≈ 2.8–4.3 | 130–200K tok/s, not the 300K assumed |
+| PR-P4b (6 × 0.1B tokens) | 0.5 | ≈ 0.8–1.3 | same |
+| PR-S1 Jelassi (6 runs, cap 0.4B tokens each, plus length arm) | 1.5 | up to ≈ 2.7–4.4 | the cap binds if GDN never reaches 0.95 |
+| PR-P2(b) (6 × 3,000 contexts × 4 queries) | 0.7 | ≈ 2.4–4 | `ForwardOnlyAdapter` re-runs a full forward per query: 72,000 forwards of a 1.3B model at 1–4K, ≈ 0.1–0.2 s each |
+| PR-P2(a) (6 × 800 RULER generations) | 1.0 | ≈ 2–2.7 | ≈ 1.5–2 s per prefill plus 64-token decode |
+| PV-M7 (6 runs × 32 epochs at d = 64) | 1.7 | ≈ 1.3–1.8 | 24–34 s per epoch, as measured at d128 |
+
+**Consequence.** The re-priced must tiers are PV ≈ 10–12 GPU-h and PR ≈ 11–15 GPU-h, and both are on the path to FEAS. If the contended rates hold, the main budget (D041) is also under-priced in its Stage-A portions. A clean G0 throughput number is therefore needed before any LM-training reproduction is scheduled.
+
+### 1.4 Tooling, checkpoints and tokenizers [code-inspected, MEAS-R]
+
+**Packages.**
+- Not installed in `.venv`: `lm_eval`, `datasets`, `accelerate`, `nltk`, `evaluate`, `sklearn`, `html2text`, `flash_attn`, `causal_conv1d`, `mamba_ssm`.
+- Installed: `transformers`, `fla`, `zoology`, `torchvision`, `huggingface_hub`, `safetensors`, `wonderwords`.
 
 **RULER @db43f92 will not run without changes:**
-- `niah.py` imports `nltk.sent_tokenize` (L42).
-- It reads `json/PaulGrahamEssays.json` (L85). That file is absent and must be downloaded with `download_paulgraham_essay.py`.
-- `english_words.json` is a Git-LFS pointer.
-- The HF wrapper calls `AutoModelForCausalLM.from_pretrained(…, device_map="auto")`, which needs `accelerate`, and never runs `import fla`.
-- Nothing in this repo has tested RULER's generation path on fla 0.6.0 models under transformers 5.22.2. VT-09 tests forward logits only.
+- `niah.py` imports `nltk` at the top;
+- `json/PaulGrahamEssays.json` is absent (only a URL list and a downloader are present);
+- `english_words.json` is a Git-LFS pointer;
+- the HF wrapper uses `trust_remote_code` and `device_map="auto"`, which needs `accelerate`;
+- the wrapper never imports `fla`, so fla models are not registered.
 
-**fla 0.6.0 will not build the hybrid or Transformer checkpoints.** `fla/layers/attn.py` raises `ImportError` in `Attention.__init__` when `flash_attn` is missing (L71–72). Those checkpoints therefore cannot even be instantiated without injecting a fake `flash_attn` module. Any result on them is "fla plus our shim", not original code.
+**fla 0.6.0.** `layers/attn.py` raises `ImportError` in `Attention.__init__` when `flash_attn` is missing (L71–72). Every Wang hybrid and Transformer checkpoint therefore needs a shim.
 
-**The Wang 1.3B checkpoints are fp32, not bf16.** File sizes from the HF tree API (2026-11-09):
+**Wang checkpoints** (HF `config.json` and file trees, fetched 22:17):
+- All GDN models: head_dim 256, `expand_v` 1, gate on, conv 4, `norm_eps` 1e-6, `max_position_embeddings` 2,048. They also carry legacy keys (`qk_activation`, `expand_k`, `use_beta`, `qk_norm`), and were saved with transformers 4.49 or 4.51. Our GDN-A, by contrast, is head_dim 64 with `expand_v` 2.
+- Attention layers at 1.3B (indices of 24 layers):
 
-| Checkpoint | Size (fp32 safetensors) |
-|---|---|
-| GDN pure | 5.87 GB |
-| GDN 24-1 | 5.83 GB |
-| GDN 3-1 | 5.60 GB |
-| Transformer | 4.59 GB |
+  | Model | Attention layer indices | Heads |
+  |---|---|---|
+  | 24-1 | [23] | 32 |
+  | 12-1 | [11, 23] | 32 |
+  | 6-1 | [6, 11, 17, 23] | 32 |
+  | 3-1 | [2, 5, …, 23] | 16 |
 
-- The six-model sweep is ≈ 33 GB. PR-P2 assumed "6 × ≈ 2.7 GB (bf16)".
-- The fp32 weights (≈ 5.9 GB) leave about 1 GB under the 0.44 cap (≈ 7 GiB). PR-P2(b)'s "fp32 single-pass" scoring at 4K therefore does not fit. Use bf16, or change the cap with a decision row.
+  All use 8 KV heads and RoPE θ = 1e4.
+- Transformer-1.3B: tied embeddings, 32 heads, `max_position_embeddings` 4,096.
+- Sizes are listed in F6.
 
-**The training context of the Wang models is unclear.**
-- The GDN configs have `max_position_embeddings` = 2,048 (340M and 1.3B); Transformer-1.3B has 4,096.
-- The v2 Limitations section says "a 4,096-token context window".
-- So U1 is still open, and 4K evaluation cells may be RoPE extrapolation for the hybrids' attention layers.
+**Tokenizer of the Wang models.** It is `LlamaTokenizerFast` with `legacy` set, and encodes:
+- "5" → `['▁', '5']`;
+- " " → `['▁▁']`;
+- " 1234" → `['▁▁', '1', '2', '3', '4']`.
 
-**Old config keys.** `qk_activation`, `qk_norm`, `expand_k` and `use_beta` are not parameters of fla 0.6.0's `GatedDeltaNetConfig`; they will be stored as stray attributes. Whether the state-dict keys still match is unverified.
+Our `TokenSpace` requires every digit and " " to be single tokens, so it raises (F4). Our generators also assemble items from separately encoded segments. With a dummy-prefix tokenizer, that assembly produces token sequences the model would never see from a normal encode, so even a patched `TokenSpace` would yield off-distribution items.
 
-**Our forward-only scorer has two limits** (`eval/adapter.py`, `ForwardOnlyAdapter.logits()` L63):
-- It builds the full fp32 logit matrix [N, V].
-- It recomputes one full forward per continuation.
+**Downloads for my L2 item.**
+- `EleutherAI/lambada_openai` `data/lambada_test.jsonl` is 1.82 MB and needs no `datasets` package.
+- Pythia-160M is 375 MB of safetensors (HF sha `50f5173`).
+- GPT-2: tokenizer only (F5).
 
-This is fine for LAMBADA, and for V = 32,000 at ≤ 4K (≈ 0.5 GB). At 32K with V = 151,936 it is infeasible: 32,768 × 151,936 × 4 B ≈ 19.9 GB.
+**Original code on this machine.**
+- nanoGPT runs on torch 2.11: `torch.cuda.amp.GradScaler` still exists, and `--compile=False` costs only speed.
+- modded-nanogpt track 3 needs `@torch.compile`, NCCL `init_process_group` and FineWeb10B GPT-2 shards.
 
-### 1.6 What S0 already tests [code-inspected]
+### 1.5 What S0 already covers [code-inspected]
 
-**`tests/test_vt09_transplant.py` (weight transplant):**
-- Our C12 against `Qwen3ForCausalLM`, with norm gains randomised in [0.6, 1.4]:
-  - T = 96 on CPU in fp32, including the cached and packed paths;
-  - T = 256 on GPU in bf16 with varlen.
-- Our C0 against fla's `GatedDeltaNetForCausalLM` at T = 200 (chunk mode).
-- Tolerance 1e-3 relative in fp32.
-
-**Random weights are enough for this test.** F_g normalises q and k per head, so attention logits are O(1) even at random initialisation. RoPE pairing and θ errors therefore already show at T = 96 [INF]. For example, rotary pair 1 turns 0.664 rad/token at θ = 5e5 and 0.750 at θ = 1e4, so the two drift ≈ 8 rad apart over 96 tokens.
-
-**`tests/test_vt13_training.py` covers:**
-- all four LR schedules;
-- weight-decay groups on the real model;
-- gradient accumulation equal to the full batch, including TEF weights;
-- G-div restarts;
-- atomic checkpoints and kill -9 resume;
-- a 20-step smoke run of the real model with decreasing loss.
-
-**No VT test covers:**
-- a full-model transplant at T > 256 (VT-04 tests only the GDN kernel at 32,768);
-- kernel durations;
-- whether the generated items can be answered at 16K–32K.
+| Proposed item | Already covered by | What is left |
+|---|---|---|
+| PV-M2(c): transplant with trained weights | VT-09: C12 ↔ `Qwen3ForCausalLM` (fp32 CPU at T = 96, including the cached path and a packed two-document row; bf16 GPU varlen at T = 256); C0 ↔ fla's GDN LM (T = 200, packed [0, 90, 200]). VT-04: GDN kernel against an fp64 recurrence at T = 32,768 | Only activation regimes from trained weights, and only in configurations we do not use (QK-norm off, gate off, θ = 1e4, GQA, K = 256) |
+| PV-M4 r2: our trainer | VT-13 (28 tests): 4 schedules; weight-decay groups (fake and real model); accumulation equals full batch, including TEF weights; kill-9 resume; G-div; OOM; registry; protocol audit; 20-step real-model smoke. Loss tests in `test_vt09_loss.py` | An end-to-end update check against an independent loop, including clipping and z-loss → T1 |
+| PV-M6 (attention correctness) and PR-P1(c-1) | VT-02 (9 tests, including an exactly-zero fp64 future gradient on an attention-only full model); VT-09 | None for correctness; the E1.6 premise only |
+| PV-M2(d) / PR-S3: scorer | VT-06/07/08; VT-12 end-to-end scorer tests (the `InductionLM` oracle with exact EM_tf and logp; agreement with a single pass); the 5% production re-score | Only an external check of the metric definition |
+| S1(b) / PV-M7 / PR-S5: "same function" | Nothing deterministic yet | **X2** |
+| PV R-S1-4: conv fallback | Moot: the message comes from Zoology's Mamba import probe (`model.py` L270–277; `mixers/mamba.py` L11–14) | The real gap is **X1** |
 
 ---
 
-## 2. Target numbers re-verified against the primary sources
+## 2. Target numbers re-verified against the primary sources (in this session)
 
-All 11 were opened by me in this step. Each matches what the proposals quote. Rows 2 and 10 add information the proposals did not use.
+| # | Number(s) as the proposals use them | Used by | Source and location | Access | Verdict |
+|---|---|---|---|---|---|
+| 1 | GDN recall: 24:1 0.341, 12:1 0.352, 6:1 0.425, 3:1 0.436, pure 0.356 | Protocol §2 prior; PR-P2; PV-M3 | [2507.06457v2](https://arxiv.org/html/2507.06457v2) App. E, Table 7 | read-section (raw HTML parsed) | Exact |
+| 2 | Per-subtask RULER scores (columns below) | PR-P2 (decisive) | Same, App. C, Table 5 | read-section | Exact (values below) |
+| 3 | LAMBADA (LMB) at 340M: GDN pure 0.348, Transformer 0.353. At 1.3B: GDN 24-1 0.502, Transformer 0.474 | PV-M2, PV-S4 | Same, Tables 2 and 3. Variant and metric are not stated | read-section | Exact |
+| 4 | Ratio definition and training context | PV finding 3; P2 | Same, App. D, §4.3, Limitations; HF configs (§1.4) | read-section; code-inspected | See below. **PV finding 3 is right** |
+| 5 | GDN LM average: 24-1 0.468, 12-1 0.478, 6-1 0.481, 3-1 0.478, **pure 0.487** | My §3.2(b) | Same, Table 6 (downstream accuracy, averaged over 340M and 1.3B) | read-section | Exact |
+| 6 | Perplexity by number of attention blocks: 0 → 8.60; 1 → 8.38; 2 → 8.32; 3 → 8.29; 4 → 8.29; 5 → 8.28; **6 → 8.26**; 7 → 8.27; 9 → 8.28; 11 → 8.30; 15 → 8.34; 24 → 8.50; Transformer++ 8.68 | PV-M5; PR-P3 | [2405.21060v1](https://arxiv.org/html/2405.21060v1) §9.2.3, Table 2. Setting: "350M model (48 layers) trained to 7B tokens on the Pile with the GPT-2 tokenizer" | read-section | Exact |
+| 7 | Pythia LAMBADA (OpenAI), zero-shot: 70M **0.185 ± 0.005**, 160M **0.328 ± 0.007** | PV-M2; my L2 | [2304.01373v2](https://arxiv.org/abs/2304.01373) App. G.1, Table 7, standard suite. The ± is the binomial SE. The deduplicated suite (Table 8) gives 0.192 and 0.342 | read-section (PDF text) | Exact. Pin `EleutherAI/pythia-160m` (not `-deduped`) at a fixed `revision` |
+| 8 | Olsson et al. (quotes below) | PV-M6; PR-P4; my I1 | [transformer-circuits 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html) | read-section | Quoted correctly by both proposals |
+| 9 | Kimi Linear ablation: validation PPL 0:1 5.77, 1:1 5.66, **3:1 5.65**, 7:1 5.70, 15:1 5.82; training PPL 9.45, 9.29, 9.23, 9.23, 9.34 | PR-P3; my §3.2(b) | [2510.26692](https://arxiv.org/html/2510.26692) §5.2, Table 1 | read-section | Validation values match the literature review |
+| 10 | nanoGPT "best validation loss is 1.4697" | PV-M4; PR-S4 | `third_party/nanoGPT/README.md` L51 @3adf61e | code-inspected | Exact |
 
-| # | Number(s) as used | Used by | Source and location | Verdict |
-|---|---|---|---|---|
-| 1 | GDN RULER recall: pure 0.356, 24:1 0.341, 12:1 0.352, 6:1 0.425, 3:1 0.436 | protocol §2 prior; PR-P2; PV-M3 | [2507.06457v2](https://arxiv.org/html/2507.06457v2) Table 7 [read-section] | Exact |
-| 2 | Transformer RULER average 0.423 | PR-P2 | v2 Table 5 [read-section] | Exact. **Per-subtask values (new; decisive for PR-P2):** see the breakdown below. |
-| 3 | 340M LAMBADA (LMB): GDN pure 0.348, Transformer 0.353 | PV-M2 | v2 Table 2 [read-section] | Exact |
-| 4 | 1.3B LMB: GDN 24-1 0.502 | PV-S4 | v2 Table 3 [read-section] | Exact (Transformer 0.474) |
-| 5 | "a fixed ratio r:1 (linear : full)", r ∈ {24, 12, 6, 3}, versus the released configs | PV finding 3 | v2 App. D text [read-section]; HF `config.json` [code-inspected] | **PV is right** (details below) |
-| 6 | Mamba-2 perplexity by number of attention blocks: 8.60, 8.38, 8.32, 8.29, 8.29, 8.28, **8.26**, 8.27, 8.28, 8.30, 8.34, 8.50; Transformer++ 8.68 | PV-M5, PR-P3 | [2405.21060v1](https://arxiv.org/html/2405.21060v1) §9.2.3 Table 2 [read-section] | Exact |
-| 7 | Pythia LAMBADA (OpenAI): 70M 0.185 ± 0.005, 160M 0.328 ± 0.007 | PV-M2 | [2304.01373](https://arxiv.org/html/2304.01373) App. G.1 Table 7 [read-section] | Exact. Not checked: whether HF `main` serves the paper-era weights, so pin `revision` |
-| 8 | GDN 1.3B S-NIAH (see below) | PR-S2; my §3.2a | [2412.06464](https://arxiv.org/html/2412.06464) Table 2 [read-section] | Exact |
-| 9 | Wiki perplexity: GDN 16.42, Transformer++ 18.53, GDN-H1 16.07 | PR-P3 | 2412.06464 Table 3 [read-section] | Exact |
-| 10 | Olsson et al.: ICL score, 0.15 / 0.4 nats, timing (see below) | PV-M6, PR-P4 | [transformer-circuits.pub 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html) [read-section] | Quoted correctly by both. PV's "coincides with warm-up, so not transferable" is half right |
-| 11 | nanoGPT best validation loss 1.4697 | PV-M4, PR-S4 | `third_party/nanoGPT/README.md` L51 @3adf61e [code-inspected] | Exact |
+**Row 2: Wang Table 5.**
 
-**Row 2: Wang Table 5 per-subtask breakdown.**
-
-| Model | Multikey | Multiquery | Multivalue | Singlevalue | CWE+FWE | QA | VT | Average |
+| Model | Multikey | Multiquery | Multivalue | Singlevalue | CWE+FWE | QA | VT | Avg |
 |---|---|---|---|---|---|---|---|---|
-| Transformer | 0.332 | 0.464 | 0.472 | **0.559** | 0.284 | 0.412 | **0.066** | 0.423 |
-| GDN-hybrid-3-1 | 0.293 | 0.542 | 0.502 | **0.875** | 0.271 | 0.300 | **0.024** | **0.440** |
+| GDN-hybrid-3-1 | 0.293 | 0.542 | 0.502 | **0.875** | 0.271 | 0.300 | **0.024** | 0.440 |
+| Transformers | 0.332 | 0.464 | 0.472 | **0.559** | 0.284 | 0.412 | **0.066** | 0.423 |
 
-Table 7 gives 0.436 for the same 3:1 ratio, so the two tables average differently.
+**Row 4: ratio definition and training context.**
+- App. D: "a fixed ratio r:1 (linear : full) … the memory footprint is reduced by roughly a factor of r … r ∈ {24, 12, 6, 3}".
+- §4.3: "devote roughly one quarter of the layers to full attention".
+- Limitations: "a 4,096-token context window".
+- The released "r-1" configs place one attention layer per r layers, so 3-1 has 8 of 24 layers as attention (⅓, not ¼).
 
-**Row 5: released configs.**
-- 3-1: attention at layers [2, 5, …, 23], i.e. 8 of 24 layers, with 16 heads.
-- 24-1: attention at layer [23] only, with 32 heads.
-- So each "r-1" model has 1 attention layer per r layers: linear:full is (r − 1):1, not r:1.
+**Row 8: Olsson et al. quotes.**
+- ICL score: "the loss of the 500th token in the context minus the average loss of the 50th token". Elsewhere the text uses the opposite sign.
+- Magnitude: "less than 0.15 nats" before the phase change, "roughly 0.4 nats" after it, "(except for the one layer model where not much in-context learning ever forms)".
+- Timing: "approximately 1–3 billion tokens in the small models".
+- Warm-up "ramps up over the first 1.5e9 tokens", yet the window "doesn't appear to correspond to a scheduled change in learning rate, warmup, or weight decay".
+- Small models: "10,000 steps (~10 billion tokens)".
+- Smeared keys: "in-context learning does indeed form for one-layer models (when it didn't before)".
 
-**Row 8: GDN 1.3B S-NIAH scores (1K / 2K / 4K / 8K).**
-- S-NIAH-1: 98.4 / 88.4 / 91.4 / 91.8.
-- S-NIAH-2: 100.0 / 99.8 / 92.2 / 29.6.
-- S-NIAH-3: 86.6 / 84.2 / 27.6 (1K / 2K / 4K only).
+**Row 9: what the Kimi ablation is.**
+- It uses a 16-layer model with 653M activated parameters.
+- The paper calls its validation set distribution-shifted.
+- It has **no pure-linear point**.
 
-**Row 10: Olsson et al. details.**
-- **ICL score:** loss at the 500th token minus loss at the 50th token. The text uses both sign conventions.
-- **Magnitude:** "less than 0.15 nats" before the phase change, "roughly 0.4 nats" after it. For one-layer models, "not much in-context learning ever forms".
-- **Timing:**
-  - main text: "roughly 2.5 to 5 billion tokens";
-  - model details: "approximately 1–3 billion tokens in the small models".
-- **Warm-up:**
-  - it "ramps up over the first 1.5e9 tokens";
-  - the authors say the window "doesn't appear to correspond to a scheduled change in learning rate, warmup, or weight decay".
-- **Small models:** 2^16 vocabulary, 8,192-token context, d = 768, ≈ 10B tokens over 10,000 steps, positional embeddings "similar to Press et al.".
-- **Smeared keys** make ICL form in one-layer models.
+**No proposal misreads a number.** The problems are all in how the numbers are used (§3).
 
 ---
 
@@ -257,269 +280,284 @@ Table 7 gives 0.436 for the same 3:1 ratio, so the two tables average differentl
 
 ### 3.1 Consolidated table
 
-Verdict codes:
-- **KEEP**: run as proposed.
-- **MOD**: modify as stated.
-- **REPL**: replace with the cheaper check named.
-- **DEFER**: move to Nice / later.
-- **CUT**: drop.
+- Problem codes are defined in §0.
+- Verdicts: KEEP, MOD (modify), REPL (replace), DEFER (to should or later), CUT.
+- GPU-h are new hours, written as stated → re-priced (§1.3) → my verdict.
 
-GPU-h are new hours. "→" gives my estimate.
-
-| Item (PV / PR id) | Claimed to validate | Problem found | Verdict | GPU-h |
+| Item | Claimed to validate | Problems | Verdict | GPU-h |
 |---|---|---|---|---|
-| S1 as frozen (M1 / P1 a, b) | Mixers, harness | Smoke test only (§1.4) | KEEP, plus the §6 decisions | 0 new |
-| Re-apply the S1 cut (R-S1-1 / P1 §2.1) | Budget | Code raises on 3 of 4 LRs (§1.1a). Real reason to cut d256 lr 1e-2 and 3.2e-2: likely divergence or watchdog crash | MOD (§6 U2) | saves ≈ 1–2 |
-| causal_conv1d check (R-S1-4) | Shim identity | Moot (§1.2) | CUT | 0 |
-| −0.005 monotonicity tolerance (R-S1-3); per-cell report (R-S1-2) | Gate robustness | Correct | KEEP; log now | 0 |
-| Production F_g in MQAR (P1 c-1) | Production attention | In-distribution cells are at 1.0 after one epoch, so it **cannot fail**. VT-09(1) and VT-02 already cover the production F_g | CUT | 0.1–0.3 → 0 |
-| Zoology seed replicate (PR-S5) | Basis for ±0.03 | Attention seed spread is 0 at ceiling; GDN with 2 seeds gives 1 df | CUT (or 1 GDN run) | 1.2 → 0–0.3 |
-| Discriminating MQAR, d = 64 (M7) | "Our GDN = Zoology's" | Tests fla's layer against Zoology's re-implementation, which **differ by design** (bf16 cast; fp32 harness). Can fail with our code correct; our-vs-fla is already VT-09(2) | REPL by A1 | 1.7 → 0.01 |
-| LAMBADA via lm-eval, Pythia + Wang 340M (M2 a, b, d / PR-S3) | Scorer; environment | lm-eval and `datasets` not installed; installing them pre-G5 changes `uv.lock`. Legs (a) and (b) validate lm-eval and the shim, not our pipeline | MOD to L1 (our scorer only) | ≈ 1.0 → 0.05 |
-| Transplant with Wang weights (M2 c) | Mixers with trained weights | Exercises override paths we never use (QK-norm off, gate off, θ = 1e4, GQA replication, untied head, eps 1e-6). Needs a wrapper and a shim. VT-09 already covers the production paths (§1.6) | REPL by A2 | → 0.05 |
-| Our Tier-0 suite on Wang 340M (M3) | Tier-0 sensitivity to k | Tier 0 only corroborates (D037). Wang call 340M recall "insignificant" (Table 2 caption). Spearman ≥ 0.8 over 6 points is arbitrary, and Wang's own recall is non-monotone in k (k/24 = 0, 1, 2 → 0.356, 0.341, 0.352). Needs re-tokenised token stores | CUT | 0.5 → 0 |
-| RULER on Wang 1.3B (P2 a) | Our suite detects k | **Subset contradicts the source (§3.2a)**; ≈ 27 % false alarms even under exact replication; tooling missing (§1.5) | CUT | 1.0 → 0 |
-| Our generators on Wang 1.3B (P2 b) | Sensitivity to k on a real sweep | Zero-shot 1.3B ≠ TEF-trained 30M. Download ≈ 33 GB; fp32 does not fit; 4K cells may be extrapolation; re-computation makes the 0.7 h estimate ≈ 4× low | MOD to W1 (3 models, ≤ 2K, bf16); should tier | 0.7 → 1–1.5 |
-| nanoGPT ladder (M4 / PR-S4) | Trainer | Components already in VT-13 (§1.6). Dropout and train/eval mode are irrelevant: production has no dropout. r3/r4 put our dropout-free model on a 1 MB corpus where nanoGPT needs dropout 0.2, so a false alarm is likely [INF]. The r2-vs-r1 tolerance max(0.01, 2·SD) is weaker than a step-matched trace | REPL by T1 (+ optional r0) | 1.5 → 0.05–0.2 |
-| modded-nanogpt (N2 / PR-N1) | Environment | Needs compile, FlexAttention and GPT-2 shards; does not test our code | CUT | 1.5–5 → 0 |
-| Ratio-loss shape (M5 / P3) | LM pipeline across k | k = 1 is needed: S3 has no k = 1, so RP-2's "largest step at 0 → 1" cannot be evaluated as frozen. But the M5 flatness criterion conflicts with its own anchor (§3.2b). P3's 9 runs buy precision on a shape that is descriptive for GDN (§3.2b) | MOD to LM1 (3 runs) | 1.4–4.2 → 1.05 / 1.4 |
-| Olsson ICL during training (P4 a) | Training budget past the phase change | 1–3B-token timing does not transfer (it sits inside a 1.5e9-token warm-up with ≈ 1M-token steps). The 50-step snapshot cadence is an unnecessary S0 change. FEAS has only k ∈ {0, 12}, so C1/C3 cannot be checked before G5 except on S3/LM1 runs | MOD to I1 (evaluation only, at existing milestones) | ≈ 0.1 |
-| Smeared-key toy runs (M6 / P4 b) | Premise of rival E1.6; attention correctness | Not decision-relevant: X-gc12 (Tier A) and X-gc1/3 (conditional) measure the conv effect in the real setting. The 1-layer thresholds rest on "not much ICL" plus a figure. 0.1–0.2B tokens vs ≈ 10B in Olsson, so a failure cannot be interpreted. The attention-correctness role is covered by VT-02, VT-09 and LM-4(b). The 300K tok/s throughput is unmeasured | DEFER (Nice) | 0.6–1.9 → 0 |
-| Jelassi copy task (PV-S1 / PR-S1) | Learning-speed confound | Mechanism mismatch: GDN-A's state at D384 (3 × 64 × 128 = 24,576 fp32 entries per layer) dwarfs the ≈ 1.4 kbit in a 300-letter string [INF], so the gap may vanish for reasons unrelated to us. The TEF-4000 dose guard and the "still closing" flag measure this confound directly. Needs a custom stream | DEFER | 1.5–3 → 0 |
-| RoPE length behaviour on FEAS checkpoints (PV-S2 / PR-S2) | Position handling | Cheap and descriptive, but not a position-bug detector (VT-03 and VT-09 are) | KEEP as descriptive | 0.3 |
-| Our generator vs RULER (PV-S3); Wang 1.3B LAMBADA (PV-S4) | Generator; transplant | Need RULER, or only make sense with W1 | DEFER | 0.8 → 0 |
-| Full RULER, phonebook, Wang 340M floor, Stuffed-Mamba (PV-N1, N3, N4 / PR-N2, N3, N5) | — | Not our pipeline. The GSSM half of the phonebook needs `mamba_ssm` or a slow path | CUT | 4–8 → 0 |
-| Gate G-RV (PV §6) | — | Puts ≈ 4.4 GPU-h plus lm-eval, a shim and two adapters on FEAS's critical path, mostly re-testing VT-09 and VT-13 | REPL by the §5 gate | — |
+| PV-M1 / PR-P1(a, b): S1 as frozen | Environment; mixers | S1(a) done (PASS, F1). R-S1-1 cut is moot (actual ≈ 1.75 h). R-S1-3 is moot (d256 0.9938 ≥ d128 0.9892). R-S1-4 targets a harmless message (§1.5). R-S1-5 is superseded by X2 | KEEP R-S1-2 (per-cell report). Close the rest. **X2, then S1(b)** | 0 new (S1(b) ≈ 0.4, inside the S1 budget) |
+| PR-P1(c-1): production F_g in MQAR | Production attention learns recall | CF [INF] (Zoology's attention scored 1.000 in every in-distribution cell within 1–3 epochs at every LR and width, so a ≥ 0.95 bar on those cells only catches a broken module); RD (VT-02, VT-09 bf16 varlen) | Free smoke run (≤ 2 min); not evidence | ≈ 0 |
+| PR-P1(c-2): GDN-A at d256 ≥ 0.90 | GDN-A geometry | CF: equivalent to live cell ≥ 0.30, while GDN-A at d256 has the state of Zoology's GDN at d128, which scored 0.925 on that cell | MOD: descriptive, beside Zoology GDN d128 | 0 |
+| PR-S5: Zoology seed replicate | Basis for ±0.03 | CF (attention seed spread is 0 at ceiling; 2 GDN seeds give 1 df) | CUT | 1.2 → 0 |
+| PV-M7: MQAR at d = 64, 3 seeds × 2 arms | "Our GDN = Zoology's GDN" | FB (Zoology's GDN casts q, k, v, β, g to bf16, `mixers/gated_delta_net.py` L245–250, while ours runs fp32 in the same harness; the mid-range regime is chosen precisely so such differences show). The identity question is answered exactly by X2 | DEFER to should, run only if X2 passes and behavioural evidence is still wanted (§3.2c) | 1.7 → 1.3–1.8 → 0 must |
+| PV-M2(a): Pythia LAMBADA via lm-eval | Environment | NU (it validates lm-eval); IF (`lm_eval`, `datasets`, `accelerate` absent; installing them changes the pinned env) | MOD → **L2** through our scorer (should) | 1.0 → ≈ 0.1 |
+| PV-M2(b): Wang 340M GDN-pure 0.348 | fla GDN with trained weights | Variant unstated; loading a transformers-4.51 checkpoint into fla 0.6.0 is unverified | MOD → part of L2 | incl. |
+| PV-M2(b): Transformer 0.353; 3-1 hybrid | Attention with trained weights | NU (fla `Attention`: GQA, no QK-norm, no gate, θ = 1e4); IF (`flash_attn` shim) | CUT | — |
+| PV-M2(c): transplant logits | Our mixers with trained weights | RD (VT-09, VT-04); NU (override paths); IF (shim plus untied-head wrapper) | CUT; A2 covers long T on production paths | → 0 |
+| PV-M2(d): scorer vs lm-eval per item | EM_tf definition | RD (VT-12 `InductionLM` end to end; VT-07; 5% re-score); IF | CUT | — |
+| PV-M3: Tier 0 on the Wang 340M sweep | Tier-0 sensitivity to k | IF (F4); FB (Spearman ≥ 0.8 over 6 points, while published recall is non-monotone at k/24 = 0, 1, 2: 0.356, 0.341, 0.352); NU; Tier 0 only corroborates (D037); Wang call 340M recall "insignificant" (Table 2 caption); "New-hybrid-24-1" provenance | CUT | 0.5 → 0 |
+| PR-P2(a): RULER on Wang 1.3B | Our suite detects k | FB (§3.2a: Table 5 contradicts the subset; ≈ 27% joint false alarm even under exact replication); IF (§1.4 RULER list; shim; 33.4 GB of fp32) | CUT | 1.0 → 2–2.7 → 0 |
+| PR-P2(b): our generators on Wang 1.3B | Our suite detects k | IF (F4); RD (FEAS-2 already demands S₁₂ − S₀ ≥ 25 pp at 32K on our own models, which is the sensitivity that matters); NU (zero-shot 1.3B models with 2K configs are not TEF-trained 30M models); output may not be used for planning (I-23) | CUT; the answerability part becomes **O1** | 0.7 → 2.4–4 → 0 |
+| PV-M4 / PR-S4: nanoGPT ladder | Trainer | RD (VT-13); NU (dropout and train/eval mode do not exist in our model); FB for r3/r4 (a dropout-free model on a 1 MB corpus overfits) [INF]; needs a GPT adapter and a character-level `StageStream` | REPL → **T1**; r0 optional (environment number) | 1.5 → ≈ 0.05 (+ 0.15 for r0) |
+| PV-M5 / PR-P3: ratio-loss shape | LM pipeline across k | FB (§3.2b: the verdict depends on how k is mapped; no delta-rule anchor for the 0 → 1 step; PR makes P3-a an audit trigger); P3-c's min-of-4 is biased towards passing; under-priced ≈ 1.9× | MOD → **LM1-lite**: one run, k = 1 at η* (should). RP-2 read descriptively | 1.4 / 3.2 → 2.7 / 6.0 → 0.6 |
+| PV-M6 / PR-P4b: Olsson smeared-key toy runs | Attention correctness; premise of rival E1.6 | RD (VT-02, VT-09); SD (0.1–0.2B tokens vs ≈ 10B, and Olsson's timing sits inside a 1.5e9-token warm-up); FB (no 1-layer ICL value in the text to anchor the 1-layer thresholds); decision-irrelevant (X-gc12 runs unconditionally, D005); under-priced | Measurement → **I1** (must). Toy runs DEFER | 1.9 / 0.5 → 2.8–4.3 / 0.8–1.3 → 0.1 |
+| PR-P4a: ICL during training | Budget past the phase change | The 50-step snapshot cadence needs an S0 trainer change, while Stage-A milestones at {50M, 100M, 200M, 400M} tokens and S already exist. The 0.15-nat bar is a transformer number: a GDN lowers late-position loss without an induction phase change. C1 and C3 have no FEAS runs | MOD → **I1** | 0.1 |
+| PV-S1 / PR-S1: Jelassi copy task | Learning-speed rival | SD (the gap is shown for Mamba with S = 32; GDN-A's state, 3 × 64 × 128 = 24,576 entries per layer at D384, dwarfs a ≈ 1.4 kbit string of 300 letters [INF]); FB (PR concedes a ratio < 1 "is not a bug signal"); RD (the TEF dose ladder and still-closing flag measure E1.7 in place) | CUT | 2–3 / 1.5 → up to 4.4 → 0 |
+| PV-S2 / PR-S2: length behaviour on FEAS checkpoints | Position handling | Descriptive. Press et al.'s numbers (θ = 1e4, L = 512 / 1,024) do not transfer to θ = 5e5 with QK-norm | KEEP as a descriptive audit (should); PV-S2(ii) is a useful trigger | 0.3 |
+| PV-S3: our generator vs RULER | Generator semantics | CF ("≤ 10 pp *or* an explained difference"); IF | CUT | 0.5 → 0 |
+| PV-S4: Wang 1.3B 24-1 LAMBADA | A second transplant | IF (shim for its single attention layer); 5.8 GB of fp32 | CUT | 0.3 → 0 |
+| PR-S3: GPT-2 LAMBADA | Scorer identity | IF (weights not cached, F5); the target is a community run on an old harness | MOD → L2 with Pythia (a published table) | ≈ 0.05 → incl. |
+| PV-N1–N4, PR-N1–N5 | Environment; extras | NU; IF (compile, NCCL and GPT-2 shards; `mamba_ssm`); figure-only anchors | CUT | 4–8.5 → 0 |
+| PV gate G-RV | — | Puts M2, M4 and M6 (≈ 4.4 h, plus lm-eval, a shim and two adapters) on FEAS's critical path, mostly re-testing VT-09 and VT-13 | REPL (§5) | — |
 
 ### 3.2 Notes on the decisive cases
 
-**(a) PR-P2(a): the RULER subset contradicts its own source.**
-- **The Transformer's advantage is not in single-needle retrieval.** In Wang's Table 5 the Transformer scores 0.559 on Singlevalue against 0.875 for GDN-3-1. On VT both are at floor (0.066 and 0.024).
-- **Mapping P2's subset onto those columns.** P2 uses niah_single_1/2/3 plus vt, so Singlevalue and VT weigh 3:1. On those columns Wang's numbers imply Transformer − GDN-3-1 ≈ (3·0.559 + 0.066)/4 − (3·0.875 + 0.024)/4 ≈ −0.23 [INF]. For "S(Transformer) − S(pure) ≥ +0.03" to pass, pure GDN would have to sit ≥ 0.25 below the 3-1 hybrid on single-needle tasks.
-- **Pure GDN is near ceiling on those tasks.** The GDN paper's own pure 1.3B models (also 100B FineWeb-Edu tokens, but different checkpoints) score 88.4–99.8 on S-NIAH-1/2 at 2K.
-- **Which criteria will fail.** The Transformer criterion is very likely to fail on a correct pipeline. The 3:1-vs-pure criterion may survive, since Wang's text says "Single-Key, Multi-key, and QA sub tasks are noticeably affected by a changing ratio" (figure-only). Even so, compression near the ceiling at 2K shrinks the gap.
-- **Even exact replication fails often.** Suppose Wang's averaged gaps held exactly on the subset. With P2's own SE of 0.025 per difference, the three thresholds pass jointly only about 0.945 × 0.827 × 0.931 ≈ 0.73 of the time [INF].
-- **Recommendation.** Combined with the tooling gaps (§1.5), drop P2(a). If a RULER cross-check is wanted later, use multikey/multiquery at ≤ 2K.
+**(a) PR-P2 cannot pass reliably even on a correct pipeline, and it duplicates FEAS.**
 
-**(b) PV-M5's flatness criterion conflicts with its own anchor.**
-- **The criterion and its anchor cover different ranges.** "Range over k ∈ {1, 3, 6} ≤ 0.02 nats" is justified by "Mamba-2 range over 1–11 blocks = 0.014 nats". But 1–11 of 48 blocks is 2–23 % attention, while k ∈ {1, 3, 6} of 12 is 8–50 %.
-- **The verdict depends on an unstated mapping:**
-  - **By attention fraction** (k/12 ↔ n/48), Table 2 gives 8.29 at 4/48, about 8.30–8.34 at 11–15/48, and 8.50 at 24/48. The range is ln(8.50/8.29) = 0.025 nats, above 0.02.
-  - **By count**, the range is ln(8.38/8.26) = 0.014 nats, inside 0.02.
-- **Consequence.** A faithful pipeline can trip "the RP-2 audit before S4".
-- **Fix.**
-  - Keep the k = 1 run.
-  - Judge flatness on k ∈ {1, 3} only.
-  - Make "all-full vs best hybrid" descriptive.
-- **GDN is not Mamba-2.** Pure GDN beats Transformer++ on Wiki perplexity (16.42 vs 18.53, GDN Table 3), and Wang's Table 6 is flat. So "failures" of PV-M5-P1/P3 or of PR-P3-a/c cannot be read as bugs. That also applies to PR-P3-a's audit trigger. PR-P3's nine runs (k = 2 and 6 plus triplicates) buy precision on a shape that is descriptive for GDN.
+- **The subset contradicts the source.** P2 uses `niah_single_1/2/3` plus `vt`, which weights Table 5's Singlevalue and VT columns 3:1.
+  - Transformer: (3·0.559 + 0.066)/4 = 0.436.
+  - GDN-3-1: (3·0.875 + 0.024)/4 = 0.662.
+  - The difference is −0.23 [INF].
+  - For "S(Transformer) − S(pure) ≥ +0.03" to hold, pure GDN would have to sit ≥ 0.26 below the 3-1 hybrid on single-needle tasks.
+- **Even exact replication fails about a quarter of the time.** Suppose Wang's averaged gaps held exactly on the subset (+0.080, −0.015, +0.067). With P2's own SE of 0.025 per difference, the three criteria pass jointly with probability ≈ Φ(1.6) × [Φ(2.2) − Φ(−1.0)] × Φ(1.48) ≈ 0.945 × 0.827 × 0.931 ≈ 0.73 [INF]. That is ≈ 27% false alarms.
+- **The engineering is large.**
+  - RULER needs 4 environment changes plus a patch.
+  - Every hybrid needs a `flash_attn` shim.
+  - The download is 33.4 GB of fp32.
+  - Our generators reject the tokenizer (F4).
+  - `ForwardOnlyAdapter` re-computes a forward per query, so P2(b) alone is ≈ 2.4–4 GPU-h, not 0.7.
+- **The question is already answered more directly.** P2's stated purpose is "if our generators cannot discriminate 3:1 from pure on these models, our evaluation design is insensitive to the very manipulation we study". FEAS already answers that on our own models, before S3 and S4, with a hard gate (FEAS-2: S₁₂ − S₀ ≥ 25 pp at 32K). Intermediate-k sensitivity is the research question itself, not a validation.
 
-**(c) PV-M7 compares the wrong pair; P1(c-1) cannot fail.**
-- **What M7 really tests.** Our `GDNMixer` subclasses fla's `GatedDeltaNet`, and VT-09(2) already ties our C0 to fla's own LM within 1e-3. So M7 tests whether fla's layer equals Zoology's re-implementation, and those differ by design (§1.3).
-- **Why it can fail with our code correct.** M7 deliberately seeks the mid-range regime, where the bf16-vs-fp32 difference in kernel inputs can exceed ±0.03.
-- **A cheaper, exact alternative.** The two layers share parameter names (`q_proj`, `k_proj`, `v_proj`, `a_proj`, `b_proj`, `A_log`, `dt_bias`, `q/k/v_conv1d`, `o_norm`, `o_proj`). A weight-copy forward/backward test answers the identity question exactly in about a minute (A1).
-- **P1(c-1).** The production F_g scores 1.0 on all in-distribution cells after one epoch, so this check cannot fail.
+**(b) PV-M5 / PR-P3: the anchors are Mamba-family, and the criteria can fire with no bug.**
 
-**(d) PV-M4 / PR-S4: the trainer is already unit-tested.**
-- What M4's r2 rung would isolate (optimiser groups, schedule, accumulation, clipping) is already in VT-13.
-- The one residual risk is an end-to-end mismatch with a reference loop. A **step-matched trace** catches that better (T1):
-  - our trainer drives nanoGPT's `GPT`, on nanoGPT's batches;
-  - fp32, deterministic mode, dropout 0, constant LR, z-loss 0, β set equal in both;
-  - 50 steps;
-  - loss, gradient norm and LR must agree to ≈ 1e-6 relative.
-- This takes minutes, versus 11 runs of convergence plus a 2-SD tolerance.
-- Keep r0, a single run of the original config, only if someone wants the environment number (≈ 10 min). S1 has already shown that this environment trains reference models.
-- **Engineering:**
-  - an adapter that returns pre-head hidden states plus `lm_head_weight`, reshaping varlen [1, N] batches into [B, 256];
-  - a β override in `OptimConfig`.
+- **PV-M5-P2's verdict depends on an unstated mapping.** The criterion is "range over k ∈ {1, 3, 6} ≤ 0.02 nats", anchored on Mamba-2's range over 1–11 blocks (0.014 nats). Mapped onto Mamba-2's 48 blocks:
+  - **by count**, the range is ln(8.38/8.26) = 0.014 nats: pass;
+  - **by attention fraction** (4, ≈ 12 and 24 of 48 blocks), it is ln(8.50/8.29) = 0.025 nats: fail.
 
-**(e) PV-M2: keep only the leg that tests our code.**
-- The useful leg is our scorer against an external number: L1 below. It catches common-mode alignment errors that VT-07 (branched vs separate passes, both ours) cannot.
-- It needs no lm-eval:
-  - download LAMBADA-OpenAI with `huggingface_hub`;
-  - convert each passage to our item format, with the context minus the target and the last context token as the prompt;
-  - wrap Pythia with `full_logits` for `ForwardOnlyAdapter`;
-  - compare with Pythia Table 7 (0.185 and 0.328, ± 0.015).
-- Install lm-eval, in a separate venv, only if L1 misses.
+  So a pipeline that reproduced Mamba-2 exactly could still trip "the RP-2 audit before S4".
+- **No delta-rule sweep anchors the 0 → 1 step on loss:**
+  - Kimi's KDA ablation has no pure-linear point.
+  - On Kimi's in-distribution training PPL, 15:1 (1 of 16 layers attention) sits 0.012 nats above the best ratio.
+  - On Kimi's distribution-shifted validation set, 15:1 is *worse* than pure MLA (5.82 vs 5.77).
+  - For GDN itself, Wang's Table 6 puts pure GDN at the top of the LM averages (0.487 vs 0.468–0.481).
+- **What follows.** "The first attention layer gives most of the loss gain" is established for Mamba-family stacks, not for delta-rule stacks. PR's P3-a audit trigger could send the team after a non-bug.
+- **What I keep: LM1-lite, one run of k = 1 at η* on the S3 recipe.** The reason is engineering, not literature:
+  - the core runs k = 1, but S3 never trains it, so k = 1's LR and stability are untested before G5;
+  - the run also makes RP-2's "largest step at 0 → 1" clause evaluable (descriptive);
+  - cost ≈ 0.6 GPU-h, contended.
 
-**(f) PV-M6 / PR-P4: measure ICL; skip the toy runs.**
-- The useful part is a direct measurement on the runs we already make (I1):
-  - Olsson's ICL score;
-  - repeated-random-token copying, which is our LM-4 variant (b) at gap 0.
-- Measure them at the planned bf16 milestones (Stage-A 50M, 100M, 200M and 400M tokens, then S; protocol §18 L989) and at the S3/LM1 final checkpoints.
-- **Checks:**
-  - C12 ICL ≥ 0.15 nats by S (the paper's "before" boundary);
-  - C12's second-copy loss far below its first-copy loss.
-- Report C0, C1 and C3 descriptively.
-- No 50-step cadence is needed.
+**(c) PV-M7 vs X2 (I disagree with critique A on priority).**
 
-**(g) The S1 budget.**
-- PV says ≈ 5.5 GPU-h; PR says 3–5 h. About 1.1 GPU-h had been spent by 18:40 [MEAS-S1].
-- The d256 row decides the rest [INF]:
+- **What M7 tests, given X2.** X2 copies weights and compares forward outputs and gradients. If X2 passes, our mixer and Zoology's compute the same function and gradient. Zoology re-initialises every `nn.Linear` itself, and fla-specific tensors keep fla's own init in both. So M7 can then only measure precision and RNG effects. Critique A itself calls that "a recipe difference worth reporting, not a bug".
+- **What M7 tests if X2 fails.** The wrapper must be fixed first, and M7 would be wasted.
+- **Conclusion.** M7 never localises a defect that X2 cannot. Its one unique output is a seed spread for G-RP(b), a gate that is a smoke test anyway (§1.1). Make it a conditional should item.
 
-| d256 run | Expected behaviour | Expected cost |
-|---|---|---|
-| lr 1e-3, 3.2e-3 | The smoke epoch is already at 0.987 against an early-stop threshold of 0.99, so these may stop within a few epochs | ≈ 0.1–0.2 h each |
-| lr 3.2e-2 | Likely diverges in epoch 1 as at d128, then trains all 32 epochs | ≈ 1 h at 122 s/epoch |
-| lr 1e-2 | Risks the watchdog crash seen twice at d128 | — |
+**(d) PV-M2 / PR-S3 / PV-M3 → L2, a LAMBADA pair through our own scorer, with no lm-eval.**
 
-- Realistic S1(a) total: ≈ 2–5.5 h.
-- **The real benefit of cutting at d256** is that it drops two runs that are likely to diverge or crash. Saving budget is secondary.
+- **Pythia half.** Pythia-160M at a pinned `revision`, target 0.328 ± 0.007, tolerance ±0.015; optionally Pythia-70M (0.185 ± 0.005). This anchors our scorer and adapter to a published table.
+- **Wang half.** Wang's 340M GDN-pure through fla 0.6.0, target 0.348, tolerance ±0.02, reporting both the openai and standard variants because the paper does not say which.
+  - It needs no shim.
+  - It is the only check that fla 0.6.0's GDN layer (which `GDNMixer` subclasses) computes the same function as the fla version that trained published weights.
+  - VT-04 checks the kernel against our own fp64 recurrence; VT-09(2) checks fla against fla.
+- **Diagnosis.** If Pythia passes and Wang fails, the cause is fla drift or the variant.
+- **Cost.** ≈ 0.1 GPU-h, ≈ 2 GB of downloads and a small HF wrapper. Items are written directly with each model's tokenizer, so `TokenSpace` is not involved.
+- **Tier.** Should, not must: VT-12's oracle already covers alignment.
+
+**(e) PV-M4 → T1.**
+- What r2 claims to isolate is already in VT-13.
+- A step-matched trace against a reference loop *on our model* also covers clipping and z-loss, and its tolerance is ≈ 1e-6 rather than 2·SD.
+- r0, the original nanoGPT config compared with 1.4697, is an environment number only. S1 has already shown that this environment trains reference models.
+
+**(f) PV-M6 / PR-P4 → I1.**
+- Measure the ICL score and LM-4(b) gap-0 copy loss on checkpoints we already produce.
+- No 50-step cadence is needed. Stage-A milestones give 5 points per FEAS run, and the last two retained S3 checkpoints give a plateau check.
+- The toy runs are deferred: SD, unanchored thresholds, no decision depends on them, and they are under-priced.
 
 ---
 
-## 4. Important validations that are missing
+## 4. Important validations that are missing (ranked by risk covered per GPU-h)
 
-**A1. Weight-copy equivalence between our mixers and Zoology's (GDN and MHA).**
-- Copy the weights, then compare forward outputs and gradients.
-  - GDN: match the precision first, i.e. bf16 kernel inputs as Zoology does.
-  - Attention: zero the biases in Zoology's MHA and put it in eval mode, which removes dropout 0.1.
-- Pass: equal to fp32/bf16 noise.
-- This makes S1(b) interpretable and replaces M7. Cost ≈ 0.01 GPU-h.
+| ID | Check | Why it matters | Pass / fail (pre-register) | GPU-h | Natural owner |
+|---|---|---|---|---|---|
+| **O1** | `InductionLM` answerability at every confirmatory 16K/32K cell: R1 D ∈ {3, 15}; R-load up to N = 1,024 / 2,048; R3; R-dist | FEAS picks the scale (D512 adds ≈ 58 GPU-h) and L_ext from 32K item scores. Nothing yet shows those items are answerable at length: VT-12 checks structure at 32K and answerability only at 2K (F7) | EM_tf = 1 and logp_gold = 4·log 0.9 on every R1/R-load/R3 query; M-hop fails. Any miss is an item bug or an oracle key collision; inspect it before FEAS | 0 (CPU, minutes) | S0 eval |
+| **X2** | Weight-copy equivalence, Zoology ↔ ours (critique A's X2). GDN with Zoology's bf16 casts reproduced; MHA with biases zeroed and dropout off | Makes S1(b) interpretable; replaces M7 and S5 as the identity check | Outputs and gradients equal within bf16 tolerance (GDN) or fp32 tolerance (MHA) | ≈ 0.01 | S1 |
+| **X1** | fla Triton `causal_conv1d` vs `causal_dwconv_reference`: forward and backward, `cu_seqlens`, `initial_state`, fp32 and bf16. Plus F_gc packed-vs-separate (the rest of VT-03) | GDN-A and F_gc depend on this kernel; VT-09(2) compares fla with fla (F8). Also critique A's X1 | Max abs diff ≤ 1e-5 (fp32), ≤ 1e-2 relative (bf16); exactly zero leakage across documents | ≈ 0.01 | S0 models |
+| **A2** | VT-09 at long T: C12 vs Qwen3 (SDPA) at 4K in fp32 and at 16K/32K in bf16; C0 vs fla's LM likewise; one hybrid (C3) packed-vs-separate at 32K in bf16 | The primary cell is 16K–32K, but the full model is never compared with a reference beyond 256 tokens. Replaces PV-M2(c) at the lengths we actually use | 1e-3 relative (fp32); the existing 5e-2 (bf16) | ≈ 0.05 | S0 models |
+| **T1** | Our trainer vs a ≈ 60-line reference AdamW loop on our model: fp32, deterministic, same batches, clipping and z-loss on, 50–200 steps | Replaces M4. VT-13 checks components and config values, not the update end to end | Loss and gradient norm agree per step to ≈ 1e-6 relative; equal parameter checksum at the end | ≈ 0.05 | S0 training |
+| **A3** | GPU-fault hygiene: (i) annotate each run with the `journalctl -k` Xid lines from its time window; (ii) one GPU queue for all agents; (iii) profile the longest kernel in one 32K Stage-B step and one 32K prefill, for C0 and C12; (iv) give infrastructure failures their own status in protocol §8.1 | Two Xid 8 hangs and one Xid 31 MMU fault in one evening, and the clean re-run points at contention (§1.2). Infrastructure failures correlated with k would become missing data correlated with k | No kernel > 1 s, far below the 7 s RC notify timeout (my threshold [INF]); every run that overlaps an Xid event is flagged | ≈ 0.1 | Orchestrator; S0 training |
+| **G0-T** | A clean G0 throughput measurement (CARLA as the only foreign load), then re-price D041 and every LM-training item | F3: 44–58% of plan at D384 | As G0 | ≈ 0.1 (inside S0's 3.0 h) | S0 |
+| **I1** | Olsson's ICL score (L@50 − L@500 on held-out documents ≥ 512 tokens) and LM-4(b) gap-0 copy loss, at existing Stage-A milestones and S3 final checkpoints | Shows whether induction formed and the budget passed the transition; a cheap Olsson anchor | k = 12: plateau (\|ΔI\| < 0.02 between the last two points) and second-copy loss ≪ first-copy loss. k = 0 descriptive | ≈ 0.1 | Eval |
 
-**A2. VT-09 at long lengths: production C12 vs Qwen3 (SDPA), and C0 vs fla's GDN LM.**
-- Lengths:
-  - fp32 at T ∈ {4K, 8K};
-  - bf16 with FLASH at {16K, 32K}, with the tolerance of the existing bf16 GPU test (5e-2).
-- fp32 cannot go to 32K. Our fp32 path uses SDPA-MATH, which needs 6 × T² × 4 B per layer: ≈ 1.6 GB at 8K, ≈ 25.8 GB at 32K.
-- **This is the only check at the lengths of the primary cell.** Every reproduction proposed runs at ≤ 4K. Cost ≈ 0.05 GPU-h.
-- Code inspection already shows our RoPE tables are computed in fp32 (`models/layers.py` L50–56), so the classic bf16 RoPE-angle bug is absent. Nothing *tests* the full model beyond T = 256, though.
-
-**A3. Kernel-duration audit and crash diagnosis.**
-- **Profile** the longest single CUDA kernel in:
-  - one Stage-B step and one TEF step (1 × 32K with checkpointing), for C12 and C0 at the chosen width;
-  - a 32K evaluation prefill (B = 1).
-- **Diagnose** the S1 lr 1e-2 crash:
-  - run it alone, after the queue finishes;
-  - with `CUDA_LAUNCH_BLOCKING=1`;
-  - outside the S1 results directory.
-- **Decide how infrastructure failures enter protocol §8.1.** That section currently defines permanent failure only for divergence.
-- Cost ≈ 0.1–0.5 GPU-h. This is the only item that addresses missing data correlated with k.
-
-**A4. A long-context positive control for our generators and scorer.**
-- **Model:** Qwen3-0.6B-Base [code-inspected config]:
-  - `max_position_embeddings` 32,768, `rope_theta` 1e6;
-  - ungated, Apache-2.0, sha `da87bfb`;
-  - the same HF class VT-09 uses as its reference.
-- **Cells:**
-  - R1 with D ∈ {3, 15} and R-load with N ∈ {32, 128}, at 4K, 16K and 32K, plus C0;
-  - 50 contexts per cell, 1 query per context at 32K.
-- **Pass [INF]:** at 32K, EM_tf on R1 D = 3 is ≥ the C0 score − 0.20.
-- **Purpose.** It separates "items or scorer broken at long T" from "our models fail" before FEAS chooses the scale. There is no published target; this is a control, not a reproduction.
-- **Needs:**
-  - the foreign-tokenizer generator path (shared with W1);
-  - a wrapper that computes logits only at the scored positions (see §1.5 on the 19.9 GB logit matrix).
-- Cost ≈ 0.3 GPU-h [INF: one 32K forward ≈ 160 TFLOP ≈ 2–3 s].
-
-**A5. One GPU queue for all agents.**
-- Ad-hoc launches beside the S1 queue contaminate its timings and plausibly raise the risk of watchdog timeouts [INF].
-- Route every GPU job longer than about 5 minutes through `scripts/runner.py`.
-
-**A6. Decision-log hygiene for S1.**
-- The micro-batch shim (`micro_batch` = 64 in every run) is marked "DEVIATION" in the run JSONs and unit-tested (`test_s1_microbatch.py`), but has no `decisions.md` row.
-- `s1_reproduction.md` still says "BLOCKED" and "fallback not implemented".
-
-**Gaps accepted, with no cheap anchor:**
-- No public small checkpoint was trained at ≥ 16K, and the GDN paper released no weights. FEAS, G-REF, A2 and A4 must carry the long-context assurance.
-- The seed SD of the confirmatory metric is estimated only from FEAS's two seeds.
+**Gaps accepted, with no cheap anchor.**
+- No small public checkpoint was trained at ≥ 16K.
+- FEAS, G-REF, A2 and O1 must carry the long-context assurance.
 
 ---
 
-## 5. Cheapest set that covers the most risk
+## 5. The cheapest set that covers the most risk
 
-| Order | ID | Check | Risk covered | Literature anchor | New GPU-h | Engineering | Replaces |
-|---|---|---|---|---|---|---|---|
-| 0 | S1-D | §6 decisions | Gate validity | Zoology (running) | 0 | Decision rows | R-S1-1…5; PR §2.1 |
-| 1 | A1 | Weight-copy equivalence: ours vs Zoology | Mixer identity | — | ≈ 0.01 | Small test | M7, PR-S5, P1(c-1) |
-| 2 | A2 | VT-09 at long lengths | Production paths at 4K–32K | — | ≈ 0.05 | Extend VT-09 | M2(c) |
-| 3 | A3 | Kernel audit and crash diagnosis | Infrastructure; missing data | — | ≈ 0.1–0.5 | Profiler script | (new) |
-| 4 | L1 | LAMBADA through our scorer on Pythia-70M/160M (+ cached GPT-2) | Scorer alignment against an external number | Pythia Table 7: 0.185 / 0.328, ± 0.015 | ≈ 0.05 | HF wrapper + item conversion; no lm-eval | M2(a, b, d); PR-S3 |
-| 5 | T1 | Step-matched trace against nanoGPT | Trainer, end to end | nanoGPT (r0 1.4697 optional) | ≈ 0.05 (+0.15 for r0) | Adapter; β override | M4; PR-S4 |
-| 6 | I1 | ICL score and LM-4(b) at gap 0, at existing milestones and S3/LM1 finals | Budget; induction formed | Olsson: < 0.15 before, ≈ 0.4 nats after | ≈ 0.1 | Evaluation script | P4a; M6(a, d) |
-| 7 | LM1 | k = 1 at η*, plus 1 extra seed at k ∈ {0, 1}; RP-2 with corrected criteria (flatness on k ∈ {1, 3}; k = 0 → 1 drop > max(3σ, 0.005)) | LM pipeline across k | Mamba-2 Table 2 (directional) | 1.05 (D384) / 1.4 (D512) | None (S3 recipe) | M5; P3 |
-| S | A4 | Long-context positive control | Answerability at 16K–32K | — | ≈ 0.3 | Foreign-tokenizer generators; positions-only logits | (new) |
-| S | W1 | Our generators on Wang 1.3B pure, 3-1 and Transformer: R1, R-load and C0 at 1K and 2K; bf16; paired bootstrap; directional criteria as P2(b-i) | Sensitivity to k on a real sweep | Wang Table 7 (direction only) | ≈ 1–1.5 (+ ≈ 16 GB download) | flash_attn shim (validated against naive softmax); shared with A4 | P2(b), reduced |
-| S | R | RoPE length behaviour on FEAS checkpoints | Descriptive | Press Tables 2–3 | 0.3 | Evaluation | PV-S2 / PR-S2 |
+| Tier | Order | ID | Check | Risk covered | Literature anchor | New GPU-h | Engineering | Replaces |
+|---|---|---|---|---|---|---|---|---|
+| Must | 0 | — | §6 decision rows | Audit trail; forking paths | — | 0 | Text | R-S1-1…5; PR §2.1 |
+| Must | 1 | O1, X1, A2, T1 | Deterministic tests in S0's own files | Items at length; conv kernel; full model at long T; trainer | — | ≈ 0.1 | 4 tests | PV-M2(c), M4; P2(b)'s answerability role |
+| Must | 2 | X2 → S1(b) | Identity test, then S1(b) as frozen | Mixer identity in Zoology's harness | Zoology (S1) | ≈ 0.01 (+ S1(b) ≈ 0.4, already budgeted) | 1 test | PV-M7, PR-S5 |
+| Must | 3 | A3, G0-T | Fault hygiene; clean throughput | Infrastructure; budget | — | ≈ 0.2 | Registry annotation; profiler script | (new) |
+| Must | 4 | I1 | ICL and copy loss at existing milestones | Induction formed; training budget | Olsson: < 0.15 before, ≈ 0.4 nats after | ≈ 0.1 | Eval script | PV-M6(a, d); PR-P4a |
+| Should | 5 | L2 | LAMBADA pair through our scorer | Scorer on real LMs; fla GDN semantics | Pythia Table 7: 0.328 ± 0.007 (0.185 ± 0.005). Wang Table 2: 0.348 | ≈ 0.1 (+ ≈ 2 GB download) | HF wrapper; item writer | PV-M2(a, b, d); PR-S3 |
+| Should | 6 | LM1-lite | k = 1 at η* (S3 recipe) | k = 1 LR and stability before G5; RP-2's 0 → 1 clause | Mamba-2 Table 2 (direction only) | ≈ 0.6 | None | PV-M5; PR-P3 |
+| Should | 7 | X4 | Known-answer recall in our harness: 2-layer `AA` vs `--` on no-filler R1/R-load at 1K, ≤ 50M tokens (critique A's X4, cheaper) | Synthetic stream → loss mask → model → scorer, before FEAS's 9.8 h | — | ≈ 0.1–0.3 | Small run config | (new) |
+| Should | 8 | R | Length behaviour on FEAS checkpoints | Descriptive audit | Press Tables 2–3 (context only) | ≈ 0.3 | Eval | PV-S2; PR-S2 |
+| Should | 9 | r0 | nanoGPT original config | Environment number | 1.4697 | ≈ 0.15 | None | PR-S4 |
+| Optional | — | M7 | Only if X2 passes and a behavioural check is still wanted | Training behaviour in a mid-range regime | Re-run numbers | ≈ 1.3–1.8 | None | — |
+| Optional | — | A4 | Qwen3-0.6B-Base long-context positive control | LM-elicitability at 16K/32K | — | ≈ 0.3 + download | Positions-only logits (a 32K × 151,936 fp32 logit matrix is ≈ 19.9 GB); tokenizer compatibility unverified | — |
 
 **Totals.**
 
-| Plan | New must-tier GPU-h | Should tier |
-|---|---|---|
-| This set | ≈ 0.4–0.8, plus LM1 (1.05 / 1.4) | ≈ 1.6–2.1 |
-| PV | ≈ 8.0 | 3.1–4.1 |
-| PR | ≈ 5.8 | 3.3 |
+| Plan | New must-tier GPU-h (stated → re-priced) | Should tier | New packages or environment changes |
+|---|---|---|---|
+| PV | 8.0 → ≈ 10–12 | 3.1–4.1 | lm-eval (plus `datasets`, `accelerate`, …), `flash_attn` shim, untied wrapper, nanoGPT adapter, character-level `StageStream`, foreign-tokenizer generators |
+| PR | 5.8 → ≈ 11–15 | 3.3 | RULER environment (`nltk`, essays, LFS words, `accelerate`, fla patch), shim, foreign-tokenizer generators, 50-step snapshots, ≈ 33 GB of downloads |
+| **This set** | **≈ 0.3–0.5** (+ S1(b) ≈ 0.4, already budgeted) | **≈ 1.3–1.5** (+ optional M7, A4) | None (`huggingface_hub` downloads only, for L2) |
 
-**Proposed gate, replacing G-RV.** FEAS starts when all of the following hold:
-- A1, A2, L1 and T1 pass.
-- A3 shows that no kernel in a 32K training step or 32K prefill exceeds 100 ms. The 100 ms is my threshold [INF], not a measured watchdog limit.
-- The S1 crash is either explained or reproduced only at lr ≥ 1e-2.
+**Gate replacing G-RV.** FEAS starts when all three hold:
+1. G0 passes, with O1, X1, A2 and T1 added as VT tests, and with a clean throughput number.
+2. G-RP(b) is reported, with X2's result and the per-cell table beside it.
+3. A3's per-run Xid tagging is live, and the 32K kernel profile shows no kernel over 1 s.
 
-I1 and LM1 are audit triggers, as RP-2 is. W1 and A4 inform the reproduction review that PR proposes before G5.
+**Non-blocking:**
+- I1, LM1-lite and X4 are audit triggers or descriptive;
+- L2 is informative only.
+
+**Never gating:**
+- shape criteria anchored on Mamba-family sweeps (M5/P3);
+- the smeared-key toy runs (M6/P4b);
+- anything measured on Wang's checkpoints.
 
 ---
 
-## 6. Urgent S1 decisions
+## 6. Rows to log in `decisions.md` now (for the PI)
 
-Log these now, before any GDN d256 result is seen.
-
-- **U1. The failed lr 1e-2 run.**
-  - Report it as an infrastructure failure.
-  - Compute best-over-LR from the completed LRs, with `n_lrs` shown.
-  - Do not re-run it inside S1. Diagnose it under A3.
-- **U2. The d256 cut, as an explicit rule.** The code path raises (§1.1a), so state the rule directly:
-  - run GDN d256 only at {1e-3, 3.2e-3}, the 2 best completed LRs at d128 (0.9892 and 0.9875);
-  - rationale: lr 3.2e-2 diverged at epoch 1 at d128 (0.9686 → 0.0003) and then trains 32 epochs; lr 1e-2 crashed twice;
-  - the choice depends only on d128 results, so it is impartial if logged before d256 output exists.
-  - This agrees in effect with PV R-S1-1 and PR §2.1(iii).
-- **U3. Monotonicity tolerance.** Adopt PV R-S1-3: "non-decreasing in d_model" is judged with a −0.005 tolerance. Without it, a d256 run that never crosses the 0.99 early-stop threshold and ends just below d128's 0.9892 fails the gate on noise.
-- **U4. Per-cell reporting.** Adopt PV R-S1-2: report every cell, flag the 1024/256 cell as the only discriminating one, and state that ±0.03 on overall accuracy equals ±0.21 on that cell.
-- **U5. Clean-up.**
-  - Close R-S1-4 (§1.2).
-  - Add the micro-batch DEVIATION row.
-  - Update `s1_reproduction.md`.
-  - Stop ad-hoc GPU launches beside the queue (A5).
+1. **S1(a) close-out.**
+   - PASS: 16 of 16 cells, ≈ 1.75 GPU-h in total.
+   - `gated_delta_net-d128-lr1.0e-02` completed on attempt 3 (22:13–22:26) after two Xid 8 crashes (18:16, 18:25), with an Xid 31 at 18:03.
+   - Attempt 3 was launched after the verdict, by an uncommitted change to `run_queue.py` (6 attempts, per-epoch resume).
+   - The verdict is the same with and without that cell (best LR 1e-3 at both widths).
+   - Commit `run_queue.py`.
+2. **S1 deviations.**
+   - Exact micro-batch-64 gradient-accumulation shim (all 16 runs).
+   - `head_first` shim.
+   - Per-epoch resume. No final run used it: `resumed_at_epochs` is empty or absent in every run.
+   - Update `s1_reproduction.md`, which still says "BLOCKED".
+3. **Close resolved items.**
+   - R-S1-1: the cut is moot. Record the lesson about forecasting from a single run.
+   - R-S1-3: moot.
+   - R-S1-4: the message comes from Zoology's Mamba import probe; retarget it as X1.
+   - PR-S5: dropped.
+   - Keep R-S1-2: the per-cell table, with "±0.03 overall = ±0.21 on 1024/256" stated.
+4. **S1(b) pre-registration.** X2 first, then the 4 frozen runs plus the 2 exploratory runs. G-RP(b) stays as frozen, with X2's result and the per-cell results reported beside it.
+5. **Annotation to the protocol §2 prior** (no design change).
+   - Wang's released "r-1" models have one attention layer per r layers, so 3-1 is 8/24 = ⅓.
+   - Attention head count varies with ratio.
+   - The GDN configs have `max_position_embeddings` 2,048; the paper's Limitations say 4,096.
+6. **Tooling policy.**
+   - No new packages in the frozen `.venv` before G5.
+   - Anything that needs them (lm-eval, RULER) goes in a separate venv and is labelled "original code + N shims".
+7. **GPU policy.** All agents' GPU jobs go through one queue, and runs are tagged with any Xid events in their time window.
 
 ---
 
 ## 7. Research practices to add (engineering side)
 
-These add to PV §1 and PR §1, which I otherwise endorse.
+These add to PV §1, PR §1 and critique A §9, which I otherwise endorse.
 
-1. **Classify every check before it runs.**
-   - *Smoke:* can only catch gross failure.
-   - *Calibration:* has a stated false-alarm probability and a minimum detectable defect.
-   - *Phenomenon:* directional, and a failure cannot be attributed to a bug.
+1. **Price from measured throughput.**
+   - Use the contended throughput of the slowest config at the actual shape.
+   - Model early stopping as bimodal.
+   - Pre-declare a collapse-abort rule for harness runs, for example: stop when validation accuracy < 0.05 for 3 epochs after epoch 2. It must be declared before running, since it changes compute but not the best-over-LR outcome.
+2. **Run a feasibility pre-flight before adopting any reproduction:**
+   - packages present;
+   - data files present (not LFS pointers);
+   - checkpoint dtype and size against the 0.44 memory cap;
+   - tokenizer accepted by `TokenSpace`;
+   - `flash_attn` dependence;
+   - downloads fit the disk.
 
-   Write down both numbers for each pass criterion. For example, S1 is a smoke test, and PR-P2(a) has ≈ 27 % false alarms even under exact replication.
-2. **Ask identity questions with weight-copy tests, not training outcomes.** Keep training comparisons for questions that weights cannot answer, such as trainability under our optimiser and data.
-3. **Count shims.**
-   - Report "original code + N shims", and give each shim its own identity test.
-   - If the original code cannot run without changing the pinned environment, use a separate venv and downgrade the item to phenomenon grade.
-4. **Run one GPU job at a time, all through the runner**, for any run that is timed for a budget or cut rule, or that lasts more than 15 minutes.
-5. **Make every reproduction run longer than 15 minutes resumable.** The S1 queue retries from scratch. Budget a retry margin (S1 so far: 2 crashes in 9 queue attempts). Give infrastructure failures their own status in §8.1.
-6. **Pin every artefact:**
-   - HF `revision` SHAs for checkpoints and datasets (whether Pythia `main` matches the paper-era weights is unverified);
-   - tokenizer SHA;
-   - lm-eval and RULER commits;
-   - the code hash of each shim.
-7. **Evaluate inside each model's training window** (2,048 for the Wang GDN configs), unless extrapolation is what is being studied.
+   Each of P2, M3 and PR-S3 fails at least one of these.
+3. **Classify every check before it runs:**
+   - smoke: it can only catch a gross failure;
+   - calibration: it has a stated minimum detectable defect and false-alarm rate;
+   - phenomenon: directional, and a failure is not attributable to a bug.
+
+   Write down both numbers for every pass criterion. For example, G-RP(b)'s minimum detectable defect is 0.21 on the live cell, and P2(a) has ≈ 27% false alarms.
+4. **Ask identity questions with weight-copy tests.** Use training comparisons only for questions that weights cannot answer.
+5. **Declare re-run and retry policy before any verdict is read.** Record it in the decision log, not only in an uncommitted script.
+6. **Run one GPU job at a time, through one queue,** for anything that is timed, gated or longer than 15 minutes. Tag every run with the Xid events in its time window.
+7. **Pin everything:**
+   - HF `revision` SHAs (Pythia-160M `50f5173`; the Wang repo SHAs);
+   - tokenizer files;
+   - shim code hashes.
+8. **Evaluate public checkpoints inside their training window** (2,048 for the Wang GDN configs) unless extrapolation is what is being studied.
 
 ---
 
-## 8. Sources opened in this review
+## 8. Where I disagree with critique A
+
+- **M7.**
+  - A: keep, top priority.
+  - B: a conditional should item (§3.2c). Once X2 passes, M7 can only reveal precision or RNG differences.
+- **X0 soak (≈ 1 GPU-h).**
+  - B: the lean A3 (≈ 0.1) is enough.
+  - The lr 1e-2 cell completed cleanly when it shared the GPU only with CARLA. FEAS, with auto-resume plus Xid tagging, gives the same information while doing useful work.
+  - Escalate to A's X0 if an Xid recurs.
+- **M2-lite.**
+  - A: lm-eval in a separate venv.
+  - B: our scorer directly. VT-12 already validates alignment, and the external anchor we need is the published number, not lm-eval's code path.
+- **LM-loss runs.**
+  - A: drop all new runs.
+  - B: keep one k = 1 run at η*, because S3 never trains a core config.
+- **Answerability.**
+  - A's X5 uses a public long-context model.
+  - B: the existing oracle at 32K first (O1, zero GPU-h); a public model only as an optional extra (A4).
+- **Agreement:**
+  - drop P2, the new M5/P3 runs, Jelassi and the Nice tiers;
+  - replace M4 with a reference-loop trace;
+  - X1 and X2;
+  - S1 is a smoke test.
+
+---
+
+## 9. Sources opened in this review
 
 | Source | Used for | Access |
 |---|---|---|
-| [2507.06457v2](https://arxiv.org/html/2507.06457v2) Tables 2, 3, 5, 7; App. D; Limitations | Rows 1–5 of §2; §3.2a | read-section (HTML, grepped) |
-| [2405.21060v1](https://arxiv.org/html/2405.21060v1) §9.2.3 Table 2 | Row 6; §3.2b | read-section |
-| [2304.01373](https://arxiv.org/html/2304.01373) App. G.1 Table 7 | Row 7; L1 | read-section |
-| [2412.06464](https://arxiv.org/html/2412.06464) Tables 2 and 3 | Rows 8–9; §3.2a | read-section |
-| [Olsson et al. 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html) | Row 10; I1 | read-section |
-| HF API: tree and `config.json` for m-a-p 340M/1.3B GDN pure, 24-1, 3-1, Transformer; Qwen/Qwen3-0.6B-Base; Qwen/Qwen2.5-0.5B | §1.5; A4 | code-inspected |
-| `third_party/zoology` @1ad20d1: `model.py` L127–152, L225–285; `mixers/{mamba,mamba2,gated_delta_net,base_conv}.py`; `train.py` L180–205; `config.py` L130–140 | §1.2–1.3 | code-inspected |
-| `third_party/ruler` @db43f92: `scripts/synthetic.yaml`, `data/synthetic/niah.py`, `pred/model_wrappers.py`, `json/` | §1.5 | code-inspected |
-| `third_party/nanoGPT` @3adf61e: README L45–55, `train.py`, `model.py` | Row 11; T1 | code-inspected |
-| fla 0.6.0 in `.venv`: `layers/attn.py` L20–75; `models/gated_deltanet/configuration_gated_deltanet.py` | §1.5 | code-inspected |
-| `src/hybridlc`: `INTERFACES.md`, `eval/adapter.py`, `models/{attention,layers}.py`, `training/queue.py`; `tests/test_vt09_transplant.py`, `test_vt13_training.py` | §1.5–1.6; A2 | code-inspected (read only) |
-| `scripts/s1_zoology/{s1_analysis,run_queue,zoology_compat,test_s1_microbatch}.py`; `experiments/s1_zoology/{cut_decision.json, runs/*.json, logs/*}` | §1.1, §1.4 | code-inspected; MEAS-S1 |
-| `nvidia-smi -q`; `cuDeviceGetAttribute(KERNEL_EXEC_TIMEOUT)`; `ps` | §1.1 | MEAS-R |
-| Protocol v1.0, `decisions.md`, `STATUS.md`, `s1_reproduction.md`, both proposals | Context | read-full (proposals, §13–§17); read-section (rest) |
+| [2507.06457v2](https://arxiv.org/html/2507.06457v2): Tables 2, 3, 5, 6, 7; App. D; §4.3; Limitations; training setup | §2 rows 1–5; §3.2(a, b) | read-section (raw HTML, parsed with `python -I`) |
+| [2405.21060v1](https://arxiv.org/html/2405.21060v1) §9.2.3, Table 2 | §2 row 6; §3.2(b) | read-section |
+| [2304.01373v2](https://arxiv.org/abs/2304.01373) App. G.1, Tables 7–8 | §2 row 7; L2 | read-section (PDF text) |
+| [Olsson et al. 2022](https://transformer-circuits.pub/2022/in-context-learning-and-induction-heads/index.html): Key Concepts, Argument 1, smeared keys, Model Details | §2 row 8; I1 | read-section |
+| [2510.26692](https://arxiv.org/html/2510.26692) §5.2, Table 1; scaling-law table | §2 row 9; §3.2(b) | read-section |
+| HF API: `config.json`, file trees and SHAs for m-a-p 340M {pure-baseline, hybrid-3-1, New-hybrid-24-1}, 1.3B {pure, 24-1, 12-1, 6-1, 3-1} and the Transformers; collection listing; 1.3B-pure tokenizer files; `EleutherAI/pythia-160m`; `EleutherAI/lambada_openai` | §1.4; F4, F6 | code-inspected |
+| `third_party/zoology` @1ad20d1: `mixers/gated_delta_net.py` L238–256, `train.py` L183–189, `model.py` L265–277, `mixers/mamba.py` L10–15 | §1.5; §3.2(c) | code-inspected |
+| `third_party/ruler` @db43f92: `niah.py`, `json/`, `pred/model_wrappers.py`; `third_party/nanoGPT` @3adf61e: `train.py`, README; `third_party/modded-nanogpt` @4ea6b93 track 3 | §1.4 | code-inspected |
+| fla 0.6.0 (installed): `layers/attn.py` L20–75 | §1.4 | code-inspected |
+| `src/hybridlc`: `eval/tokens.py`, `eval/adapter.py`, `eval/devtools.py` (`InductionLM`), `models/attention.py` (conv paths), `models/layers.py` (RoPE), `models/linear.py`; `tests/` (VT-02, 04, 09, 12, 13 and the loss tests); `.pytest_cache/lastfailed` | §1.5; F4, F7, F8 | code-inspected (read only) |
+| `experiments/s1_zoology/{runs, logs, s1a_results.json, s1a_table.md, cut_decision.json}`; `scripts/s1_zoology/{run_queue, run_one, our_mixers, test_s1_resume}.py`; `runs/bench_train_step/*.jsonl` | §1.1–1.3 | MEAS-S1, MEAS-S0 |
+| `nvidia-smi -q`, `journalctl -k`, `ps`, `git status` | §1.2 | MEAS-R |
+| Protocol v1.0 (§13, §16, §17, §18); `decisions.md`; `STATUS.md`; `INTERFACES.md`; `competing_explanations.md`; `literature_review.md` (Kimi entry); `s1_reproduction.md`; both proposals; `critique_A.md` | Context | read-full (proposals, §13–§18) / read-section (rest) |
+
+## 10. Not verified by me
+
+**GPU and test state:**
+- The root cause of the Xid 8 and Xid 31 events, and which process caused the Xid 31.
+- Throughput on a clean GPU.
+- Whether the three tests in `.pytest_cache/lastfailed` (18:34) now pass. `STATUS.md` says the VT tests pass, but I ran no tests.
+
+**Estimates that rest on inference:**
+- The small-model and 1.3B-model time estimates in §1.3 are FLOP-scaled [INF].
+- That Mamba-2's 48-layer stack has no MLPs, and that this is why its "24 blocks" is not all-attention [INF from §9.2.3 and the Table 3 variant list].
+
+**Not checked:**
+- Whether fla 0.6.0 loads the Wang 340M GDN-pure checkpoint cleanly. L2 would find out.
+- Whether Qwen3-0.6B-Base's tokenizer passes `TokenSpace` (needed for A4 only).
+- Whether HF `main` of Pythia-160M equals the weights behind Table 7. Pin `revision`.
+- The GDN paper's S-NIAH table (cited by PR) and Waleffe's figure values. I did not re-open them, and nothing in this critique depends on them.

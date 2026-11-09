@@ -73,6 +73,20 @@ def main(argv: list[str] | None = None) -> int:
     if df.empty:
         print(f"no item-level results under {a.results}", file=sys.stderr)
         return 2
+    # Descriptive per-cell summary of every suite/checkpoint (always written; this is what dev-suite
+    # checkpoint monitoring -- DC at TEF 250/500, FD, DG -- reads). Added by the S0 integrator.
+    cells = (df.groupby(["run_id", "config", "seed", "branch", "ckpt", "suite", "task", "level", "T"], dropna=False)
+               .agg(n_queries=("em_tf", "size"), n_contexts=("context_id", "nunique"), em_tf=("em_tf", "mean"),
+                    logp_gold=("logp_gold", "mean")).reset_index())
+    cells.to_csv(out / "cell_summary.csv", index=False)
+    files = list(df.attrs.get("inputs", [])) + ([a.registry] if Path(a.registry).is_file() else [])
+    (out / "inputs.json").write_text(json.dumps({f: sha256_file(f) for f in files}, indent=1))
+    print(f"cell summary: {len(cells)} cells, {len(df):,} query rows -> {out / 'cell_summary.csv'}")
+    if not (df["suite"] == "CS").any():
+        print("no CS (confirmatory) rows: the §11 pipeline was not run (descriptive summary only)")
+        (out / "results.json").write_text(json.dumps({"protocol": "v1.0 §11", "status": "not_run",
+                                                      "reason": "no CS rows", "suites": sorted(df["suite"].unique())}))
+        return 0
     spec = AnalysisSpec(main_ckpt=a.ckpt, scale=a.scale, n0=a.n0, gates=gates, B=a.B, bootstrap=not a.no_bootstrap,
                         kstar=a.kstar, lm4_slope=a.lm4_slope,
                         failed_runs=json.loads(Path(a.failed_runs).read_text()) if a.failed_runs else {})
@@ -80,8 +94,6 @@ def main(argv: list[str] | None = None) -> int:
     ver = V.compute_verdicts(res)
     (out / "results.json").write_text(dumps(res))
     (out / "verdicts.json").write_text(V.dumps(ver))
-    files = list(df.attrs.get("inputs", [])) + ([a.registry] if Path(a.registry).is_file() else [])
-    (out / "inputs.json").write_text(json.dumps({f: sha256_file(f) for f in files}, indent=1))
     print(f"analysed {len(df):,} query rows from {len(files)} files in {time.time() - t0:.1f}s -> {out}")
     for h, v in ver["confirmatory"].items():
         lab = f" [{'; '.join(v['labels'])}]" if v["labels"] else ""
