@@ -150,7 +150,7 @@ Notation: `-` = GDN-A, `A` = F_g, `C` = F_gc, `E` = GDN-E. Layers are written 0 
 
 ### 3.3 Mixer definitions and parameter counts
 
-GDN, GLA and conv-free counts are by meta-device instantiation of fla 0.6.0 [PI-VER]. F_g and F_gc counts are analytic. Script: `/tmp/claude-1000/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/scratchpad/protocol/param_counts.py`.
+GDN, GLA and conv-free counts are by meta-device instantiation of fla 0.6.0 [PI-VER]. F_g and F_gc counts are analytic. Script: `scripts/planning/param_counts.py`.
 
 | Mixer | Definition | Params D512 | Params D384 | Per-layer inference state |
 |---|---|---|---|---|
@@ -177,7 +177,7 @@ GDN, GLA and conv-free counts are by meta-device instantiation of fla 0.6.0 [PI-
   - The values are nominal, i.e. for a single document. Document masking lowers the attention term in Stage A.
 - **Training PFLOP per run** = 3 × fwd(4K) × Stage-A tokens + 4 × fwd(32K) × (Stage-B + TEF tokens). The 4 accounts for activation-checkpoint recompute. It uses the middle Stage-B option and is an upper bound.
 - **State** = k·T·4d B (bf16 KV) + (12 − k)·S_lin, plus F_gc's conv cache. It is per sequence, in MiB.
-- Script: `/tmp/claude-1000/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/scratchpad/protocol/table.py` [INF].
+- Script: `scripts/planning/table.py` [INF].
 
 | Scale | Config | Pattern (layer 0→11) | Non-emb params | Emb (tied) | Total | Fwd MFLOP/tok @4K | @32K | State MiB @1K | @4K | @16K | @32K | Train PFLOP/run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -545,7 +545,7 @@ The MS runs on C0 and C12 (seeds 0–1) and on C1, C3, X-gc12 and X-nope (seed 0
 
 ### 9.9 Evaluation compute
 
-Prefill-time model calibrated to [MEAS-B] (flash 12.02 ms at 32K; GDN layer 2.55 ms at 32K), ×1.3 for contention, ×1.2 overhead. Script: `/tmp/claude-1000/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/scratchpad/protocol/eval_budget2.py` [INF].
+Prefill-time model calibrated to [MEAS-B] (flash 12.02 ms at 32K; GDN layer 2.55 ms at 32K), ×1.3 for contention, ×1.2 overhead. Script: `scripts/planning/eval_budget2.py` [INF].
 
 | Suite | Tokens per model | k = 0 / 1 / 3 / 12, D384 | D512 |
 |---|---|---|---|
@@ -799,7 +799,7 @@ Hours are contended, from the debate's measured per-token rates:
   - D384: k0 1.76, k1 1.80, k2 1.83, k3 1.90, k6 1.98, k12 2.21 h;
   - D512: 3.55, 3.65, 3.75, 3.95, 4.18, 4.81 h.
 - Overheads: F_gc +6%; GDN-E +17%.
-- Script: `/tmp/claude-1000/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/scratchpad/protocol/budget.py` [INF].
+- Script: `scripts/planning/budget.py` [INF].
 
 | Stage | Content | D384 path | D512 path |
 |---|---|---|---|
