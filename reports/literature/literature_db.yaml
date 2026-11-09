@@ -1,0 +1,2610 @@
+# Merged, deduplicated literature DB for the hybrid-attention-ratio study (PI consolidation, 2026-11-09).
+# Sources: db_nemotron.yaml, db_architecture.yaml, db_evaluation.yaml, db_methodology.yaml, db_implementation.yaml
+#          (per-agent files are kept unchanged) + 3 PI-added entries (reported_by: [pi]).
+# Dedup rule: one entry per source, keyed by arXiv id (else URL); PG19 and HELMET merged manually (paper + dataset/repo).
+# access_level = highest paper-level access any agent achieved ([read-full] > [read-section] > [abstract-only]) plus
+#   [code-inspected] if any agent inspected code/configs; access_detail lists each agent's own level.
+# Text fields: identical/contained values collapsed; otherwise per-agent values joined as "[agent] text || [agent] text".
+# ratio_evidence: PI classification of what kind of full-vs-linear ratio evidence a source provides (blank = none).
+# pi_notes: conflicts resolved / facts re-verified by the PI against primary sources (see literature_review.md section 12).
+- id: nvidia2025_nemotron_h
+  aliases:
+  - nemotron_h_2025
+  - nvidia2025nemotronh
+  - nvidia_nemotron_h_note
+  reported_by:
+  - nemotron
+  - architecture
+  - implementation
+  title: 'Nemotron-H: A Family of Accurate and Efficient Hybrid Mamba-Transformer Models'
+  authors: 'NVIDIA (core architecture: B. Norick, D. Riach, R. Waleffe, W. Byeon; et al.)'
+  year: 2025
+  venue_or_status: '[nemotron] arXiv 2504.03624 (v4, 5 Sep 2025), technical report || [implementation] arXiv 2504.03624 (not opened by me)'
+  url: https://arxiv.org/abs/2504.03624
+  code_url: '[nemotron] https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K ; https://github.com/NVIDIA/Megatron-LM || [implementation] transformers models/nemotron_h'
+  access_level: '[read-full] + [code-inspected]'
+  access_detail: 'nemotron: [read-full]; architecture: [abstract-only]; implementation: [code-inspected] (transformers config only)'
+  research_question: '[nemotron] Can hybrid Mamba-2/attention/FFN models match similarly sized Transformers while being faster at inference (especially long generations)? || [architecture] Efficient hybrid production models || [implementation] n/a here'
+  mechanism: '[nemotron] Replace most self-attention layers with Mamba-2 (constant per-token state). ~8% of layers are GQA attention (8 KV heads), evenly dispersed, each followed by an FFN; the remaining layers are alternating Mamba-2 and squared-ReLU FFN; first layer Mamba-2, last layer FFN; no position embeddings. || [architecture] mix of self-attention, Mamba-2 and MLP layers || [implementation] Mix of attention, Mamba-2 and MLP layers'
+  manipulated_vars: '[nemotron] None for the attention ratio (8% is inherited from Waleffe et al. 2024). Compared hybrid vs Transformer (Nemotron-T-8B) on same data; FP8 vs BF16; MiniPuzzle pruning 56B->47B. || [architecture] n/a — NOT a controlled full-vs-linear ratio experiment'
+  controlled_vars: 'Nemotron-H-8B vs Nemotron-T-8B: same data, d_model 4096, FFN dim 21504, 32 Q / 8 KV heads, squared ReLU. NOT controlled: depth (52 vs 32 layers), position encoding (none vs RoPE), number and split of mixer/FFN layers.'
+  model_sizes_and_training: '[nemotron] 8B (52 layers: 4 attention / 24 Mamba-2 / 24 FFN; pattern M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M*-M-M-M-M-M-; attention at 7, 18, 29, 40) on 15T tokens; 56B (118 layers: 10/54/54) on 20T tokens in FP8; seq 8192, batch 768 (6.29M tokens), peak LR 8e-4 (8B) / 4e-4 (56B), cosine to 1%, wd 0.1, betas (0.9, 0.95); 47B via MiniPuzzle (5 attention layers kept of 10; 63B distillation tokens). Long context (up to 512K) only in post-training SFT. || [architecture] 8B, 56B (47B pruned)'
+  benchmarks: '[nemotron] MMLU, MMLU-Pro, GSM8K, MATH, HumanEval(+), MBPP(+), ARC-C, HellaSwag, Winogrande, PIQA, OBQA; VLM suite; reasoning suite (AIME25, GPQA, LCB, BFCL, IFEval, Arena-Hard); RULER 128K (post-trained, ~83%). || [architecture] standard'
+  main_findings: '[nemotron] 8B hybrid is higher than the same-data Transformer on 7/15 tasks and within 1 point on 4 more; 56B beats Llama-3.1-70B on 16/17 tasks; up to 3x throughput at 65K input / 1K output on H100 (Megatron inference for Nemotron-H vs vLLM 0.7.3 for baselines); layer-importance MSE shows some attention layers among the least important (e.g. layer 84 in the 56B) and others locally important (40, 51, 62, 73); pruning to 5/10 attention is near-lossless on SHORT-context benchmarks; Mamba head pruning hurts badly. || [architecture] Up to 3x faster inference at parity with Qwen-2.5/Llama-3.1. || [implementation] Not a controlled full-vs-linear ratio experiment; cite only as an architecture example.'
+  limitations: '[nemotron] No attention-ratio or placement ablation; base models are 8K and not evaluated on long context; throughput measured with different inference stacks; no KV vs state memory breakdown; hybrid-vs-Transformer comparison confounded by depth and position encoding. Config/text mismatch: 47B config has 45 M / 48 MLP vs text 44 / 49. || [architecture] not a ratio study; mixes Mamba-2 + MLP; architecture details not read || [implementation] Paper not read by me.'
+  relevance_to_us: '[nemotron] high: the canonical ''few attention layers'' design and source of the ~8% folklore, but must NOT be presented as a controlled ratio study. Useful for block structure (mixer + MLP), NoPE choice, and the released patterns. || [architecture] low — context only; must not be cited as ratio evidence'
+  reproducible_or_adaptable: 'Adaptable: block layout (M-/*- pairs), NoPE, GQA, AdamW recipe. Not reproducible at our scale (15-20T tokens, FP8, 6144 H100s).'
+  ratio_evidence: NOT a ratio study (ratio inherited from Waleffe et al.; mixes attention, Mamba-2 and MLP layers)
+  pi_notes: 'Access: nemotron agent [read-full] (v4, no appendices); architecture agent abstract only; implementation agent transformers config only. Never cite as a controlled full-vs-linear ratio experiment.'
+- id: waleffe2024_empirical_mamba
+  aliases:
+  - waleffe2024empirical_mamba
+  - waleffe2024mamba
+  - waleffe_2024_empirical_mamba
+  reported_by:
+  - nemotron
+  - architecture
+  - methodology
+  title: An Empirical Study of Mamba-based Language Models
+  authors: R. Waleffe, W. Byeon, D. Riach, B. Norick, V. Korthikanti, T. Dao, A. Gu, A. Hatamizadeh, S. Singh, D. Narayanan, G. Kulshreshtha, V. Singh, J. Casper, J. Kautz, M. Shoeybi, B. Catanzaro
+  year: 2024
+  venue_or_status: arXiv 2406.07887 (v1, 12 Jun 2024), technical report
+  url: https://arxiv.org/abs/2406.07887
+  other_urls:
+  - https://arxiv.org/html/2406.07887
+  code_url: https://github.com/NVIDIA/Megatron-LM/tree/ssm/examples/mamba ; checkpoints https://huggingface.co/nvidia/mamba2-hybrid-8b-3t-4k , https://huggingface.co/nvidia/mamba2-hybrid-8b-3t-128k , https://huggingface.co/nvidia/mamba2-8b-3t-4k
+  access_level: '[read-full]'
+  access_detail: 'nemotron: [read-full]; architecture: [read-section]; methodology: [read-section]'
+  research_question: '[nemotron] At 8B / up to 3.5T tokens, do Mamba / Mamba-2 match Transformers on the same data, and can a hybrid with a few attention layers fix SSM weaknesses (copying, in-context learning, long context)? || [architecture] Mamba/Mamba-2 vs Transformer at 8B; optimal hybrid composition || [methodology] Compare Mamba, Mamba-2, Transformer and hybrids at 8B on identical data.'
+  mechanism: '[nemotron] Mamba-2 + GQA attention + MLP layers, parameter-matched per layer type; attention and MLPs evenly distributed by Algorithm 1 (Appendix A); no position embeddings; first layer Mamba. || [architecture] Mamba-2 + self-attention (GQA, NoPE) + MLP || [methodology] Controlled training; small-scale ablations of attention/MLP layer percentages and RoPE.'
+  manipulated_vars: '[nemotron] Architecture (Transformer / Mamba / Mamba-2 / Mamba-2-Hybrid); token horizon (1.1T vs 3.5T); in ablations: attention-layer fraction (0, 1, 2, 3, 4, 5, 7, 12, 24 of 24 layers at 130M), MLP fraction (5-50% at 8% attention), RoPE vs none (840M), layer ordering (no numbers shown), GQA vs MHA; context extension 4K -> 16K / 32K / 128K. || [architecture] attention fraction and MLP fraction (130M/840M); RoPE vs none || [methodology] architecture; % attention layers (130M, 24L); % MLP; RoPE vs none'
+  controlled_vars: '[nemotron] Same data, tokenizer (256K SentencePiece), hyperparameters (batch, LR, warmup 122K samples, cosine, wd 0.1, BF16, seq 4096), ~8B params; in the ratio sweep, per-layer parameter count equalised by adjusting attention heads and MLP expansion. NOT controlled: MLP content between pure-SSM (no MLP) and hybrid (50% MLP); position encoding (RoPE Transformer vs NoPE hybrid) in long-context comparisons. || [architecture] data, tokens, size per comparison || [methodology] data, params per layer equalized via heads/MLP expansion'
+  model_sizes_and_training: '[nemotron] 8B models: Transformer 32 layers (RoPE, SwiGLU); Mamba / Mamba-2 56 layers (state 128, 8 groups, head dim 64, expand 2); hybrid 56 layers = 24 Mamba-2 + 4 attention + 28 MLP (pattern M+M+M++M+M*+M+M+M+M++M*+M+M+M+M+M*++M+M+M+M+M*+M++M+M+M+). Ablations at 130M (24 layers) and 840M. LC extension: +50B tokens, LR 3e-5 -> 3e-6, packed same data, full global attention; Transformer uses dynamic NTK RoPE. || [architecture] 130M/840M ablations; 8B on 1.1T and 3.5T tokens; 16K/32K/128K extensions || [methodology] 8B on 1.1T/3.5T tokens; ablations at 130M and 840M'
+  benchmarks: '[nemotron] 12 lm-eval-harness tasks (WG, PIQA, HellaSwag, ARC-E/C, MMLU incl. cloze variants, OBQA, TruthfulQA, PubMedQA, RACE, NQ, SquadV2); Phonebook (standard / reversed); long context: NarrativeQA, Qasper, QuALITY, LongBench (MultiFieldQA, HotpotQA, 2WikiMQA, Musique, TREC, TriviaQA); RULER 13 tasks (8 NIAH, VT, CWE, KWE, SquadQA, HotpotQA) at 4K / 16K / 32K, 400 samples each. || [architecture] 12 short tasks, MMLU, Phonebook, RULER, long-context tasks || [methodology] MMLU, Phonebook, RULER, standard zero-shot'
+  main_findings: '[nemotron] Validation loss vs attention fraction (130M, 24 layers) is U-shaped with minimum ~8% (2/24); digitized: 0%:2.615, 4.2%:2.562, 8.3%:2.554, 12.5%:2.555, 16.7%:2.555, 20.8%:2.560, 29.2%:2.568, 50%:2.593, 100%:2.631 (INF: 1 layer captures ~87% of the gain). 30-50% MLP costs no loss. NoPE >= RoPE after 16K extension (53.43 vs 52.61). Even spacing was as good as any ordering tried (loss). Pure SSMs fail Phonebook beyond ~0.5-1K tokens. 8B hybrid beats the Transformer on all 12 short tasks (+2.65 avg) and on RULER (4K 81.99 vs 77.62; 16K 74.19 vs 62.33; 32K 69.93 vs 56.49; VT 83.2 vs 7.25 at 16K) but loses on KWE and LongBench multi-doc QA (16K HotpotQA 42.17 vs 48.61; natural-task avg 44.60 vs 45.24). Hybrid Phonebook extrapolates beyond trained length; Transformer degrades near it. ~8x decode speedup is PREDICTED (Fig. 5), not measured. || [architecture] ~8% attention best by val loss; MLP 30-50% fine. 8B hybrid: 24 Mamba-2 + 4 attn + 28 MLP, first layer Mamba-2, attn evenly spread, NoPE. Hybrid avg 55.82 vs 53.17; MMLU 53.60 vs 50.07; RULER@16K 74.19 vs 62.33; phonebook 100% to ~5.5K. Pure SSM phonebook fails from ~500 tokens. Transformers slightly better on natural long-context (multi-doc QA). || [methodology] Val loss minimized at ~8% attention layers (130M); hybrid without RoPE better after 4K->16K extension; even distribution of attention not beaten.'
+  limitations: '[nemotron] Ratio and placement ablations use validation loss only (no retrieval or long-context metric); MLP ratio, tokens, seq length and PE in the ratio sweep unstated; 840M confirmation not shown; single seeds; PE confound in long-context comparisons; packed-document CPT may bias hybrids; hybrids more prompt-sensitive. || [architecture] fraction sweep values only in figure; mixes MLP-fraction changes || [methodology] Hybrid includes Mamba-2 and MLP layers; ratio chosen by val loss — not a controlled full-vs-linear ratio experiment with long-context evals.'
+  relevance_to_us: '[nemotron] high: the only controlled attention-ratio sweep in the NVIDIA line and the origin of ''8%''; gives the allocation algorithm, parameter-matching method, Phonebook and RULER protocol; but its optimum is a loss optimum, not a long-context one. || [architecture] high — attention-fraction optimum, placement rule (first layer recurrent), NoPE choice, task-dependent long-context results || [methodology] med — precedent for per-layer param equalization and PE x hybrid interaction.'
+  reproducible_or_adaptable: 'Adaptable and partly reproducible: Algorithm 1 verified against Megatron code; the 130M / 24-layer sweep design is near our scale and could be re-run with retrieval metrics and an explicit MLP setting.'
+  ratio_evidence: controlled-from-scratch sweep (130M, 24 layers, Mamba-2/attention; validation loss only; MLP share unstated)
+  pi_notes: 'Access: nemotron agent read the full paper incl. Appendix A and digitised Fig. 4 from the PDF [read-full]; other agents read sections. The attention-fraction sweep is validation-loss only; MLP fraction, tokens, sequence length and PE for that sweep are not stated.'
+- id: nemotron_nano2_2025
+  aliases: []
+  reported_by:
+  - nemotron
+  title: 'NVIDIA Nemotron Nano 2: An Accurate and Efficient Hybrid Mamba-Transformer Reasoning Model'
+  authors: NVIDIA
+  year: 2025
+  venue_or_status: arXiv 2508.14444 (v4, 2 Sep 2025), technical report
+  url: https://arxiv.org/abs/2508.14444
+  code_url: https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-9B-v2 ; https://huggingface.co/nvidia/NVIDIA-Nemotron-Nano-12B-v2-Base
+  access_level: '[read-section]'
+  access_detail: 'nemotron: [read-section]'
+  research_question: Build a 9B hybrid reasoning model with high throughput for long thinking traces that fits 128K context on an A10G.
+  mechanism: Nemotron-H layout (~8% attention, evenly dispersed, NoPE); 12B base pruned (Minitron) to 9B with depth + width pruning while keeping 4 attention layers.
+  manipulated_vars: Long-context CPT length (128K / 256K / 512K) and synthetic doc-QA (ablated on Nemotron-H 8B); pruning depth (52 / 54 / 56 layers); width candidates; reasoning-data share in distillation.
+  controlled_vars: Attention layers fixed at 4 during depth-pruning comparison.
+  model_sizes_and_training: '12B base: 62 layers = 6 attention / 28 Mamba-2 / 28 FFN (attention at 7, 16, 25, 34, 43, 52), d 5120, FFN 20480, 40 Q / 8 KV heads; config Mamba head dim 80 (paper text says 64). 20T tokens FP8, seq 8192, batch 768, WSD stable LR 4.5e-4 -> 4.5e-6 over last 3.6T. LC phase: 512K seq, constant LR 4.5e-6, 18.9B tokens, 20% synthetic long-doc QA. 9B: 56 layers, 4 attention (at 14, 21, 30, 39), d 4480, FFN 15680.'
+  benchmarks: MMLU, MMLU-Pro, AGIEval, GSM8K, MATH, AIME24, HumanEval+, MBPP+, commonsense, Global-MMLU-Lite, MGSM, RULER-128K (13-task avg); reasoning benchmarks for the aligned model.
+  main_findings: 'RULER-128K on Nemotron-H 8B by CPT setting: 128K + synth 73.68; 256K no synth 70.19; 256K + synth 79.04; 512K + synth 81.04. Base RULER-128K: 12B 84.74, 9B 82.22 (6 -> 4 attention plus width pruning; confounded). Depth strongly matters (52 / 54 / 56 layers -> 44.92 / 47.35 / 51.48 after 6B-token KD). Up to 6.3x throughput vs Qwen3-8B (vLLM, A10G, 8K in / 16K out).'
+  limitations: No controlled attention-ratio study; '7-8% is reasonable' asserted from prior work; pruning results confounded with distillation; text vs config mismatch on Mamba head dim.
+  relevance_to_us: 'med: concrete long-context extension recipe (longer-than-target CPT plus synthetic doc QA helps RULER); shows NVIDIA keeps ~4 attention layers as a long-context floor.'
+  reproducible_or_adaptable: Adaptable (CPT recipe idea, 80/20 blend); not reproducible at scale.
+- id: nemotron_flash_2025
+  aliases: []
+  reported_by:
+  - nemotron
+  title: 'Nemotron-Flash: Towards Latency-Optimal Hybrid Small Language Models'
+  authors: Y. Fu, X. Dong, S. Diao, M. Van keirsbilck, H. Ye, W. Byeon, Y. Karnati, L. Liebenwein, H. Zhang, N. Binder, M. Khadkevich, A. Keller, J. Kautz, Y. (Celine) Lin, P. Molchanov
+  year: 2025
+  venue_or_status: arXiv 2511.18890 (v1, 24 Nov 2025); best match for the user's 'Nemotron Edge' (no paper by that exact name exists)
+  url: https://arxiv.org/abs/2511.18890
+  code_url: https://huggingface.co/nvidia/Nemotron-Flash-1B ; https://huggingface.co/nvidia/Nemotron-Flash-3B
+  access_level: '[read-full]'
+  access_detail: 'nemotron: [read-full]'
+  research_question: What determines real-device latency of small LMs (depth-width ratio, operator choice), and can a search find latency-optimal hybrid operator combinations?
+  mechanism: Interleaved DeltaNet-FFN-Mamba2-FFN and Attention-FFN-Mamba2-FFN blocks found by aging-evolution search with a short-training PPL proxy; weight normalization (unit-norm projection); 256 meta tokens; large-vocabulary tokenizer.
+  manipulated_vars: Depth / width (Llama 6-30 blocks); operator type (Mamba, Mamba2, GLA, DeltaNet, Gated DeltaNet, RWKV7, SWA) in pure and pairwise hybrids at 500M; searched operator ratios and FFN ratios; weight norm on / off; meta tokens on / off; number of full-attention layers (3 FA / 2 FA + 1 SWA / 1 FA + 2 SWA) in the 3B via 25B-token CPT at 29K.
+  controlled_vars: 500M-parameter, 24-operator models on 100B SmolLM-corpus tokens, AdamW LR 5e-4 cosine; for the attention ablation, the same pretrained 3B base and the same CPT budget.
+  model_sizes_and_training: 'Flash-1B (0.96B): 24 operators, 2 full attention / 4 DeltaNet / 6 Mamba2 mixers + 12 FFN, d 2048, FFN 6144, 16 / 4 heads. Flash-3B (2.7B): 36 operators, 3 FA / 6 DeltaNet / 9 Mamba2, d 3072. 4.5T tokens, LR 1e-3, no wd (weight norm), batch 2M tokens, ctx 4096 then 29K for last 25B tokens; 256 H100s.'
+  benchmarks: MMLU, commonsense (PIQA, ARC-C / E, HellaSwag, Winogrande, OBQA), GSM8K, MathQA, HumanEval(+), MBPP(+), recall (FDA, SWDE, SQuAD), RULER NIAH single 1-3 at 4K-32K; latency (H100, bs 1, 8K decode, CUDA Graph); throughput (32K input, max batch).
+  main_findings: 'Deep-thin is not latency-optimal. DeltaNet / Gated DeltaNet on the 500M PPL-latency frontier (pure Wiki PPL: GDN 23.80, DeltaNet 23.87, Mamba2 24.36, Attn 24.44); pairing with Mamba2 helps more consistently than pairing with attention. Short-train vs full-train PPL Spearman 0.888. Attention ablation (3B): 3 FA vs 1 FA + 2 SWA keeps short recall (73.25 vs 73.77) but NIAH single_3 @32K falls 0.69 -> 0.32 (single_2: 0.91 -> 0.60; @24K single_3 0.93 -> 0.59) while throughput rises 2939 -> 4657 tok/s; authors recommend >=2 full-attention layers even in SLMs.'
+  limitations: Search proxy is language modelling only (acknowledged); the attention ablation replaces FA with SWA (not linear attention), via CPT not from scratch, 3 configs, single runs; recall benchmarks are short-context.
+  relevance_to_us: 'high: closest NVIDIA small-model evidence that the number of full-attention layers matters for long-context retrieval but not for short-context metrics (H3 / H5), plus operator-choice data for picking our linear mixer and a warning about decode-benchmark stacks (5-7x spread).'
+  reproducible_or_adaptable: 'Adaptable: NIAH-by-length grid design, short-train screening, FLA-based DeltaNet; weight-norm trick optional (would be a confound if used for only some r).'
+  ratio_evidence: 'continued-pretraining ablation (3B: 3 FA vs 2 FA+1 SWA vs 1 FA+2 SWA; NIAH by length)'
+- id: nemotron3_nano_2025
+  aliases: []
+  reported_by:
+  - nemotron
+  title: 'Nemotron 3 Nano: Open, Efficient Mixture-of-Experts Hybrid Mamba-Transformer Model for Agentic Reasoning'
+  authors: NVIDIA
+  year: 2025
+  venue_or_status: arXiv 2512.20848 (v1, 23 Dec 2025), technical report
+  url: https://arxiv.org/abs/2512.20848
+  code_url: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 ; https://github.com/NVIDIA-NeMo/Nemotron
+  access_level: '[read-section]'
+  access_detail: 'nemotron: [read-section]'
+  research_question: Scale the Nemotron hybrid with sparse MoE FFNs for agentic reasoning with 1M context.
+  mechanism: '52 layers: 23 Mamba-2 + 23 MoE (128 experts, top-6, 2 shared) + 6 GQA attention (2 KV heads); NoPE.'
+  manipulated_vars: LC CPT blend (512K-only vs 512K + 4K mix) and other recipe choices; no ratio ablation.
+  controlled_vars: n/a
+  model_sizes_and_training: 31.6B total / 3.2B active; 25T tokens, WSD peak 1e-3 -> 1e-5 over last 5T, seq 8192, batch 3072; LC phase 121B tokens, constant LR 1e-5, 512K + 4K sequence mix; attention at layers 5, 12, 19, 26, 33, 42 (11.5% of layers / 20.7% of mixers).
+  benchmarks: MMLU(-Pro), AGIEval, HumanEval, MBPP, GSM8K, MATH, commonsense, RACE, multilingual, RULER 64K / 128K / 256K; post-trained agentic / reasoning suite.
+  main_findings: RULER 64K / 128K / 256K = 87.50 / 82.92 / 75.44 (base) vs Qwen3-30B-A3B-Base 63.55 / 60.69; 512K-only CPT slightly hurt short-context scores, fixed by mixing 4K sequences; 3.3x throughput vs Qwen3-30B-A3B-Thinking (H200).
+  limitations: No ratio / placement ablation; MoE confounds comparison with dense hybrids.
+  relevance_to_us: 'low: shows the NVIDIA attention share drifting up (7.7% -> 11.5% of layers) and the short + long sequence mix trick for LC CPT.'
+  reproducible_or_adaptable: Adaptable only for the CPT data-mix idea.
+- id: gu2025_jet_nemotron
+  aliases:
+  - cai2025jetnemotron
+  - jet_nemotron_2025
+  reported_by:
+  - nemotron
+  - architecture
+  - implementation
+  title: 'Jet-Nemotron: Efficient Language Model with Post Neural Architecture Search'
+  authors: Yuxian Gu, Qinghao Hu, Shang Yang, Haocheng Xi, Junyu Chen, Song Han, Han Cai (NVIDIA)
+  year: 2025
+  venue_or_status: '[nemotron] arXiv 2508.15884 (v3, 28 Sep 2025) || [implementation] NeurIPS 2025 (per repo README); arXiv 2508.15884'
+  url: https://arxiv.org/abs/2508.15884
+  other_urls:
+  - https://arxiv.org/html/2508.15884
+  code_url: '[nemotron] https://github.com/NVlabs/Jet-Nemotron (local clone at third_party/Jet-Nemotron, not inspected by this agent) || [architecture] https://github.com/NVlabs/Jet-Nemotron (commit 94cbd12404637950722a09f70c8649ff1b1f2793)'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'nemotron: [read-section]; architecture: [read-section]; implementation: [read-section] (HTML PostNAS section via fetch summary); [code-inspected] (configs)'
+  research_question: '[nemotron] Starting from a pretrained full-attention LM with frozen MLPs, where should the few full-attention layers go, which linear block is best, and what hyperparameters maximise accuracy and throughput? || [architecture] Which full-attention layers to keep and which linear block to use, starting from a pretrained Transformer || [implementation] Which full-attention layers to keep when converting a pretrained Transformer to a hybrid (PostNAS)'
+  mechanism: '[nemotron] PostNAS: once-for-all super network with alternative linear-attention paths trained by feature distillation; beam search for full-attention placement with task-specific objectives; JetBlock linear attention; hardware-aware KV-dim / head search. || [architecture] PostNAS: learned full-attention placement; JetBlock (GDN + dynamic conv on V); SWA || [implementation] Freeze MLPs; once-for-all supernet with alternative linear paths; beam search over full-attention placement under a budget with task-specific objectives; JetBlock linear attention with dynamic conv'
+  manipulated_vars: '[nemotron] Placement and number of full-attention layers; linear block type (RWKV7, RetNet, Mamba2, GLA, DeltaNet, Gated DeltaNet, JetBlock); key / value dims and heads. || [architecture] placement (super-network + beam search vs uniform); linear block type || [implementation] Placement of full/SWA layers; linear block design; hyperparameters'
+  controlled_vars: '[nemotron] Frozen MLP weights from Qwen2.5-1.5B / 3B; KV cache size held fixed in the hyperparameter search. || [architecture] frozen MLPs of Qwen2.5-1.5B; KV cache size in HW search || [implementation] Pretrained MLPs (Qwen2.5 base)'
+  model_sizes_and_training: '[nemotron] Jet-Nemotron-2B (from Qwen2.5-1.5B, 28 layers): full attention at layers 15, 20; SWA (window 1152) at 21, 22; JetBlock elsewhere. 4B (from Qwen2.5-3B): FA at 18, 21, 33; 7 SWA layers (window 2048). || [architecture] 2B and 4B || [implementation] Jet-Nemotron-2B (28 layers, from Qwen2.5-1.5B), 4B (36 layers)'
+  benchmarks: '[nemotron] MMLU(-Pro), math, commonsense, retrieval, coding, LongBench up to 64K; throughput up to 256K on H100. || [architecture] MMLU, math, retrieval, commonsense; throughput at 64K || [implementation] MMLU(-Pro), math, retrieval, throughput'
+  main_findings: '[nemotron] Only 2 (MMLU) or 2-3 (retrieval) attention layers are critical; the layers that matter differ by task; learned placement significantly beats uniform placement; 2B gets up to 53.6x decode / 6.1x prefill speedup vs Qwen3-1.7B at 256K (theoretical max 56x). || [architecture] ~2 layers critical for MMLU, 2-3 for retrieval, and they differ. Block comparison retrieval: GDN 69.3, Mamba2 68.9, DeltaNet 67.9, GLA 66.6, RetNet 63.7; RWKV7 excluded for low throughput. KV cache size is the main throughput determinant. Code: 2B full attn at layers {14,19}, SWA(1152) {20,21} of 28; 4B full {17,20,32}, SWA {5,16,19,21,22,25,27} of 36. || [implementation] Only 2 layers critical for MMLU and 2-3 for retrieval; important layers differ by task. 2B config: full attention at 0-indexed layers 14 and 19, SWA (window 1152) at 20 and 21. 4B repo config: full at 17, 20, 32; SWA (2048) at 5, 16, 19, 21, 22, 25, 27 (matches paper text; Table 9 differs). Claims up to 53.6x generation and 6.1x prefill throughput.'
+  limitations: '[nemotron] Retrofit / distillation regime, not from-scratch training; placement found by task-specific search (risk of overfitting to the eval); I did not read the full experimental tables. || [architecture] distillation from pretrained model, not from-scratch; author list from memory — verify || [implementation] Post-training conversion from a pretrained Transformer, not from-scratch training at fixed ratio; placement chosen by search.'
+  relevance_to_us: '[nemotron] high for H3 / H4 (task-specific critical layers), but the regime differs from our from-scratch sweep. || [architecture] high — task-dependent placement (H3/H4) and GDN as best linear block || [implementation] high for RQ-B/H4 (placement matters and is task-dependent) and RQ-C; adaptable placements (mid/late) for our placement arm.'
+  reproducible_or_adaptable: '[nemotron] Adaptable: the per-layer ''single full-attention layer'' probing idea can be applied to our trained models post hoc. || [architecture] configs inspectable; method not reproducible at our budget || [implementation] Placements adaptable; NAS not reproduced.'
+  ratio_evidence: post-hoc placement search on a pretrained Transformer (retrofit, not from scratch)
+  pi_notes: 'Index convention: the paper text is 1-indexed (2B full attention at 15, 20; SWA 21, 22); the released config jetlm_2B.json is 0-indexed ({14,19}; SWA {20,21}) -> same layers. 4B: config 0-indexed {17,20,32} = paper text 1-indexed {18,21,33}; paper Table 9 differs (implementation agent).'
+- id: dong2024_hymba
+  aliases:
+  - dong2024hymba
+  - hymba_2024
+  reported_by:
+  - nemotron
+  - architecture
+  - implementation
+  title: 'Hymba: A Hybrid-head Architecture for Small Language Models'
+  authors: Xin Dong, Yonggan Fu, Shizhe Diao, Wonmin Byeon, Zijia Chen, Ameya Sunil Mahabaleshwarkar, Shih-Yang Liu, Matthijs Van Keirsbilck, et al. (13 authors)
+  year: 2024
+  venue_or_status: arXiv 2411.13676 (v1, 20 Nov 2024)
+  url: https://arxiv.org/abs/2411.13676
+  code_url: '[nemotron] https://huggingface.co/nvidia/Hymba-1.5B-Base (config inspected); local clone at third_party/hymba (not inspected by this agent) || [architecture] https://github.com/NVlabs/hymba (commit df5b2a95b9905534eb162305a5414bc43e37e84b)'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'nemotron: [read-section]; architecture: [abstract-only]; implementation: [abstract-only] (paper); [code-inspected] (barebones test)'
+  research_question: '[nemotron] Can parallel attention + SSM heads within each layer give better small LMs, and how much global attention is needed? || [architecture] Intra-layer parallel attention + SSM heads for SLMs || [implementation] Parallel attention + SSM heads for small LMs'
+  mechanism: '[nemotron] Parallel hybrid heads (attention + Mamba, mean-fused); SWA in most layers; global (full) attention in first, middle and last layers; cross-layer KV sharing; meta tokens. || [architecture] parallel attention & SSM heads, meta tokens, cross-layer KV sharing, partial SWA || [implementation] Intra-layer parallel attention and SSM heads; meta tokens; cross-layer KV sharing; partial sliding-window attention'
+  manipulated_vars: '[nemotron] Attention:Mamba head parameter ratio (0:1 ... 1:2.12, attention-only); all-SWA vs SWA + 3 full layers; KV sharing; fusion type; meta tokens. || [architecture] n/a (in abstract) || [implementation] Architecture'
+  controlled_vars: 300M params, 100B tokens for ablations; same recipe across variants.
+  model_sizes_and_training: '[nemotron] Ablations 300M / 100B tokens (seq 1K in the 300M comparison, SWA 256); final 350M / 1.5B on 1.5T tokens (seq 2K, then 8K for last 100B). || [implementation] Hymba-1.5B-Base'
+  benchmarks: '[nemotron] Commonsense average (8 tasks); recall-intensive average (e.g. SWDE, FDA, SQuAD); throughput at 8K / batch 128 on A100; cache MB at 8K. || [architecture] commonsense, cache, throughput || [implementation] Commonsense, recall, throughput'
+  main_findings: '[nemotron] All-SWA drops recall avg from 49.90 to 29.78; adding full attention in 3 layers (first / middle / last) restores it to 48.79 with throughput 2399.7 vs 876.7 tok/s and cache 41.19 vs 148.24 MB; the same compression on a pure Transformer drops recall 39.98 -> 28.18; gains saturate at an attention:Mamba parameter ratio of 1:2.12. || [architecture] Beats Llama-3.2-3B by 1.32% avg with 11.67x smaller cache, 3.49x throughput. Barebones test config [code-inspected]: global layers [5,11,18,25,31], rest SWA 2048. || [implementation] Versus Llama-3.2-3B: 11.67x cache reduction, 3.49x throughput, +1.32% accuracy (abstract). Barebones test uses global attention at layers [5,11,18,25,31] of a 32-layer stack, SWA elsewhere.'
+  limitations: '[nemotron] Parallel-head hybrid (not layer-wise linear vs full); recall tasks are short-context; SWA rather than linear attention as the cheap path. || [architecture] intra-layer, not a ratio study; barebones config may differ from released model || [implementation] Head-level (intra-layer) hybrid; confounded by meta tokens and KV sharing.'
+  relevance_to_us: '[nemotron] med: supplies a concrete non-uniform placement candidate (first / middle / last) and evidence that recurrent layers let full attention be sparse. || [implementation] low-med: small-model hybrid precedent; placement example (spread global layers).'
+  reproducible_or_adaptable: '[nemotron] Adaptable: first / middle / last placement as a placement-arm condition. || [architecture] partially'
+  ratio_evidence: ablation of SWA vs 3 full layers inside a parallel-head hybrid (300M)
+  pi_notes: 'Two different placements are reported: the 300M ablation in the paper restores full attention in first/middle/last layers (nemotron agent, [read-section] Table 10); the repo''s barebones test config uses global layers [5,11,18,25,31] of 32 (architecture/implementation agents, [code-inspected]). Not a conflict.'
+- id: hf_configs_nemotron_family
+  aliases: []
+  reported_by:
+  - nemotron
+  title: Official Hugging Face config.json files for Nemotron-H / Nano v2 / Nemotron 3 Nano / Nemotron-Flash / Nemotron 3.5 Bolt / Hymba
+  authors: NVIDIA
+  year: 2025
+  venue_or_status: Model repositories on huggingface.co (fetched 2026-11-09)
+  url: https://huggingface.co/nvidia
+  code_url: https://huggingface.co/nvidia/Nemotron-H-8B-Base-8K/resolve/main/config.json (and analogous paths for each repo listed in the report §1.2 / §9)
+  access_level: '[code-inspected]'
+  access_detail: 'nemotron: [code-inspected]'
+  research_question: What layer patterns were actually released, and do they match the papers?
+  mechanism: hybrid_override_pattern strings (M = Mamba-2, * = attention, - = MLP, E = MoE); Nemotron-Flash layer_types (deltanet / m2 / a / f); Bolt-74B layers_block_type.
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: '8B: 52L, 4* at 7, 18, 29, 40. 56B: 118L, 10* every 11 layers from 7. 47B: 98L, 5* at 17, 38, 49, 60, 86 (45 M / 48 -). 4B: 52L, same pattern as 8B, d 3072. Nano-12B-v2: 62L, 6* at 7, 16, 25, 34, 43, 52, Mamba head dim 80. Nano-9B-v2: 56L, 4* at 14, 21, 30, 39. Nemotron-3-Nano-30B-A3B: 52L, 6* (2 KV heads). Flash-1B: 2 full-attention of 12 mixers (positions 4, 12); Flash-3B: 3 of 18 (4, 12, 20). Bolt-74B-A9B: 88L, 8* / 40 M / 40 E. Bolt-E4B: Gemma4, 7 full + 35 sliding attention (not Mamba).'
+  benchmarks: n/a
+  main_findings: 'Attention is 5.1-11.5% of all layers but 10-21% of token mixers. The Nemotron-H 8B pattern is hand-placed (attention always followed by MLP) and is NOT what Megatron''s ratio allocator produces. Paper/config mismatches: 47B layer split (45 / 48 vs 44 / 49); Nano 2 Mamba head dim (80 vs 64). Pruned models (47B, 9B) have non-uniform attention spacing; the 9B lost its outermost attention layers (INF).'
+  limitations: Configs do not reveal training details; the pruned-model index space differs from the parent.
+  relevance_to_us: 'high: ground truth for patterns; shows the ratio convention matters (layers vs mixers).'
+  reproducible_or_adaptable: Reproducible (public files; parsing script in session scratchpad).
+- id: megatron_lm_hybrid_code
+  aliases: []
+  reported_by:
+  - nemotron
+  title: Megatron-LM hybrid (Mamba / attention / MLP) model and layer-allocation code
+  authors: NVIDIA
+  year: 2026
+  venue_or_status: GitHub repository, commit 928ce7ce256b734f00f1c81ddd3a8958d6b61ebf (2026-11-08)
+  url: https://github.com/NVIDIA/Megatron-LM
+  code_url: 'https://github.com/NVIDIA/Megatron-LM/blob/928ce7ce256b734f00f1c81ddd3a8958d6b61ebf/megatron/core/models/hybrid/hybrid_layer_allocation.py ; local: third_party/Megatron-LM (sparse)'
+  access_level: '[code-inspected]'
+  access_detail: 'nemotron: [code-inspected]'
+  research_question: How are hybrid layer patterns specified and allocated in NVIDIA's training code?
+  mechanism: pattern_from_ratios(num_layers, attention_ratio, mlp_ratio) implements Waleffe Algorithm 1 (even spacing via a running-remainder x<0.5 rule; starts and ends with Mamba; MLPs biased so the sequence ends with MLP); ratio args now 'deprecated' in favour of --hybrid-layer-pattern; symbols include M, G (GatedDeltaNet), K (KDA), *, W (sliding window), -, E.
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 'examples/mamba/train.sh: ''800M'' pattern M-M-M--M-*M-M-M-M--*M-M-M-M-*M--M-M-M-*M-M--M-M- (48 layers, 4 attention), d 1024, 16 heads, GQA 8 groups, seq 4096, 300B tokens, LR 2.5e-4 -> 2.5e-5 cosine, warmup 50K samples, wd 0.1, clip 1.0, betas (0.9, 0.95), no PE, untied embeddings, RMSNorm, no bias, bf16.'
+  benchmarks: n/a
+  main_findings: 'Our re-implementation reproduces the Waleffe 8B pattern exactly for (56, 0.08, 0.5) but not the Nemotron-H 8B pattern; generates uniform small-depth patterns (e.g. 12 layers / 2 attention: MMM*MMMM*MMM); at 50% it produces adjacent ''**'' (INF: hand-specify alternation for r = 1/2).'
+  limitations: main branch no longer loads the original Mamba2-* checkpoints (README); heavy dependency stack (TE, mamba_ssm CUDA) may not build on sm_120 without nvcc.
+  relevance_to_us: 'high: authoritative uniform-placement algorithm and a reference small-scale recipe.'
+  reproducible_or_adaptable: Reproducible algorithm (pure Python, ~30 lines); the framework itself is probably too heavy for our single-GPU setup, so re-implement in our codebase.
+- id: nemotron35_bolt_2026
+  aliases: []
+  reported_by:
+  - nemotron
+  title: NVIDIA Nemotron 3.5 Bolt (E4B-4GB and 74B-A9B-24GB) model releases
+  authors: NVIDIA
+  year: 2026
+  venue_or_status: Model release (October 2026); no technical paper found
+  url: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-BF16
+  code_url: https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16
+  access_level: '[code-inspected]'
+  access_detail: 'nemotron: [code-inspected]'
+  research_question: n/a (edge / local deployment models); checked as a candidate for the user's 'Nemotron Edge'
+  mechanism: 'Bolt-74B-A9B: NemotronH-Puzzle hybrid with 88 layers (40 Mamba-2, 40 MoE, 8 attention, 2 KV heads). Bolt-E4B: Gemma-4-E4B post-train (Gemma4 architecture, 7 full + 35 sliding attention layers), not a Mamba hybrid.'
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: Configs only; training details not inspected (model cards and blog not read).
+  benchmarks: not inspected
+  main_findings: No 'Nemotron Edge' named artifact exists; Bolt is NVIDIA's 2026 'edge' branding; the hybrid Bolt keeps ~9% attention layers (16.7% of mixers).
+  limitations: No paper; press coverage seen only as search-result snippets (e.g. https://blogs.nvidia.com/blog/nemotron-3-5-super-vl/), not read.
+  relevance_to_us: 'low: confirms NVIDIA keeps the few-attention pattern in 2026 releases; no controlled evidence.'
+  reproducible_or_adaptable: n/a
+- id: wang2025_systematic_hybrid_linear_attention
+  aliases:
+  - wang2025hybridlinear
+  - wang2025systematic_hybrid_linear
+  reported_by:
+  - architecture
+  - evaluation
+  - methodology
+  - implementation
+  title: A Systematic Analysis of Hybrid Linear Attention
+  authors: Dustin Wang, Rui-Jie Zhu, Steven Abreu, Yong Shan, Taylor Kergan, Yuqi Pan, Yuhong Chou, Zheng Li, Jibin Wu, Ge Zhang, Wenhao Huang, Jason Eshraghian
+  year: 2025
+  venue_or_status: arXiv 2507.06457 (v2 2026-06-24)
+  url: https://arxiv.org/abs/2507.06457
+  other_urls:
+  - https://arxiv.org/html/2507.06457v1
+  - https://arxiv.org/html/2507.06457v2
+  code_url: '[evaluation] https://huggingface.co/m-a-p/hybrid-linear-attention-research (per search result; not visited) || [implementation] https://huggingface.co/collections/m-a-p/hybrid-linear-attention-research-686c488a63d609d2f20e2b1e (models); trained with https://github.com/fla-org/flash-linear-attention'
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]; evaluation: [read-section]; methodology: [read-section]; implementation: [read-section]'
+  research_question: '[architecture] How does the choice of linear-attention component and the linear:full ratio affect hybrid LM quality and recall? || [evaluation] How linear-attention variant and linear:full ratio affect LM and recall in hybrids || [methodology] Do better standalone linear-attention models make better hybrids; how do linear:full ratios affect LM vs recall? || [implementation] Which linear-attention variants make good hybrids, and how does the linear:full ratio affect LM quality and recall?'
+  mechanism: '[architecture] DeltaNet, GatedDeltaNet, GLA, HGRN, HGRN2, RetNet interleaved with softmax attention || [evaluation] Composite block of N linear layers + 1 full layer || [methodology] Train 6 linear variants x 5 ratios (24:1,12:1,6:1,3:1,pure) + Transformer with fla on fineweb-edu. || [implementation] Block-wise hybrid: r linear layers followed by 1 full softmax-attention layer, repeated.'
+  manipulated_vars: '[architecture] linear mechanism (6); ratio linear:full in {24:1, 12:1, 6:1, 3:1, pure} || [evaluation] 6 linear variants; ratios pure-linear, 24:1, 12:1, 6:1, 3:1; scale || [methodology] linear-attention type, linear:full ratio || [implementation] Linear variant (HGRN, HGRN-2, GLA, RetNet, DeltaNet, Gated DeltaNet); ratio 24:1, 12:1, 6:1, 3:1, pure linear, plus Transformer baseline'
+  controlled_vars: '[architecture] scale, data (fineweb-edu), tokens, optimizer (AdamW cosine), FLA library, ctx 4096 || [evaluation] FineWeb-Edu; 340M/20B and 1.3B/100B tokens || [methodology] data, size, optimizer (AdamW cosine), tokens || [implementation] Data (FineWeb-Edu), size tier, token budget, AdamW + cosine. Parameter matching across ratios not stated.'
+  model_sizes_and_training: '[architecture] 72 models: 340M/20B tokens (50k-token batch) and 1.3B/100B tokens (1M batch) || [evaluation] 72 models, 340M and 1.3B || [methodology] 340M/20B tokens (50k-token batch); 1.3B/100B tokens (1M batch) || [implementation] 72 models: 36 at 340M/20B tokens (about 50K-token batch), 36 at 1.3B/100B tokens (about 1M-token batch); 2,048-token context'
+  benchmarks: '[architecture] ARC-c/e, HellaSwag, LAMBADA, OBQA, PIQA; RULER (retrieval, multi-hop tracing, aggregation, QA) averaged || [evaluation] zero-shot ARC-c/e, HellaSwag, LAMBADA, OBQA, PIQA; RULER subsets (MK, MQ, MV, SV, CWE+FWE, QA, VT) || [implementation] Commonsense LM tasks; RULER (multikey, multiquery, multivalue, singlevalue, CWE+FWE, QA, VT)'
+  main_findings: '[architecture] LM average flat across ratios (0.472-0.480). RULER recall average pure 0.256, 24:1 0.338, 12:1 0.340, 6:1 0.390, 3:1 0.397. GDN pure 0.356 -> 3:1 0.436; GLA 0.144 -> 0.332; HGRN2 0.203 -> 6:1 0.434. Transformer RULER 0.423 vs GDN-3:1 0.440. Standalone strength does not predict hybrid strength; recommends HGRN2 or GDN at 3:1-6:1. || [evaluation] 1.3B RULER avg: pure-linear 0.256, 24:1 0.338, 12:1 0.340, 6:1 0.390, 3:1 0.397, Transformer ~0.42; LM avg flat 0.472-0.480; 340M recall ''insignificant'' and omitted; recommends 3:1-6:1 with GatedDeltaNet/HGRN-2. || [methodology] LM stable across ratios; recall improves with more full attention, especially below 3:1; recommend HGRN-2 or GatedDeltaNet at 3:1-6:1. || [implementation] LM average roughly flat across ratios (about 0.472-0.480). RULER recall average 0.256 pure linear, 0.338 at 24:1, 0.390 at 6:1, 0.397 at 3:1. The best standalone linear model is not the best hybrid partner. Gated variants (HGRN-2, GatedDeltaNet) are best when hybridised. Recommends a 3:1 to 6:1 ratio.'
+  limitations: '[architecture] 4K context only; placement positions unspecified; RULER averaged (no per-task curve); text/table inconsistencies (claims ''nearly doubles'' recall vs 0.338->0.397); observational, no seeds reported in what I read. || [evaluation] RULER context lengths/sample counts not stated in read text; placement not specified. || [methodology] No seeds/CIs or LR sweep found in sections I read; placement not varied; larger scale than ours. || [implementation] Authors: up to 1.3B, 2,048-token context, block-wise ratios only. Placement is not varied independently. No efficiency measurement in the summary I read. Param matching unclear.'
+  relevance_to_us: '[architecture] high — closest controlled ratio sweep; same library (FLA) and mechanisms; gives prior on knee location (between 12:1 and 6:1) || [evaluation] high — closest controlled-ratio prior; direct evidence zero-shot RULER is at floor below ~340M || [methodology] high — closest controlled ratio study; our protocol adds seeds, CIs, LR fairness, placement and cost measurement. || [implementation] high: the closest controlled ratio study. Our study extends it to 1K-32K contexts, placement, task types, and measured cost at 20-60M scale. Supports choosing GDN.'
+  reproducible_or_adaptable: '[architecture] adaptable — FLA configs; we extend to all-full endpoint, per-task, 1K-32K, placement || [evaluation] Checkpoints could serve as external anchors || [methodology] adaptable (checkpoints released) || [implementation] Adaptable: uses fla; checkpoints released.'
+  ratio_evidence: controlled-from-scratch sweep (340M/1.3B; pure, 24:1, 12:1, 6:1, 3:1 + Transformer; RULER averaged; no seeds; param matching not stated)
+  pi_notes: 'PI re-check 2026-11-09 via WebFetch of https://arxiv.org/html/2507.06457v1 and v2 [read-section: Limitations, Appendix D, Tables 2/5/7]. (a) Context length: v1 Limitations says ''a 2,048-token context window''; v2 Limitations says ''a 4,096-token context window''; neither version states the pretraining sequence length in the setup -> the agents'' 2K-vs-4K disagreement is a version difference, unresolved by the source. (b) Placement: v2 Appendix D ''interleave ... in a fixed ratio r:1 (linear : full), repeating the composite block N times''; Fig. 6 ''linear-attention followed by full-attention'' -> full layer at the END of each block. (c) No statement of parameter matching across ratios, no hidden size/layer counts, no seeds/CIs/error bars, LR value not stated, RULER lengths and sample counts not stated. (d) Table 7 (avg of DeltaNet, GDN, GLA, HGRN2): pure 0.256, 24:1 0.338, 12:1 0.340, 6:1 0.390, 3:1 0.397 (no Transformer row; caption does not say which scale); Transformer 0.423 is in Table 5. (e) v1 Table 2 caption: ''340M models show insignificant recall capability''.'
+- id: bae2025hybrid_meta
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Hybrid Architectures for Language Models: Systematic Analysis and Design Insights'
+  authors: Sangmin Bae, Bilge Acun, Chien-Yu Lin, Haroun Habeeb, Seungyeon Kim, Liang Luo, Junjie Wang, Carole-Jean Wu
+  year: 2025
+  venue_or_status: arXiv 2510.04800 (v3)
+  url: https://arxiv.org/html/2510.04800
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: 'Inter-layer vs intra-layer Transformer/Mamba-2 hybrids: ratio, placement, fusion, scaling'
+  mechanism: Mamba-2 (SSD) + softmax attention (RoPE theta 500k, Llama-3 scaling); SWA baseline
+  manipulated_vars: Transformer:Mamba ratio {1:0,1:1,1:3,1:5,1:12,0:1}; placement Front/Middle/End; intra-layer head split; fusion
+  controlled_vars: params, tokens (60B), ctx 8K, recipe
+  model_sizes_and_training: 100M-3B; ablations at 350M (14-layer Llama, d1536) and 1B (16 layers, d2048), 60B tokens; iso-FLOP 4.5e20
+  benchmarks: DCLM and PG19 loss, few-shot average, NIAH 960-16320 tokens
+  main_findings: '1B: Transformer 2.750/2.875/52.0; Mamba 2.758/2.891/52.3; 1:1 2.725/2.847/54.0; 1:3 2.733/2.859/54.0; 1:5 2.735/2.861/53.3; 1:12 2.741/2.866/53.1. Placement Table 11 differences <=0.004 nats (front said worst; middle recommended). Transformer NIAH ~0 beyond 8K; hybrids ok to ~1.5x train length. Recommends ~1:5 for efficiency, 1:1 for quality.'
+  limitations: NIAH only in figures; placement effects tiny and mixed; cache-size figure inconsistent with stated GQA config
+  relevance_to_us: high — controlled ratio + placement study (with Mamba-2), gives placement prior and non-monotonic loss
+  reproducible_or_adaptable: adaptable — placement cells (front/middle/end) reused in our design
+  ratio_evidence: controlled-from-scratch sweep (350M/1B; Transformer:Mamba-2 1:0..0:1 + front/middle/end placement; loss/few-shot; NIAH figure only)
+- id: qiao2026rethinking_efficient_attention
+  aliases: []
+  reported_by:
+  - architecture
+  title: Rethinking the Role of Efficient Attention in Hybrid Architectures
+  authors: Ziqing Qiao, Yinuo Xu, Chaojun Xiao, Zhou Su, Zihan Zhou, Yingfa Chen, Xiaoyue Xu, Xu Han, Zhiyuan Liu
+  year: 2026
+  venue_or_status: arXiv 2606.15378v1
+  url: https://arxiv.org/html/2606.15378v1
+  code_url: https://github.com/thunlp/rethinking-hybrid-attention
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: Does the efficient layer carry long-range information in hybrids, or does full attention?
+  mechanism: SWA-128/512/2048, Lightning, Mamba-2, GDN alternated 1:1 with full attention
+  manipulated_vars: efficient-attention type; scale; tokens; 1:1 vs 1:3; head-wise vs layer-wise; NoPE on full layers
+  controlled_vars: data mix, ctx 16K, Muon, WSD
+  model_sizes_and_training: non-embedding 15M, 31M, 65M, 104M, 477M; D up to 1000N tokens; S4/S5 ~100B tokens; S5 +5B tokens at 32K (RoPE base 1e5 -> 5e5)
+  benchmarks: C4 val loss, log LongPPL (GovReport), RULER, RULER-NIAH, LongBench, 19 short tasks
+  main_findings: 'Hybrid val-loss curves overlap Full. Restricting full attention to 2048 sharply hurts LongPPL; restricting efficient layers barely matters (even GDN). Retrieval probing gains at middle full layers. S4 16K Full/SWA-128/SWA-128-NoPE: RULER 25.09/35.33/44.80, NIAH 35.95/49.58/67.81. S5 32K RULER 43.90/41.86/46.98. 1:3 similar loss, worse LongPPL at small scale.'
+  limitations: ratio only 1:1 vs 1:3; GDN/Mamba2 RULER numbers not in text I read; trains at 16K directly
+  relevance_to_us: high — same parameter scale as us (15M-104M), 16K-32K, NoPE result, Muon hyperparameters
+  reproducible_or_adaptable: adaptable — code released; their LR/batch table is a direct hyperparameter prior
+  ratio_evidence: two-ratio contrast (mostly 1:1; 1:1 vs 1:3 for SWA-128; 15M-477M non-emb; 16K/32K)
+- id: kimi2025linear
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Kimi Linear: An Expressive, Efficient Attention Architecture'
+  authors: Kimi Team
+  year: 2025
+  venue_or_status: arXiv 2510.26692
+  url: https://arxiv.org/html/2510.26692
+  code_url: https://github.com/fla-org/flash-linear-attention (fla/layers/kda.py)
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: KDA (channel-wise gated delta rule) hybrid with MLA; ratio and component ablations
+  mechanism: 'KDA: S_t=(I-b k k^T)Diag(a)S_{t-1}+b k v^T; short conv+Swish on q,k,v; L2 qk; low-rank sigmoid output gate; MLA layers NoPE'
+  manipulated_vars: KDA:MLA ratio {0:1,1:1,3:1,7:1,15:1}; output gate; conv; RoPE vs NoPE
+  controlled_vars: FLOPs budget, hyperparameters, 16 layers/16 heads, 38.8B tokens, ctx 4096
+  model_sizes_and_training: ablation ~653M activated; final 48B total / 3B active MoE
+  benchmarks: train/val perplexity; long-context suites; decode TPOT at 1M
+  main_findings: Val ppl 0:1 5.77, 1:1 5.66, 3:1 5.65, 7:1 5.70, 15:1 5.82. No conv 5.70; no output gate 5.67. KV cache -75%, decode up to 6x at 1M (1.84 vs 11.48 ms TPOT).
+  limitations: ratio ablation reports perplexity only; MoE final model
+  relevance_to_us: high — controlled ratio ablation with GDN-family layer; NoPE-on-full; conv ablation quantifies C2 confound
+  reproducible_or_adaptable: adaptable — KDA in FLA
+  ratio_evidence: controlled-from-scratch sweep (~653M activated; KDA:MLA 0:1..15:1; perplexity only)
+- id: dao2024_mamba2_ssd
+  aliases:
+  - dao2024mamba2
+  - dao2024mamba2_ssd
+  reported_by:
+  - architecture
+  - evaluation
+  title: 'Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality'
+  authors: Tri Dao, Albert Gu
+  year: 2024
+  venue_or_status: '[architecture] ICML 2024; arXiv 2405.21060 || [evaluation] arXiv 2405.21060 (ICML 2024 per common citation, not verified)'
+  url: https://arxiv.org/abs/2405.21060
+  other_urls:
+  - https://arxiv.org/html/2405.21060
+  code_url: https://github.com/state-spaces/mamba (not cloned)
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]; evaluation: [read-section]'
+  research_question: '[architecture] SSD duality; Mamba-2 layer; hybrids with attention/MLP || [evaluation] SSD framework; Mamba-2'
+  mechanism: '[architecture] Mamba-2: h_t = a_t h_{t-1} + B_t x_t (scalar a_t per head), y_t = C_t^T h_t; P in {64,128} || [evaluation] SSD; hybrid attention ablation'
+  manipulated_vars: '[architecture] number of attention layers among 48 (0..24) || [evaluation] state size N (16/64/256) on MQAR; #attention layers in 48-layer 350M hybrid'
+  controlled_vars: '[architecture] 350M, 48 layers, data || [evaluation] MQAR T in {256,512,1024}, T/4 KV, V=8192'
+  model_sizes_and_training: '[architecture] 350M 48-layer hybrids (Table 2) || [evaluation] 350M hybrid ablation; up to 2.7B/300B Pile'
+  benchmarks: '[architecture] perplexity; MQAR vs state size || [evaluation] MQAR, Pile PPL, zero-shot LM evals'
+  main_findings: '[architecture] Ppl 0 attn 8.60, 1 8.38, 2 8.32, 3 8.29, 4 8.29, 5 8.28, 6 8.26, 7 8.27, 9 8.28, 11 8.30, 15 8.34, 24 8.50; Transformer++ 8.68. ~10% attention best. MQAR improves with N 16->64->256 (figure). || [evaluation] Hybrid 350M/48L PPL: 0 attn 8.60 ... 6 attn 8.26 (best) ... 24 attn 8.50; Transformer++ 8.68; ~10% attention best for PPL.'
+  limitations: '[architecture] perplexity only for ratio; no long-context retrieval per ratio || [evaluation] PPL only for the ratio ablation; MQAR model dims not read.'
+  relevance_to_us: '[architecture] high — cleanest LM-loss vs attention-count curve (diminishing returns, non-monotonic) || [evaluation] med — prior ratio evidence (PPL) that our recall metrics should go beyond'
+  reproducible_or_adaptable: MQAR settings adaptable
+  ratio_evidence: controlled-from-scratch sweep (350M, 48 layers, 0-24 attention layers; perplexity only)
+- id: lieber2024_jamba
+  aliases:
+  - lieber2024jamba
+  reported_by:
+  - architecture
+  - evaluation
+  title: 'Jamba: A Hybrid Transformer-Mamba Language Model'
+  authors: Opher Lieber, Barak Lenz, Hofit Bata, et al. (AI21 Labs)
+  year: 2024
+  venue_or_status: arXiv 2403.19887 (v2 Jul 2024)
+  url: https://arxiv.org/abs/2403.19887
+  other_urls:
+  - https://arxiv.org/html/2403.19887
+  code_url: https://huggingface.co/ai21labs/Jamba-v0.1
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]; evaluation: [read-section]'
+  research_question: '[architecture] Hybrid Transformer-Mamba-MoE design; ratio, positional encoding, stability || [evaluation] Hybrid attention+Mamba(+MoE) design and ratio'
+  mechanism: '[architecture] Mamba + attention (no RoPE) + MoE || [evaluation] Attention:Mamba 1:7 blocks with MoE'
+  manipulated_vars: '[architecture] attn:Mamba 1:3 vs 1:7; pure vs hybrid; RoPE vs none || [evaluation] ratio 1:3 vs 1:7; pure attention vs pure Mamba vs hybrid'
+  controlled_vars: 1.3B/250B tokens; 7B/50B tokens
+  model_sizes_and_training: '[architecture] 1.3B/250B ablations; final 12B active / 52B total || [evaluation] 1.3B, 7B ablations; 52B total/12B active release'
+  benchmarks: '[architecture] OLLM, HellaSwag, WinoGrande, NQ, C4/Books/Code log-prob, IMDB/QuAC/NarrativeQA ICL || [evaluation] HellaSwag, WinoGrande, NQ, OLLM, log-prob C4/Books/Code, IMDB/QuAC/NarrativeQA ICL, NIAH figure'
+  main_findings: '[architecture] 1:3 vs 1:7 virtually identical (OLLM 16.5 vs 16.0). ICL attn/Mamba/hybrid IMDB 84.1/48.8/90.9, QuAC 27.9/20.2/26.6, NarrativeQA 45.8/27.7/43.7. NoPE ~= RoPE. RMSNorm inside Mamba fixed loss spikes. KV at 256K: Jamba 4GB vs Mixtral 32GB. || [evaluation] 1:3 ≈ 1:7 on LM metrics; pure Mamba fails ICL format adherence (IMDB 48.8 vs 84.1 attn vs 90.9 hybrid); KV cache 4GB vs 128GB (Llama-2) at 256K.'
+  limitations: '[architecture] only two ratios; short-context metrics || [evaluation] Mixes MoE; ratio ablation on LM metrics only; NIAH figure only.'
+  relevance_to_us: '[architecture] med — ratio insensitivity between 1:3 and 1:7; NoPE in hybrids; pure-SSM ICL failure || [evaluation] med — format-adherence confound motivates logprob scoring; ratio effect invisible on LM metrics'
+  reproducible_or_adaptable: '[architecture] partially || [evaluation] No'
+  ratio_evidence: two-ratio contrast (1:3 vs 1:7 at 1.3B; short-context metrics)
+- id: minimax2025minimax01
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'MiniMax-01: Scaling Foundation Models with Lightning Attention'
+  authors: MiniMax
+  year: 2025
+  venue_or_status: arXiv 2501.08313
+  url: https://arxiv.org/html/2501.08313
+  code_url: https://github.com/MiniMax-AI
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: Scaling lightning (linear) attention with a softmax hybrid
+  mechanism: Lightning attention (TransNormer, kv_t = kv_{t-1} + k_t v_t^T, tiled) + softmax every 8th layer; softmax RoPE on half head dim, base 10k; DeepNorm post-norm
+  manipulated_vars: pure vs hybrid vs SWA hybrids; scale 70M-7B
+  controlled_vars: data, ctx 8192
+  model_sizes_and_training: 70M-7B up to 300B tokens; 1B/3B hybrid comparisons; final 456B/45.9B active
+  benchmarks: NIAH, standard benchmarks
+  main_findings: 'Pure lightning weak on NIAH. 1B NIAH: hybrid-lightning 95.7, hybrid-HGRN2 91.8, hybrid-cosformer2 43.6; SWA hybrids 46.8-53.9. 3B: 98.0 vs 40.9-57.9. Final 7:1.'
+  limitations: the sweep that selected 7:1 is not reported
+  relevance_to_us: med — linear vs SWA hybrid contrast; 7:1 industrial ratio; partial RoPE
+  reproducible_or_adaptable: partially
+  ratio_evidence: final 7:1 ratio; the selecting sweep is not reported
+- id: minimax2025m2_blog
+  aliases: []
+  reported_by:
+  - architecture
+  title: Why Did MiniMax M2 End Up as a Full Attention Model?
+  authors: Haohai Sun (MiniMax)
+  year: 2025
+  venue_or_status: blog (Hugging Face), ~2025-10-30
+  url: https://huggingface.co/blog/MiniMax-AI/why-did-m2-end-up-as-a-full-attention-model
+  access_level: '[read-full]'
+  access_detail: 'architecture: [read-full]'
+  research_question: Why production M2 abandoned efficient-attention hybrids
+  mechanism: Lightning/full and SWA hybrids
+  manipulated_vars: n/a (qualitative)
+  controlled_vars: n/a
+  model_sizes_and_training: production scale
+  benchmarks: MMLU, BBH, MATH, LongBench, internal multi-hop/agentic proxies
+  main_findings: Hybrids matched full attention on saturated benchmarks at small scale but showed multi-hop reasoning deficits at scale; SWA hybrids degraded with context in agentic tasks; linear attention precision-sensitive; prefix caching and speculative decoding open problems; crossover 'a few thousand tokens'.
+  limitations: no numbers or ratios; blog
+  relevance_to_us: high (as risk) — motivates per-task (multi-hop) reporting rather than averages (H3)
+  reproducible_or_adaptable: 'no'
+- id: yang2024_gated_deltanet
+  aliases:
+  - yang2024gated_deltanet
+  - yang2024gateddeltanet
+  - yang2025_gated_deltanet
+  reported_by:
+  - architecture
+  - evaluation
+  - implementation
+  title: 'Gated Delta Networks: Improving Mamba2 with Delta Rule'
+  authors: Songlin Yang, Jan Kautz, Ali Hatamizadeh
+  year: 2024
+  venue_or_status: '[architecture] ICLR 2025; arXiv 2412.06464 || [evaluation] arXiv 2412.06464 (v3 Mar 2025; ICLR 2025 per common citation, not verified) || [implementation] ICLR 2025 (per NVlabs repo README); arXiv 2412.06464'
+  url: https://arxiv.org/abs/2412.06464
+  other_urls:
+  - https://arxiv.org/html/2412.06464
+  code_url: https://github.com/NVlabs/GatedDeltaNet (commit b53d6d3a161267432a79c1c04af69fa52bddc921)
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'architecture: [read-section]; evaluation: [read-section]; implementation: [abstract-only] (paper); [code-inspected] (repo)'
+  research_question: '[architecture] Combine gating (Mamba2) with the delta rule; hybrids with SWA || [evaluation] Combine gating and delta rule for linear RNN memory; evaluate recall/long-context || [implementation] Combine gating (fast erase) and the delta rule (targeted update) in a linear recurrent layer with chunked parallel training.'
+  mechanism: '[architecture] S_t = S_{t-1} a_t (I - b_t k_t k_t^T) + b_t v_t k_t^T; short conv, SiLU, L2 qk, output gate || [evaluation] Gated delta rule; hybrids H1 (GDN+SWA), H2 (Mamba2+GDN+SWA), SWA window 2K || [implementation] Gated delta rule state update S_t = a_t S_{t-1} (I - b_t k_t k_t^T) + b_t v_t k_t^T, with short conv, L2-normalised q/k, and output gate.'
+  manipulated_vars: '[architecture] mechanism (GDN vs Mamba2 vs DeltaNet vs Transformer++); hybrids H1 (GDN+SWA) and H2 (Mamba2+GDN+SWA) || [implementation] Architecture (GDN vs Mamba2/DeltaNet); hybrids GDN+SWA (H1) and GDN+Mamba2+SWA (H2)'
+  controlled_vars: '[architecture] 1.3B, 100B FineWeb-Edu tokens, 4K ctx, AdamW peak LR 4e-4, Llama2 tokenizer || [evaluation] 1.3B params, 100B FineWeb-Edu tokens, 4K train length || [implementation] Data and token budget within comparisons'
+  model_sizes_and_training: '[architecture] 400M and 1.3B; official configs: GDN_0.4B 11 layers d1536, H1_0.4B 12 layers; H1 = GDN/SWA-2048 alternating 1:1 || [evaluation] 1.3B/100B (also 0.4B/15B in repo scripts) || [implementation] Repo configs: GatedDeltaNet_0.4B (11 layers, d=1536), H1_0.4B (12 layers, d=1536, gated_delta_per_layer=2, SWA window 2048), 1.3B variants. Scripts train 15B tokens at 4K context on SlimPajama (paper used FineWeb-Edu).'
+  benchmarks: '[architecture] S-NIAH-1/2/3 1K-8K, SWDE/SQuAD/FDA/TriviaQA/NQ/DROP, LongBench, commonsense || [evaluation] RULER S-NIAH-1/2/3 at 1K-8K zero-shot; SWDE/SQuAD/FDA/TQA/NQ/DROP truncated to 2K; LongBench 14 tasks || [implementation] LM, commonsense, in-context retrieval, length extrapolation, long-context understanding (per abstract)'
+  main_findings: '[architecture] S-NIAH-1 GDN 98.4/88.4/91.4/91.8 vs Mamba2 99.2/98.8/65.4/30.4; S-NIAH-2 GDN 8K 29.6. Recall avg GDN 30.6, Mamba2 29.8, Transformer++ 37.0, H1 39.0, H2 40.1. LongBench GDN 16.6, Tr++ 11.0, H1 17.8, H2 18.4. || [evaluation] S-NIAH-2 1K/2K/4K/8K: Mamba2 99.4/98.8/56.2/17.0, DeltaNet 98.4/45.6/18.6/14.4, GDN 100/99.8/92.2/29.6; recall avg H2 40.1, H1 39.0, Transformer++ 37.0, GDN 30.6, Mamba2 29.8. README: retrieval tasks highly prompt-sensitive for untuned models; use RULER for S-NIAH via HF conversion. || [implementation] Abstract: consistently beats Mamba2 and DeltaNet. Hybrids with SWA or Mamba2 improve further.'
+  limitations: '[architecture] param matching via layer count (GDN ~6d^2 per layer); hybrids use SWA not global attention; one ratio || [evaluation] Hybrid layer ratios not specified in read text; no hybrid S-NIAH numbers. || [implementation] Its hybrids use sliding-window (local) attention, not global full attention, so this is a different manipulation from ours. The repo is a lit-gpt/Slurm multi-node codebase.'
+  relevance_to_us: '[architecture] high — primary mechanism || [evaluation] high — evidence of length collapse in recurrent models within 2-4x train length; prompt sensitivity || [implementation] high: GDN is our recommended linear mixer. Use fla kernels, not this repo (the README itself recommends fla for speed and varlen).'
+  reproducible_or_adaptable: '[architecture] yes — FLA implementation verified on our sm_120 GPU || [evaluation] Eval protocol adaptable || [implementation] Use the fla implementation.'
+- id: fla_flash_linear_attention
+  aliases:
+  - fla_repo
+  reported_by:
+  - architecture
+  - methodology
+  - implementation
+  title: 'flash-linear-attention (fla): Triton kernels/layers/models for linear attention and hybrids'
+  authors: Songlin Yang, Yu Zhang, Zhiyuan Li and contributors
+  year: 2026
+  venue_or_status: '[architecture] GitHub repo, commit 98193113ecb7835143252a786e06933e371b67cc (2026-11-08); installed fla 0.6.0 || [methodology] GitHub repository (commit 98193113ecb7835143252a786e06933e371b67cc, 2026-11-08); pip fla 0.6.0 in venv || [implementation] GitHub repo; PyPI flash-linear-attention / fla-core 0.6.0'
+  url: https://github.com/fla-org/flash-linear-attention
+  code_url: https://github.com/fla-org/flash-linear-attention (commit 98193113ecb7, 2026-11-08)
+  access_level: '[code-inspected]'
+  access_detail: 'architecture: [code-inspected]; methodology: [code-inspected]; implementation: [code-inspected]'
+  research_question: '[architecture] n/a (library) || [methodology] Triton kernels for linear attention variants. || [implementation] n/a (software)'
+  mechanism: '[architecture] GatedDeltaNet, GLA, Mamba2, HGRN2, RetNet, DeltaNet, KDA, RWKV7, attention; hybrid via config attn={''layers'':[...]} || [methodology] Chunked/fused-recurrent Triton kernels; cu_seqlens varlen support. || [implementation] Chunked parallel and fused-recurrent Triton kernels (gated delta rule etc.). HF-compatible models. Hybrid via config attn={''layers'':[...], ...}. Varlen via cu_seqlens. FLA Cache with recurrent_state/attn_state/conv_state.'
+  model_sizes_and_training: 'VERIFIED-HERE on RTX 5080 with torch 2.11.0+cu128, triton 3.6.0: GDN fwd/bwd, exact varlen document isolation, prefill+recurrent decode matching full forward (fp32 argmax agreement 1.0), 49.4M hybrid trains at about 60-100k tok/s (shared GPU, B=1x4096).'
+  main_findings: '[architecture] GDN default ~6d^2 params (0.75d key dim, expand_v 2); param-matched config head_dim 64, num_heads d/128, expand_v 2 -> 4.03d^2 (measured). Short conv k=4 ''crucial''. Chunk kernel fp32 final state. fused_recurrent positional signature (q,k,v,g,gk,gv,beta,...) — must use keywords. FLA Attention requires flash_attn (not installed) and rope_theta>0 in hybrid config (no NoPE). Kernels verified on RTX 5080 sm_120 (torch 2.11, triton 3.6): GDN chunk err vs naive fp32 2.9e-4 (fp32), 1.2e-3 (bf16). || [methodology] GatedDeltaNet defaults: hidden 2048, head_dim 256, 6 heads, expand_v 2, short conv, output gate (~6 d^2 params vs 4 d^2 MHA); A_log/dt_bias excluded from weight decay; Triton autotune (FLA_CACHE_MODE default disabled, FLA_CACHE_RESULTS=1); TF32 used when supported; no tl.atomic_add in ops/gated_delta_rule or ops/common (present in path_attn, atk, cyfa, log_linear_attn, utils/csr). || [implementation] Blackwell handling: SM120 detection, global-scratch allocator, inline-asm tl.dot workaround (issue #638), 8-warp configs dropped for Triton<3.8, wy_fast bwd num_warps=[2]. fla.layers.attn.Attention hard-requires the flash_attn package. Recurrent state stored in fp32. fla requires transformers>=5.6.2.'
+  limitations: '[architecture] Mamba2 falls back to naive/Triton paths without mamba_ssm/causal_conv1d || [methodology] Autotune choices can differ across processes (esp. under GPU contention). || [implementation] Attention layer depends on flash-attn (no wheel for torch 2.11); work around by patching module functions or writing our own attention. torch.compile of whole models recompiles per layer (layer_idx). Cache not compileable.'
+  relevance_to_us: '[architecture] high — implementation substrate || [methodology] high — determinism policy, parameter matching, varlen state reset. || [implementation] high: core dependency for the linear mixer.'
+  reproducible_or_adaptable: '[methodology] reproducible || [implementation] Yes. pip install flash-linear-attention==0.6.0 (VERIFIED-HERE).'
+  pi_notes: 'PI code check @98193113 fla/layers/gated_deltanet.py: the ''crucial'' warning (L190-191) refers to ShortConvolution (''ShortConvolution is crucial to the performance. Do not turn it off...''), NOT to the output gate; defaults use_gate=True, expand_v=2, head_dim=256, num_heads=6. PI meta-device instantiation at d=512: config A (head_dim 64, 4 heads, expand_v 2, gate on) 1,056,904 params (+0.79% vs MHA 1,048,576), state 4x64x128 fp32 = 128 KiB; config B (head_dim 128, 4 heads, expand_v 1, gate off) 1,058,952 (+0.99%), state 256 KiB; config C (head_dim 128, 4 heads, expand_v 1, gate on) 1,321,096 (+25.99%); config D (head_dim 128, 2 heads, expand_v 2, gate on) 1,054,980 (+0.61%), state 256 KiB.'
+- id: yang2023gla
+  aliases: []
+  reported_by:
+  - architecture
+  title: Gated Linear Attention Transformers with Hardware-Efficient Training
+  authors: Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, Yoon Kim
+  year: 2023
+  venue_or_status: ICML 2024; arXiv 2312.06635
+  url: https://arxiv.org/html/2312.06635
+  code_url: https://github.com/fla-org/flash-linear-attention
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: Data-dependent gated linear attention with chunkwise hardware-efficient training
+  mechanism: S_t = Diag(a_t) S_{t-1} + k_t^T v_t; a_t = sigmoid(x W1 W2 + b)^(1/16), low-rank 16; Swish output gate; dk=d/2, dv=d, 4 heads
+  manipulated_vars: architecture comparison
+  controlled_vars: data (SlimPajama), tokens
+  model_sizes_and_training: 340M/15B, 1.3B/100B
+  benchmarks: Wiki ppl, commonsense, FDA/SWDE/SQuAD, length extrapolation
+  main_findings: 1.3B Wiki ppl GLA 17.22 vs Tr++ 16.85, Mamba 17.06, RetNet 18.64. Recall FDA/SWDE/SQuAD GLA 19.9/50.6/42.6 vs Tr++ 27.4/66.6/31.5. Log-space + secondary chunking for stability. Extrapolates 2K->~18-20K.
+  limitations: no hybrid study
+  relevance_to_us: high — secondary mechanism
+  reproducible_or_adaptable: yes (FLA)
+- id: yang2024deltanet_parallel
+  aliases: []
+  reported_by:
+  - architecture
+  title: Parallelizing Linear Transformers with the Delta Rule over Sequence Length
+  authors: Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, Yoon Kim
+  year: 2024
+  venue_or_status: NeurIPS 2024 (per my recollection; abstract page lists arXiv 2406.06484 only)
+  url: https://arxiv.org/abs/2406.06484
+  code_url: https://github.com/fla-org/flash-linear-attention
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Hardware-efficient parallel training of DeltaNet
+  mechanism: delta rule with WY/Householder representation
+  manipulated_vars: architecture; hybrids (SWA every other layer; 2 global attention layers)
+  controlled_vars: 1.3B/100B
+  model_sizes_and_training: 1.3B, 100B tokens
+  benchmarks: perplexity, zero-shot
+  main_findings: DeltaNet beats Mamba and GLA at 1.3B; both hybrids beat Transformer baselines.
+  limitations: abstract only
+  relevance_to_us: med — delta-rule basis of GDN; '2 global layers' hybrid prior
+  reproducible_or_adaptable: yes (FLA)
+- id: katharopoulos2020linear
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention'
+  authors: Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, François Fleuret
+  year: 2020
+  venue_or_status: ICML 2020; arXiv 2006.16236
+  url: https://arxiv.org/abs/2006.16236
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Linearise attention via kernel feature maps
+  mechanism: S_t = S_{t-1} + phi(k_t) v_t^T with normaliser; RNN equivalence
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: small-scale
+  benchmarks: autoregressive image/speech generation
+  main_findings: Linear complexity; up to 4000x faster autoregressive prediction.
+  limitations: no forgetting; abstract only
+  relevance_to_us: low — historical basis
+  reproducible_or_adaptable: 'yes'
+- id: sun2023retnet
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Retentive Network: A Successor to Transformer for Large Language Models'
+  authors: Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jianyong Wang, Furu Wei
+  year: 2023
+  venue_or_status: arXiv 2307.08621
+  url: https://arxiv.org/abs/2307.08621
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Retention with parallel/recurrent/chunkwise forms
+  mechanism: fixed-decay linear attention (decay details from recollection only)
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: LLM scaling experiments
+  benchmarks: LM
+  main_findings: O(1) inference; chunkwise linear training.
+  limitations: abstract only; weakest in 2507.06457/2508.15884 comparisons
+  relevance_to_us: low
+  reproducible_or_adaptable: yes (FLA MultiScaleRetention, 8d^2 default)
+- id: gu2023mamba
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Mamba: Linear-Time Sequence Modeling with Selective State Spaces'
+  authors: Albert Gu, Tri Dao
+  year: 2023
+  venue_or_status: arXiv 2312.00752 (COLM 2024)
+  url: https://arxiv.org/abs/2312.00752
+  code_url: https://github.com/state-spaces/mamba
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Input-dependent (selective) SSM
+  mechanism: selective SSM with hardware-aware scan
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: up to 3B
+  benchmarks: LM, audio, genomics
+  main_findings: ~5x inference throughput vs Transformers; Mamba-3B matches 2x-size Transformers.
+  limitations: abstract only
+  relevance_to_us: low-med
+  reproducible_or_adaptable: needs CUDA build
+- id: peng2025rwkv7
+  aliases: []
+  reported_by:
+  - architecture
+  title: RWKV-7 "Goose" with Expressive Dynamic State Evolution
+  authors: Bo Peng et al.
+  year: 2025
+  venue_or_status: arXiv 2503.14456
+  url: https://arxiv.org/abs/2503.14456
+  code_url: https://github.com/fla-org/flash-linear-attention (fla/layers/rwkv7.py)
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Generalized delta rule RNN
+  mechanism: generalized delta rule with vector-valued gating and in-context learning rates
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 0.19B-2.9B, 3.1T-token corpus
+  benchmarks: multilingual and English downstream
+  main_findings: 3B SoTA multilingual; recognises all regular languages (claim).
+  limitations: abstract only; low training throughput per Jet-Nemotron
+  relevance_to_us: low
+  reproducible_or_adaptable: FLA layer available
+- id: qin2024hgrn2
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'HGRN2: Gated Linear RNNs with State Expansion'
+  authors: Zhen Qin, Songlin Yang, Weixuan Sun, Xuyang Shen, Dong Li, Weigao Sun, Yiran Zhong
+  year: 2024
+  venue_or_status: COLM 2024; arXiv 2404.07904
+  url: https://arxiv.org/abs/2404.07904
+  code_url: https://github.com/OpenNLPLab/HGRN2
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Expand HGRN state via outer product
+  mechanism: gated linear RNN with outer-product state expansion (linear-attention form)
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: various
+  benchmarks: LM
+  main_findings: Outperforms HGRN; best hybrid partner in 2507.06457 (6:1 RULER 0.434); FLA HGRN2 expand_ratio 128 = 4.00 d^2 params (measured).
+  limitations: abstract only
+  relevance_to_us: med — tertiary candidate
+  reproducible_or_adaptable: yes (FLA)
+- id: arora2024_based
+  aliases:
+  - arora2024based
+  reported_by:
+  - architecture
+  - evaluation
+  - implementation
+  title: Simple linear attention language models balance the recall-throughput tradeoff (Based)
+  authors: Simran Arora, Sabri Eyuboglu, Michael Zhang, Aman Timalsina, Silas Alberti, Dylan Zinsley, James Zou, Atri Rudra, et al. (9 authors)
+  year: 2024
+  venue_or_status: ICML 2024; arXiv 2402.18668
+  url: https://arxiv.org/abs/2402.18668
+  other_urls:
+  - https://arxiv.org/html/2402.18668
+  code_url: https://github.com/HazyResearch/based
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]; evaluation: [abstract-only]; implementation: [abstract-only]'
+  research_question: '[architecture] Recall vs state-size tradeoff || [evaluation] Trade-off between recurrent state size and recall'
+  mechanism: '[architecture] Taylor (2nd order) linear attention, d''=16 + SWA (<=64-128) + short conv (3) || [evaluation] Linear attention (Taylor feature map) + sliding window attention; state size tuned by window and feature dim'
+  manipulated_vars: '[architecture] feature dim, window size, mix || [implementation] Window size, feature dimension (state size)'
+  controlled_vars: '[architecture] data, size || [evaluation] not read || [implementation] Training budget'
+  model_sizes_and_training: '[architecture] 360M, 1.3B/50B || [evaluation] up to 1.3B'
+  benchmarks: '[architecture] MQAR, SWDE, FDA, SQuAD, throughput || [evaluation] recall-intensive real tasks (names not on abstract page) || [implementation] Perplexity, recall-intensive tasks, throughput'
+  main_findings: '[architecture] State per head (1+d''+d''^2) d_v = 273 d_v. Recall rises with state size; Pareto frontier. 1.3B SWDE/FDA/SQuAD Based 64.45/30.40/41.62, Mamba 52.75/18.51/35.92, Tr++ 76.50/80.47/43.47. 24x decode throughput vs FA2. || [evaluation] State size vs recall trade-off; Based beats Mamba by 6.22 points on recall-intensive tasks; 24x generation throughput vs FA2. || [implementation] Matches Mamba perplexity, +6.22 accuracy points on recall-intensive tasks, 24x higher generation throughput than FlashAttention-2 (1.3B, 1024 tokens).'
+  limitations: '[architecture] mixed-layer architecture (~20/20/60) || [evaluation] Body not read. || [implementation] SWA-based hybrid, not a global-attention ratio study.'
+  relevance_to_us: '[architecture] high — recall vs state frontier framing; SWA-64 as cheap layer || [evaluation] med — motivates state-size-aware interpretation of recall results || [implementation] med: recall-vs-state-size framing for our frontier plot (RQ-D).'
+  reproducible_or_adaptable: '[architecture] yes || [evaluation] Concept only'
+- id: arora2023_zoology
+  aliases:
+  - arora2023zoology
+  reported_by:
+  - architecture
+  - evaluation
+  - methodology
+  - implementation
+  title: 'Zoology: Measuring and Improving Recall in Efficient Language Models'
+  authors: Simran Arora, Sabri Eyuboglu, Aman Timalsina, Isys Johnson, Michael Poli, James Zou, Atri Rudra, Christopher Ré
+  year: 2023
+  venue_or_status: '[architecture] ICLR 2024; arXiv 2312.04927 || [evaluation] arXiv 2312.04927 (later ICLR 2024 per repo configs naming; venue not verified on arXiv page) || [methodology] arXiv:2312.04927 (ICLR 2024)'
+  url: https://arxiv.org/abs/2312.04927
+  code_url: https://github.com/HazyResearch/zoology (commit 1ad20d193b6113cae1e8f3c655c300d7b4b3f4bb)
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'architecture: [abstract-only]; evaluation: [code-inspected]; methodology: [read-section]; implementation: [abstract-only] (paper); [code-inspected] (repo)'
+  research_question: '[architecture] Why gated convolutions trail attention; MQAR || [evaluation] Why do gated-convolution LMs lag attention; can associative recall explain it? || [methodology] Why do gated-convolution LMs lag attention; what is MQAR? || [implementation] Why do gated-convolution LMs lag attention, and how much is due to associative recall?'
+  mechanism: '[architecture] gated conv vs attention; MQAR synthetic || [evaluation] AR-hit perplexity slice on Pile; MQAR synthetic; theory on model dim vs seq len || [methodology] Pile perplexity slicing; MQAR synthetic; per-architecture LR sweeps. || [implementation] MQAR synthetic task; attention vs gated convolutions; sparse-attention hybrids'
+  manipulated_vars: '[evaluation] sequence mixer (attention, H3, Hyena, RWKV, BaseConv, hybrids), scale 70M/160M/360M, MQAR seq len and #KV || [methodology] architecture, model dim, sequence length || [implementation] Architecture; MQAR difficulty (num_kv_pairs, seq_len)'
+  controlled_vars: '[evaluation] Pile, 10B tokens, Llama-style recipe || [methodology] data, layers (2-layer MQAR models) || [implementation] Training data and steps within comparisons'
+  model_sizes_and_training: '[architecture] 17 models up to 1.4B on Pile || [evaluation] 70M-360M for 10B tokens; 1.4B for 50B tokens || [methodology] Pile 10B tokens; MQAR with LR sweep logspace(-4,-2,4) || [implementation] 17 pretrained models; 70M attention vs 1.4B gated conv'
+  benchmarks: '[architecture] Pile ppl, MQAR || [evaluation] Pile PPL sliced into AR hits (6.4% tokens; bigram previously in context and <=1250x in training) vs other; MQAR || [methodology] Pile ppl slices, MQAR || [implementation] Pile perplexity; MQAR'
+  main_findings: '[architecture] 82% of ppl gap from associative recall; 70M attention > 1.4B gated conv on AR; sparse-attention hybrids close 97.4% of gap. MQAR generator (zoology/data/multiquery_ar.py) with num_kv_pairs, power-law gaps [code-inspected]. || [evaluation] AR hits explain 82% of PPL gap; 70M attention beats 1.4B Hyena on AR-hit PPL (2.41 vs 3.43); gated convs need d scaling with seq len for MQAR; BaseConv + 3 attention layers beats Transformer at 360M. MQAR generator: keys vocab[1:V/2], values vocab[V/2:], power-law query gaps (power_a=0.01), random non-query filler, V=8192. || [methodology] 82% of perplexity gap from associative-recall tokens; per-architecture LR sweep and max accuracy reported. || [implementation] Gated conv trails attention by up to 2.1 ppl on the Pile; 82% of the gap is explained by in-context recall. A 70M attention model beats a 1.4B gated conv on AR. Input-dependent sparse-attention hybrids close 97.4% of the gap.'
+  limitations: '[architecture] abstract only for paper claims || [evaluation] Paper [read-section] via PDF text. AR-hit heuristic is bigram-based; not long-range specific (no distance resolution). || [methodology] Gated conv focus. || [implementation] Gated convolutions, not modern gated linear attention.'
+  relevance_to_us: '[architecture] high — MQAR is the canonical synthetic recall probe || [evaluation] high — AR-hit slice is a validated zero-shot recall metric at 70M; MQAR generator for capacity probes || [methodology] med — precedent for per-architecture equal-grid LR sweeps on recall tasks. || [implementation] high: MQAR generator (zoology/data/multiquery_ar.py, numpy) is directly reusable for controlled synthetic recall at 1K-32K. Repo hybrid mixer cycles configs by layer_idx % len(configs).'
+  reproducible_or_adaptable: '[evaluation] Adaptable: distance-resolved repeat-token loss (LM-3); MQAR-in-text (R2) || [methodology] reproducible (code in third_party/zoology) || [implementation] Yes (generator is dependency-light).'
+  pi_notes: 'PI code check @1ad20d1: README ''Recall-Memory Tradeoff'' figure (zoology/analysis/paper/zoology_paper/zoology_results.png) plots MQAR recall accuracy vs state size for attention, Based, Mamba(-2), GLA, DeltaNet, RWKV-7 and Gated DeltaNet; GDN points read by eye: ~0.89 at ~1.7e4 state, ~0.99 at ~6.6e4, ~1.0 at >=2.6e5 (units = Zoology''s own state-size computation, not verified). Reproduction config: zoology/experiments/mqar_example_configs/original_mqar_configs.py (2-layer models, GDN num_heads 2, use_gate False, short conv 4; 4 LRs logspace(-3,-1.5); 32 epochs). Chosen as the proposal''s reproduction pilot target.'
+- id: jelassi2024_repeat_after_me
+  aliases:
+  - jelassi2024repeat
+  reported_by:
+  - architecture
+  - evaluation
+  title: 'Repeat After Me: Transformers are Better than State Space Models at Copying'
+  authors: Samy Jelassi, David Brandfonbrener, Sham M. Kakade, Eran Malach
+  year: 2024
+  venue_or_status: ICML 2024; arXiv 2402.01032
+  url: https://arxiv.org/abs/2402.01032
+  other_urls:
+  - https://arxiv.org/html/2402.01032
+  access_level: '[read-section]'
+  access_detail: 'architecture: [abstract-only]; evaluation: [read-section]'
+  research_question: '[architecture] Copying capability of fixed-state models || [evaluation] Can fixed-state models copy/retrieve from context as well as transformers?'
+  mechanism: '[architecture] GSSM vs Transformer || [evaluation] Theory (state bits lower bound) + synthetic copying + phonebook lookup with pretrained models'
+  manipulated_vars: architecture, string length, phonebook size
+  controlled_vars: ~160M synthetic models (Transformer 12L d1024; Mamba 24L d1024 N=32); Pile-pretrained Pythia vs Mamba same tokenizer
+  model_sizes_and_training: '[architecture] synthetic + pretrained || [evaluation] 160M synthetic; Pythia 410M-2.8B vs Mamba 360M-2.8B'
+  benchmarks: '[architecture] copying, retrieval || [evaluation] copying, phonebook (''John Powell: 609-323-7777'', 2-shot), SQuAD'
+  main_findings: '[architecture] 2-layer Transformer copies exponential-length strings; GSSMs limited by fixed state; pretrained Transformers much better at copying/retrieval. || [evaluation] Transformers need ~100x fewer samples to learn copying; Pythia-410M beats Mamba-2.8B on phonebook for L>=70; gap widens on random strings.'
+  limitations: '[architecture] abstract only || [evaluation] Experiment details beyond first 100K chars not read.'
+  relevance_to_us: '[architecture] high — theory for state-size bound on retrieval (H1/H5) || [evaluation] high — copy-after-gap probe (LM-4), phonebook = R2'
+  reproducible_or_adaptable: copy task adaptable
+- id: wen2024_rnns_not_transformers
+  aliases:
+  - wen2024rnns_not_transformers
+  - wen2024rnnsnot
+  reported_by:
+  - architecture
+  - evaluation
+  title: 'RNNs are not Transformers (Yet): The Key Bottleneck on In-context Retrieval'
+  authors: Kaiyue Wen, Xingyu Dang, Kaifeng Lyu
+  year: 2024
+  venue_or_status: arXiv 2402.18510 (v4 Dec 2024)
+  url: https://arxiv.org/abs/2402.18510
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]; evaluation: [abstract-only]'
+  research_question: '[architecture] Can RNNs with CoT match Transformers? || [evaluation] Representational gap RNN vs Transformer with CoT'
+  mechanism: '[architecture] RNN ± one Transformer layer / RAG || [evaluation] Theory; tasks incl. associative recall, IsTree'
+  manipulated_vars: theory
+  model_sizes_and_training: theory + small experiments
+  benchmarks: associative recall, IsTree
+  main_findings: '[architecture] Bottleneck is in-context retrieval; a single Transformer layer (or RAG) closes the gap. || [evaluation] In-context retrieval is the bottleneck; adding a single Transformer layer (or RAG) closes the gap.'
+  limitations: abstract only
+  relevance_to_us: '[architecture] high — theoretical prior that k=1 may suffice for retrieval (H1) || [evaluation] med — theoretical motivation for H1'
+  reproducible_or_adaptable: '[architecture] tasks adaptable || [evaluation] No'
+- id: bick2025gather_aggregate
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Understanding the Skill Gap in Recurrent Language Models: The Role of the Gather-and-Aggregate Mechanism'
+  authors: Aviv Bick, Eric Xing, Albert Gu
+  year: 2025
+  venue_or_status: arXiv 2504.18574
+  url: https://arxiv.org/abs/2504.18574
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Mechanism of retrieval in Transformers vs SSMs
+  mechanism: G&A heads
+  manipulated_vars: head ablation
+  controlled_vars: pretrained models
+  model_sizes_and_training: Llama-3.1-8B, SSMs, hybrids
+  benchmarks: MMLU, GSM8K, BBH
+  main_findings: Retrieval concentrated in few G&A heads; in hybrids attention takes the Aggregate role; disabling one G&A head drops MMLU 66% -> 25%.
+  limitations: abstract only
+  relevance_to_us: med — mechanistic reason few attention layers suffice; MMLU confounded by retrieval
+  reproducible_or_adaptable: analysis adaptable
+- id: michalak2025some_attention
+  aliases: []
+  reported_by:
+  - architecture
+  title: Some Attention is All You Need for Retrieval
+  authors: Felix Michalak, Steven Abreu
+  year: 2025
+  venue_or_status: arXiv 2510.19861
+  url: https://arxiv.org/abs/2510.19861
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Functional segregation of retrieval in hybrids
+  mechanism: attention ablation/sparsification in RecurrentGemma, Jamba-Mini
+  manipulated_vars: attention ablation, head sparsity
+  controlled_vars: pretrained models
+  model_sizes_and_training: RecurrentGemma-2B/9B, Jamba-Mini-1.6
+  benchmarks: retrieval, MMLU
+  main_findings: Ablating attention -> 0% retrieval; 15% of heads keep near-perfect retrieval and 84% MMLU.
+  limitations: abstract only
+  relevance_to_us: med — supports task-specific role of attention (H3)
+  reproducible_or_adaptable: ablation adaptable to our checkpoints
+- id: wang2024mamba_in_llama
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'The Mamba in the Llama: Distilling and Accelerating Hybrid Models'
+  authors: Junxiong Wang, Daniele Paliotta, Avner May, Alexander M. Rush, Tri Dao
+  year: 2024
+  venue_or_status: NeurIPS 2024; arXiv 2408.15237
+  url: https://arxiv.org/html/2408.15237
+  code_url: https://github.com/jxiw/MambaInLlama
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: Distil Transformers into Mamba hybrids with varying attention fraction
+  mechanism: Mamba/Mamba-2 initialised from attention weights; keep every n-th attention layer
+  manipulated_vars: attention fraction 50/25/12.5/0%
+  controlled_vars: teacher, distillation data (2k length)
+  model_sizes_and_training: 8B (Llama-3-8B-Instruct), 7B (Zephyr)
+  benchmarks: MT-Bench, AlpacaEval, LM-eval, NIAH
+  main_findings: Mamba2-Llama3 LM-eval avg 50% 63.84, 25% 60.55, 12.5% 58.21, 0% 54.74; MT-Bench 7.32/6.74/6.48/5.64. Monotone degradation with less attention.
+  limitations: distillation, not pretraining; NIAH only for 50%
+  relevance_to_us: med — ratio curve in a different regime (distillation) shows steady decline, unlike pretraining loss
+  reproducible_or_adaptable: no (scale)
+  ratio_evidence: distillation sweep (50/25/12.5/0% attention from Llama-3-8B)
+- id: ren2024_samba
+  aliases:
+  - ren2024samba
+  reported_by:
+  - architecture
+  - evaluation
+  - implementation
+  title: 'Samba: Simple Hybrid State Space Models for Efficient Unlimited Context Language Modeling'
+  authors: Liliang Ren, Yang Liu, Yadong Lu, Yelong Shen, Chen Liang, Weizhu Chen
+  year: 2024
+  venue_or_status: '[architecture] ICLR 2025; arXiv 2406.07522 || [evaluation] arXiv 2406.07522 (v3 Feb 2025)'
+  url: https://arxiv.org/abs/2406.07522
+  other_urls:
+  - https://arxiv.org/html/2406.07522
+  code_url: '[evaluation] https://github.com/microsoft/Samba (not cloned) || [implementation] https://github.com/microsoft/Samba (commit 617c7a0f8c71)'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'architecture: [read-section]; evaluation: [read-section]; implementation: [abstract-only] (paper); [code-inspected] (lit_gpt/config.py)'
+  research_question: '[architecture] Layer-wise Mamba + SWA hybrid for unlimited context || [evaluation] Hybrid SSM+SWA for unlimited context || [implementation] Layer-wise Mamba + SWA hybrid for long context'
+  mechanism: '[architecture] Mamba-MLP-SWA(2048, RoPE 10k)-MLP; Mamba conv 4 || [evaluation] Layer-wise Mamba/MLP/SWA(2048)/MLP interleave || [implementation] Mamba layers interleaved with sliding-window attention (window 2048 in configs)'
+  manipulated_vars: '[architecture] hybridisation strategy; KV heads || [evaluation] architecture, scale || [implementation] Architecture variants (many 438M configs: SWA, full_per_layer, mqa/gqa, context lengths)'
+  controlled_vars: '[architecture] ~1.7B, data || [evaluation] data per scale || [implementation] Data/tokens per comparison'
+  model_sizes_and_training: '[architecture] 421M, 1.3B, 1.7B, 3.8B (3.2T tokens) || [implementation] Up to 3.8B on 3.2T tokens; 4K pretraining'
+  benchmarks: '[architecture] 15 benchmarks, passkey, phonebook, perplexity to 1M || [evaluation] passkey (FT 500 steps @4K, to 256K), phonebook (20-480 pairs, FT 100 steps @4K, eval to 8K), Proof-Pile PPL to 1M || [implementation] Perplexity to 1M, passkey 256K, Phonebook, throughput'
+  main_findings: '[architecture] 1.7B avg Samba 54.33, Mamba-SWA-MLP 53.77, Mamba 52.31, Mamba-MLP 51.38. 1 KV head better. Passkey perfect to 256K after 500 steps. Middle-layer attention low entropy (retrieval). NoPE variant / Llama-2 blow up beyond train length. || [evaluation] Perfect passkey to 256K after short FT; phonebook closes most of gap to Llama2-7B within 4K. || [implementation] 3.73x throughput vs GQA Transformer at 128K prompts; perfect passkey retrieval to 256K after 4K fine-tuning (abstract).'
+  limitations: '[architecture] SWA (not global) attention; fixed 1:1 Mamba:SWA || [evaluation] Passkey saturates; short-FT protocols differ per task. || [implementation] SWA (local) rather than global attention; passkey is easy.'
+  relevance_to_us: '[architecture] med — SWA-cheap-layer evidence; entropy-by-depth placement hint || [evaluation] med — precedent for short identical FT before synthetic eval (option ii) || [implementation] low-med: codebase lineage of GDN repo; config ''full_per_layer'' shows global/local interleave mechanism.'
+  reproducible_or_adaptable: '[architecture] code available || [evaluation] Protocol adaptable'
+- id: de2024griffin
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Griffin: Mixing Gated Linear Recurrences with Local Attention for Efficient Language Models'
+  authors: Soham De et al. (Google DeepMind)
+  year: 2024
+  venue_or_status: arXiv 2402.19427
+  url: https://arxiv.org/html/2402.19427
+  code_url: https://github.com/google-deepmind/recurrentgemma
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]'
+  research_question: RG-LRU recurrence + local attention
+  mechanism: 'RG-LRU (a_t = sigma(Lambda)^(8 r_t)), conv width 4; 2 recurrent : 1 local MQA (w=1024, RoPE)'
+  manipulated_vars: architecture (Hawk/Griffin/MQA); window size
+  controlled_vars: scale/FLOPs
+  model_sizes_and_training: 100M-14B, 300B tokens
+  benchmarks: downstream, copying, induction, phonebook, throughput
+  main_findings: Griffin < Transformer loss at all budgets; Griffin-7B 65.8 vs Llama-2 65.3; window 1024 beats global MQA at 2K-8K (400M); Griffin phonebook perfect up to ~window then degrades.
+  limitations: no ratio/placement ablation in text read
+  relevance_to_us: med — local-attention hybrid, inference memory model
+  reproducible_or_adaptable: partially
+- id: botev2024recurrentgemma
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'RecurrentGemma: Moving Past Transformers for Efficient Open Language Models'
+  authors: Aleksandar Botev et al.
+  year: 2024
+  venue_or_status: arXiv 2404.07839
+  url: https://arxiv.org/abs/2404.07839
+  code_url: https://github.com/google-deepmind/recurrentgemma
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Open Griffin-based models
+  mechanism: Griffin
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 2B, 9B
+  benchmarks: Gemma comparisons
+  main_findings: Comparable to Gemma with fewer tokens; fixed-size state.
+  limitations: abstract only
+  relevance_to_us: low
+  reproducible_or_adaptable: weights available
+- id: yang2025_rope_to_nope
+  aliases:
+  - yang2025rope2nope
+  - yang2025rope_to_nope
+  reported_by:
+  - architecture
+  - methodology
+  title: 'Rope to Nope and Back Again: A New Hybrid Attention Strategy'
+  authors: Bowen Yang, Bharat Venkitesh, Dwarak Talupuru, Hangyu Lin, David Cairuz, Phil Blunsom, Acyr Locatelli
+  year: 2025
+  venue_or_status: arXiv 2501.18795 (v2 Oct 2025)
+  url: https://arxiv.org/abs/2501.18795
+  other_urls:
+  - https://arxiv.org/html/2501.18795
+  access_level: '[read-section]'
+  access_detail: 'architecture: [read-section]; methodology: [abstract-only]'
+  research_question: '[architecture] Positional encoding in long-context attention hybrids || [methodology] Strengths/weaknesses of RoPE, NoPE, QK-Norm for long context.'
+  mechanism: '[architecture] global full attention NoPE + local SWA RoPE (3:1), window 4096 || [methodology] Attention-pattern analysis; hybrid global/local attention.'
+  manipulated_vars: '[architecture] RoPE/NoPE/QK-norm; global:local 1:1, 1:3, 1:7; RoPE theta || [methodology] PE / attention type'
+  controlled_vars: '[architecture] data, model || [methodology] not read'
+  model_sizes_and_training: '[architecture] Cohere-scale (not extracted) || [methodology] not read'
+  benchmarks: '[architecture] NIAH, RULER to 256K || [methodology] long/short context tasks'
+  main_findings: '[architecture] RULER retrieval 256K 57.1 -> 74.8, QA 128K 36.0 -> 46.0 vs RoPE baseline; NoPE layers do retrieval, RoPE layers local; higher theta reduces NoPE retrieval (8.036 -> 6.203). || [methodology] Proposed hybrid surpasses RoPE full-attention baselines on long and short context.'
+  limitations: '[architecture] attention-only hybrid (no linear layers) || [methodology] Abstract only.'
+  relevance_to_us: '[architecture] high — positional-policy confound (C4) || [methodology] low/med — supports pre-registering PE as a factor.'
+  reproducible_or_adaptable: policy adaptable
+- id: qwen2025qwen3next
+  aliases: []
+  reported_by:
+  - architecture
+  title: Qwen3-Next-80B-A3B (model card and config)
+  authors: Qwen Team
+  year: 2025
+  venue_or_status: model release (HF); official blog not renderable
+  url: https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct
+  code_url: https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct/raw/main/config.json
+  access_level: '[code-inspected]'
+  access_detail: 'architecture: [code-inspected]'
+  research_question: n/a (production hybrid)
+  mechanism: GDN + gated attention, 3:1 (full_attention_interval 4), 48 layers
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 80B total, 3B active MoE
+  benchmarks: n/a
+  main_findings: 'Config: partial_rotary_factor 0.25, rope_theta 1e7, linear_conv_kernel_dim 4, GDN 16 QK heads / 32 V heads x 128, attention 16 Q / 2 KV x 256.'
+  limitations: config-inspected (not code); no public ratio ablation found; blog claims unverified
+  relevance_to_us: med — industrial 3:1 GDN reference; end-of-group placement rule
+  reproducible_or_adaptable: n/a
+- id: glorioso2024zamba
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Zamba: A Compact 7B SSM Hybrid Model'
+  authors: Paolo Glorioso, Quentin Anthony, Yury Tokpanov, James Whittington, Jonathan Pilault, Adam Ibrahim, Beren Millidge
+  year: 2024
+  venue_or_status: arXiv 2405.16712
+  url: https://arxiv.org/abs/2405.16712
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Mamba backbone with one shared attention module
+  mechanism: Mamba + single shared attention block
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 7B, 1T tokens
+  benchmarks: standard
+  main_findings: Competitive at 7B; less memory for long generation.
+  limitations: abstract only; shared-weights design differs from our per-layer replacement
+  relevance_to_us: low
+  reproducible_or_adaptable: 'no'
+- id: ling2025ring_linear
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Every Attention Matters: An Efficient Hybrid Architecture for Long-Context Reasoning'
+  authors: Ling Team
+  year: 2025
+  venue_or_status: arXiv 2510.19338
+  url: https://arxiv.org/abs/2510.19338
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Linear+softmax hybrid MoE (Ring-linear)
+  mechanism: linear attention + softmax attention
+  manipulated_vars: ratio 'systematically explored' (details not read)
+  controlled_vars: n/a
+  model_sizes_and_training: 16B (957M active), 104B (6.1B active)
+  benchmarks: reasoning
+  main_findings: Inference cost 1/10 of 32B dense.
+  limitations: ratio sweep not accessed
+  relevance_to_us: low (unread details) — follow-up candidate
+  reproducible_or_adaptable: 'no'
+- id: su2026massive_activations_hybrid
+  aliases: []
+  reported_by:
+  - architecture
+  title: 'Massive Activations in Hybrid Linear Attention Large Language Models: Pre-Attention Spikes and Inter-Spike Plateaus'
+  authors: Zunhai Su et al.
+  year: 2026
+  venue_or_status: arXiv 2608.12149 (v3)
+  url: https://arxiv.org/abs/2608.12149
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Massive activations in layer-interleaved GDN hybrids
+  mechanism: GDN hybrids up to 1.3B
+  manipulated_vars: full-attention density; output gates
+  controlled_vars: pretraining recipe
+  model_sizes_and_training: up to 1.3B
+  benchmarks: downstream, retrieval
+  main_findings: Spikes form just before full-attention layers; full-attn output gates reduce them; deleting 4 largest spike coords -21.9% to -63.6% accuracy.
+  limitations: abstract only
+  relevance_to_us: med — gate confound (C3) and placement-dependent activation dynamics
+  reproducible_or_adaptable: diagnostics adaptable
+- id: lan2026flashmorph
+  aliases: []
+  reported_by:
+  - architecture
+  title: Morphing into Hybrid Attention Models
+  authors: Disen Lan, Jianbin Zheng, Yuxi Ren, Xin Xia, Xuanda Wang, Xuefeng Xiao, Xipeng Qiu, Yu Cheng
+  year: 2026
+  venue_or_status: arXiv 2606.30562
+  url: https://arxiv.org/abs/2606.30562
+  access_level: '[abstract-only]'
+  access_detail: 'architecture: [abstract-only]'
+  research_question: Which layers to keep as full attention under a budget (conversion)
+  mechanism: linear branch per layer + learned gates on synthetic retrieval
+  manipulated_vars: layer subset
+  controlled_vars: full-attention budget
+  model_sizes_and_training: converted pretrained models
+  benchmarks: long-context recall, general
+  main_findings: Learned subset selection beats heuristic layer importance.
+  limitations: abstract only
+  relevance_to_us: low-med — placement matters claim (H4) in conversion setting
+  reproducible_or_adaptable: 'no'
+  ratio_evidence: conversion-time layer selection (not from scratch)
+- id: hsieh2024_ruler
+  aliases:
+  - hsieh2024ruler
+  reported_by:
+  - evaluation
+  - methodology
+  - implementation
+  title: 'RULER: What''s the Real Context Size of Your Long-Context Language Models?'
+  authors: Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shantanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, Boris Ginsburg
+  year: 2024
+  venue_or_status: COLM 2024 (arXiv:2404.06654)
+  url: https://arxiv.org/abs/2404.06654
+  other_urls:
+  - https://arxiv.org/html/2404.06654
+  code_url: '[evaluation] https://github.com/NVIDIA/RULER (commit db43f92ff634bbce1c33d1fb15858aec4bba509a) || [implementation] https://github.com/NVIDIA/RULER (commit db43f92ff634); lm-eval task lm_eval/tasks/ruler'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'evaluation: [code-inspected]; methodology: [read-section]; implementation: [abstract-only] (paper); [code-inspected] (repo, lm-eval task)'
+  research_question: '[evaluation] Does vanilla NIAH overstate long-context ability; what is effective context length across task types? || [methodology] Measure effective context length beyond NIAH. || [implementation] Effective context length beyond vanilla NIAH'
+  mechanism: '[evaluation] Synthetic, configurable tasks: NIAH variants (single/multi-key/multi-value/multi-query), variable tracking, common/frequent word extraction, QA with distractor docs. || [methodology] 13 synthetic tasks in 4 categories with configurable length/complexity. || [implementation] Synthetic tasks with configurable length: NIAH variants (single 1-3, multikey 1-3, multivalue, multiquery), variable tracking (multi-hop), CWE/FWE (aggregation), QA (SQuAD/HotpotQA)'
+  manipulated_vars: '[evaluation] task type, needle/haystack types, #keys/values/queries, context length 4K-128K || [methodology] context length, task complexity'
+  controlled_vars: '[evaluation] 500 samples/task/length; greedy decoding; answer prefix || [methodology] 500 examples per length per task; greedy decoding || [implementation] Prompt templates'
+  model_sizes_and_training: '[evaluation] 17 public long-context LMs (6B-104B + GPT-4, Gemini); also RWKV-v5, Mamba-2.8B || [methodology] evaluates existing models (7B+) || [implementation] 17 long-context models evaluated'
+  benchmarks: '[evaluation] 13 RULER tasks || [implementation] 13 tasks'
+  main_findings: '[evaluation] Near-perfect vanilla NIAH but large degradation with length on full suite; effective length threshold = Llama2-7B 4K avg 85.6%; RWKV/Mamba degrade by 8K; larger models degrade less. Code: length fitted by binary search to <= max_seq_length (not exact); depth from 40 linspace levels; metric string_match_all; CWE params switch to 6/1 below 4K. || [methodology] Most models fall below the Llama2-7B@4K threshold (85.6%) before claimed length; effective length defined by threshold. || [implementation] Near-perfect vanilla NIAH but large drops with length. Only about half of models claiming 32K+ hold up at 32K.'
+  limitations: '[evaluation] Paper [read-section] (appendix truncated). Instruction-style prompts unsuitable for small base LMs; niah_single_1 (noise haystack, one number) and vt (1 chain, noise haystack) are shortcut-solvable (my inference from code). || [methodology] Designed for instruction-following large models. || [implementation] Instruction-style prompts; tiny base models will be near zero without task training (our inference).'
+  relevance_to_us: '[evaluation] high — task taxonomy, knobs and word lists to borrow; shortcut pitfalls to avoid || [methodology] high — n=500 per (task,length) cell default; task taxonomy matches RQ-C. Code inspected: third_party/ruler @ db43f92f NUM_SAMPLES=500. || [implementation] high: task taxonomy maps onto RQ-C (retrieval / multi-hop / aggregation). Use the lm-eval implementation (needs an HF tokenizer; default 4096; set --metadata max_seq_lengths).'
+  reproducible_or_adaptable: '[evaluation] Adaptable: reuse task logic/word lists (Apache-2.0) in custom token-space generator || [implementation] Yes; adapt formats for small models.'
+- id: arora2024jrt
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Just read twice: closing the recall gap for recurrent language models'
+  authors: Simran Arora, Aman Timalsina, Aaryan Singhal, Benjamin Spector, Sabri Eyuboglu, Xinyi Zhao, Ashish Rao, Atri Rudra, Christopher Ré
+  year: 2024
+  venue_or_status: arXiv 2407.05483
+  url: https://arxiv.org/html/2407.05483
+  code_url: https://github.com/HazyResearch/prefix-linear-attention (referenced by Gated DeltaNet README; not cloned)
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Does information order matter for recurrent LMs' recall; can repetition close the gap?
+  mechanism: Set-disjointness theory; JRT-Prompt (repeat context); JRT-RNN (prefix linear attention encoder-decoder)
+  manipulated_vars: prompt repetition, architecture
+  controlled_vars: tasks/prompts
+  model_sizes_and_training: 360M/30B tokens, 1.3B/50B tokens; baselines 130M-2.7B
+  benchmarks: FDA, SWDE, NQ, SQuAD, TriviaQA, DROP (<=1-2K tokens)
+  main_findings: JRT-Prompt +11.0±1.3 pts over 16 recurrent LMs; JRT-RNN ~99% of Transformer at 360M; memory lower bounds depend on order.
+  limitations: Only first ~100K chars read.
+  relevance_to_us: high — link order / query placement must be controlled; query-first favours recurrent models
+  reproducible_or_adaptable: Adaptable as manipulated variable (chain link order)
+- id: kuratov2024_babilong
+  aliases:
+  - kuratov2024babilong
+  reported_by:
+  - evaluation
+  - implementation
+  title: 'BABILong: Testing the Limits of LLMs with Long Context Reasoning-in-a-Haystack'
+  authors: Yuri Kuratov, Aydar Bulatov, Petr Anokhin, Ivan Rodkin, Dmitry Sorokin, Artyom Sorokin, Mikhail Burtsev
+  year: 2024
+  venue_or_status: arXiv 2406.10149 (NeurIPS 2024 D&B per common citation; not verified)
+  url: https://arxiv.org/abs/2406.10149
+  other_urls:
+  - https://arxiv.org/html/2406.10149
+  code_url: '[evaluation] https://github.com/booydar/babilong (commit 7a6efee29f5cac03c3c410e6799c80fd2ffe3610); HF: https://huggingface.co/datasets/RMT-team/babilong || [implementation] https://github.com/booydar/babilong (commit 7a6efee29f5c); lm-eval tasks babilong_qa1..qa20'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'evaluation: [code-inspected]; implementation: [abstract-only] (paper); [code-inspected] (README, lm-eval tasks)'
+  research_question: '[evaluation] Can LLMs reason over facts scattered in very long natural text? || [implementation] Reasoning over facts scattered in long distractor text'
+  mechanism: '[evaluation] bAbI facts inserted between PG19 sentences (token-level splicing, NoiseInjectionDataset) || [implementation] bAbI facts hidden in PG19 background text; 20 tasks (qa1 single fact, qa2 two facts, qa3 three facts, ...)'
+  manipulated_vars: '[evaluation] task qa1-qa20, length 0K-10M, fact position window || [implementation] Context length (up to 10M), task'
+  controlled_vars: '[evaluation] 100 samples/length (public), 1000 up to 32K-128K || [implementation] Facts/questions'
+  model_sizes_and_training: '[evaluation] Many LLMs; fine-tuned GPT-2 137M RMT/ARMT; fine-tuned Mamba-130M || [implementation] Training split RMT-team/babilong-train-5k-samples (5000 per task and length)'
+  benchmarks: BABILong qa1-qa20; lm-eval tasks babilong, babilong_longctx
+  main_findings: '[evaluation] LLMs use ~10-20% of context; RAG ~60% on qa1 but fails multi-fact; fine-tuned small recurrent-memory models solve to 10M-50M tokens. || [implementation] LLMs use only 10-20% of context effectively. RAG about 60% on single-fact QA. Fine-tuned recurrent memory transformers best (up to 50M tokens).'
+  limitations: '[evaluation] Paper [read-section]; 100 samples/length gives ±9.6pp CI; requires fine-tuning at small scale. || [implementation] Haystack is PG19, so overlap risk if PG19 is in our training data.'
+  relevance_to_us: '[evaluation] med — optional Tier-2 multi-hop with natural filler; 0K split as reasoning-only control; reusable token-space splicing || [implementation] high: multi-hop (qa2/qa3) and integration tasks for RQ-C. The training split enables fine-tuning tiny models.'
+  reproducible_or_adaptable: '[evaluation] Reusable generator with our tokenizer || [implementation] Yes.'
+- id: yen2024_helmet
+  aliases:
+  - helmet_repo
+  - yen2024helmet
+  reported_by:
+  - evaluation
+  - implementation
+  title: 'HELMET: How to Evaluate Long-Context Language Models Effectively and Thoroughly'
+  authors: Howard Yen, Tianyu Gao, Minmin Hou, Ke Ding, Daniel Fleischer, Peter Izsak, Moshe Wasserblat, Danqi Chen
+  year: 2024
+  venue_or_status: '[evaluation] arXiv 2410.02694 (v3 Mar 2025) || [implementation] GitHub repo (cloned by another agent)'
+  url: https://arxiv.org/abs/2410.02694
+  other_urls:
+  - https://arxiv.org/html/2410.02694
+  - https://github.com/princeton-nlp/HELMET
+  code_url: '[evaluation] https://github.com/princeton-nlp/HELMET (commit aeadacc6593e9a222a84b0660b186a4e23d2efda) || [implementation] third_party/helmet (commit aeadacc6593e)'
+  access_level: '[read-section] + [code-inspected]'
+  access_detail: 'evaluation: [code-inspected]; implementation: [code-inspected] (directory listing only)'
+  research_question: '[evaluation] Which long-context evaluations are reliable and predictive of downstream performance? || [implementation] Holistic long-context evaluation'
+  mechanism: 7 categories, 8K-128K, correlation analysis across 35 instruction-tuned models
+  manipulated_vars: task category, length
+  controlled_vars: 2-shot demos; Llama-2 tokenizer lengths
+  model_sizes_and_training: public models (base + instruct)
+  benchmarks: RAG, cite, re-rank, ICL, LongQA, summ, synthetic recall (ruler_niah_mk_2, mk_3, mv, json_kv)
+  main_findings: '[evaluation] NIAH-style synthetics poorly predict downstream (no synthetic avg Spearman >0.8 at 128K); distractor-heavy recall correlates better; RAG recommended for dev. Config: max_test_samples 100, shots 2. || [implementation] Not analysed by me.'
+  limitations: '[evaluation] Paper [read-section]; frontier-scale; 100 samples too coarse for us. || [implementation] Listing only.'
+  relevance_to_us: '[evaluation] med — prefer distractor-dense recall; frame claims as capability-specific || [implementation] low (for this report)'
+  reproducible_or_adaptable: Task ideas only
+  pi_notes: 'Merged: evaluation agent''s paper+code entry and implementation agent''s directory-listing-only entry.'
+- id: vodrahalli2024michelangelo
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Michelangelo: Long Context Evaluations Beyond Haystacks via Latent Structure Queries'
+  authors: Kiran Vodrahalli, Santiago Ontañón, et al. (Google DeepMind / Google Research)
+  year: 2024
+  venue_or_status: arXiv 2409.12640
+  url: https://arxiv.org/html/2409.12640
+  code_url: none found in read portion; related open data https://huggingface.co/datasets/openai/mrcr (relationship unverified)
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Evaluate long-context reasoning beyond retrieval
+  mechanism: Latent List (track Python list ops amid filler), MRCR (multi-round coreference), IDK (unanswerable detection)
+  manipulated_vars: length up to 1M, task complexity (1/5/20 relevant ops)
+  controlled_vars: synthetic filler
+  model_sizes_and_training: frontier models (Gemini 1.5, GPT-4, Claude 3.5)
+  benchmarks: Latent List, MRCR, IDK
+  main_findings: Sharp drop before 32K for all frontier models; MRCR recommended as NIAH replacement.
+  limitations: Natural formats at floor for small models; release statement not seen.
+  relevance_to_us: med — 'state tracking under updates' idea -> R3 conflicting values
+  reproducible_or_adaptable: Concept adaptable
+- id: liu2023lostmiddle
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Lost in the Middle: How Language Models Use Long Contexts'
+  authors: Nelson F. Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, Percy Liang
+  year: 2023
+  venue_or_status: TACL 2024 (arXiv 2307.03172)
+  url: https://arxiv.org/html/2307.03172
+  code_url: https://github.com/nelson-liu/lost-in-the-middle (referenced by HELMET code; not cloned)
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Do LMs use information equally across positions?
+  mechanism: Multi-doc QA (10/20/30 docs, gold position swept); JSON UUID KV retrieval (75/140/300 pairs)
+  manipulated_vars: 'position, #docs/#pairs, query placement, architecture'
+  controlled_vars: same items across positions
+  model_sizes_and_training: GPT-3.5, Claude-1.3, MPT-30B, Llama-2 7-70B, Flan-T5/UL2
+  benchmarks: NQ-Open multi-doc QA, KV retrieval
+  main_findings: U-shaped position curve; present in base MPT-30B; query-before-and-after makes KV retrieval near-perfect; Llama-2-7B only recency-biased.
+  limitations: Large models only.
+  relevance_to_us: high — position grid must cover edges; query placement is a confound to fix
+  reproducible_or_adaptable: Design adaptable (R4)
+- id: blouir2024birdie
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Birdie: Advancing State Space Models with Reward-Driven Objectives and Curricula'
+  authors: Sam Blouir, Jimmy T.H. Smith, Antonios Anastasopoulos, Amarda Shehu
+  year: 2024
+  venue_or_status: arXiv 2411.01030 (v5 Feb 2025)
+  url: https://arxiv.org/html/2411.01030
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Can pretraining objective mixtures close SSM retrieval gaps?
+  mechanism: RL-selected mixture of copying, deshuffling, selective copying, infilling, autoencoding, prefix-LM, NTP
+  manipulated_vars: objective mixture (dynamic vs fixed vs NTP), architecture
+  controlled_vars: 1.4B, ~32B tokens
+  model_sizes_and_training: 1.4B Hawk/Gated SSM/Transformer
+  benchmarks: phonebook (750-800 entries, 16K ctx, up to 32 numbers), SQuAD v2, 21 lm-eval tasks, story infilling
+  main_findings: Birdie SSMs reach 100% single-number phonebook; NTP SSMs fail; fixed mixtures (UL2, fixed ratio) did not produce retrieval; second-stage pretraining attempt failed.
+  limitations: Only first 100K chars read.
+  relevance_to_us: high — evidence that training-time synthetic inclusion (option i) can work or fail depending on mixture; pilot needed
+  reproducible_or_adaptable: Concept
+- id: fang2024longppl
+  aliases: []
+  reported_by:
+  - evaluation
+  title: What is Wrong with Perplexity for Long-context Language Modeling?
+  authors: Lizhe Fang, Yifei Wang, Zhaoyang Liu, Chenheng Zhang, Stefanie Jegelka, Jinyang Gao, Bolin Ding, Yisen Wang
+  year: 2024
+  venue_or_status: arXiv 2410.23771 (v5)
+  url: https://arxiv.org/html/2410.23771
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Why PPL fails to track long-context ability; better metric?
+  mechanism: 'LongPPL over key tokens: LSD>2 and LCL>-2 with short K=4096, evaluator LM; LongCE loss'
+  manipulated_vars: metric
+  controlled_vars: GovReport docs
+  model_sizes_and_training: public long-context LMs; evaluator Qwen2-72B-Instruct or Llama-3.1-8B
+  benchmarks: LongBench, LongEval, RULER correlations
+  main_findings: LongPPL Pearson -0.96/-0.90/-0.90 vs PPL -0.18/0.24/0.27.
+  limitations: Evaluator-model dependence; using one of our arms as evaluator would bias toward it (my inference).
+  relevance_to_us: high — motivates key-token loss; we use model-free repeat-token proxy instead
+  reproducible_or_adaptable: Adaptable concept
+- id: gao2024_prolong
+  aliases:
+  - gao2024prolong
+  reported_by:
+  - evaluation
+  - methodology
+  - implementation
+  title: How to Train Long-Context Language Models (Effectively)
+  authors: Tianyu Gao, Alexander Wettig, Howard Yen, Danqi Chen
+  year: 2024
+  venue_or_status: '[evaluation] arXiv 2410.02660 (v4) || [methodology] arXiv:2410.02660 (ACL 2025)'
+  url: https://arxiv.org/abs/2410.02660
+  other_urls:
+  - https://arxiv.org/html/2410.02660
+  code_url: '[methodology] https://github.com/princeton-nlp/ProLong || [implementation] https://huggingface.co/datasets/princeton-nlp/prolong-data-64K'
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]; methodology: [read-section]; implementation: [abstract-only] (paper); [abstract-only] (data card)'
+  research_question: '[evaluation] Data/recipe for long-context continued training; evaluation protocol || [methodology] Data, length and SFT choices for long-context continued training; how to evaluate. || [implementation] Data and recipe for long-context continued training'
+  mechanism: '[evaluation] HELMET-based dev evaluation after SFT || [methodology] Ablations at 5B-token scale; HELMET-style downstream evals after SFT. || [implementation] Long data (code repos, books) mixed with high-quality short data; train longer than eval length; evaluate after SFT'
+  manipulated_vars: '[evaluation] long/short data ratio, lengths, SFT || [methodology] long-data mix, training length, SFT data, masking, PE extrapolation || [implementation] Data mix, lengths, SFT data'
+  controlled_vars: '[evaluation] Llama-3-8B base || [methodology] base model (Llama-3-8B)'
+  model_sizes_and_training: '[methodology] 8B; 40B tokens long-context training || [implementation] ProLong-8B, 40B tokens'
+  benchmarks: '[evaluation] HELMET subsets: recall (JSON KV), RAG, re-rank, ICL, NarrativeQA, Multi-LexSum || [methodology] long-context downstream tasks; NIAH; perplexity || [implementation] Broad long-context suite (HELMET-like); argues perplexity/NIAH unreliable'
+  main_findings: '[evaluation] PPL and NIAH not robust for guiding development; 100% long data improves PG19 PPL but hurts downstream; evaluate after SFT for clearer signals. || [methodology] Perplexity/NIAH unreliable for decisions; books+code long data mixed with short data; training beyond eval length helps; cross-document attention masking used. || [implementation] Code repos and books are good long sources but need high-quality short data mixed in; training on longer sequences than eval helps. Data card: 31B tokens, 149 GB, Llama-3-tokenised MDS packed to 65,536; about 20.9% each of code repos, books, FineWeb-Edu, FineWeb.'
+  limitations: '[methodology] Continued training of a large model, not from-scratch small models. || [implementation] 8B scale, continued training; data pre-tokenised with Llama-3 (not reusable with our tokenizer).'
+  relevance_to_us: '[evaluation] high — PPL alone insufficient; supports option (ii) logic || [methodology] high — perplexity secondary; long/short mix in extension stage; try L_ext=32K. || [implementation] med: recipe guidance for our phase-2 long-context mix; evaluation caution.'
+  reproducible_or_adaptable: '[evaluation] Principles || [implementation] Recipe adaptable; data not directly.'
+- id: modarressi2025nolima
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'NoLiMa: Long-Context Evaluation Beyond Literal Matching'
+  authors: Ali Modarressi, Hanieh Deilamsalehy, Franck Dernoncourt, Trung Bui, Ryan Rossi, Seunghyun Yoon, Hinrich Schütze
+  year: 2025
+  venue_or_status: arXiv 2502.05167 (ICML keyword; venue not confirmed)
+  url: https://arxiv.org/html/2502.05167
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Does NIAH performance rely on lexical overlap?
+  mechanism: Needles with minimal lexical overlap to question (latent association)
+  manipulated_vars: length 250-32K (some to 128K), hops, literal vs latent
+  controlled_vars: book-snippet haystacks
+  model_sizes_and_training: 13 models claiming >=128K
+  benchmarks: NoLiMa
+  main_findings: 11/13 models <=50% of short baseline at 32K; literal matches make it easy; distracting literal matches hurt.
+  limitations: Needs world knowledge — infeasible at our scale.
+  relevance_to_us: med — our tasks are literal-match only; state as limitation
+  reproducible_or_adaptable: 'No'
+- id: an2024string
+  aliases: []
+  reported_by:
+  - evaluation
+  title: Why Does the Effective Context Length of LLMs Fall Short?
+  authors: Chenxin An, Jun Zhang, Ming Zhong, Lei Li, Shansan Gong, Yao Luo, Jingjing Xu, Lingpeng Kong
+  year: 2024
+  venue_or_status: arXiv 2410.18745
+  url: https://arxiv.org/html/2410.18745
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Why effective context < training length?
+  mechanism: Left-skewed relative-position frequency; STRING shifted RoPE at inference
+  manipulated_vars: training length, position remapping
+  controlled_vars: 4-needle NIAH, 128-token steps, 500 trials/length
+  model_sizes_and_training: public LLMs incl. Llama 3.1 70B, Qwen2 72B; small TinyLlama-style training on SlimPajama
+  benchmarks: NIAH-4, RULER, InfiniteBench
+  main_findings: Positions >=1536 <5% of occurrences at 2048 window; effective length often <50% of training length; STRING +10 pts.
+  relevance_to_us: high — beyond-train-length eval for full attention measures RoPE extrapolation; tag ID vs EXTRAP cells
+  reproducible_or_adaptable: Measurement protocol adaptable
+- id: mohtashami2023landmark
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Landmark Attention: Random-Access Infinite Context Length for Transformers'
+  authors: Amirkeivan Mohtashami, Martin Jaggi
+  year: 2023
+  venue_or_status: NeurIPS 2023 (arXiv 2305.16300)
+  url: https://arxiv.org/html/2305.16300v2
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Random-access long context via landmark tokens
+  mechanism: Landmark tokens + block retrieval; passkey retrieval test
+  manipulated_vars: prompt length
+  controlled_vars: 50 random passkey/position trials
+  model_sizes_and_training: LLaMA 7B fine-tuned
+  benchmarks: passkey retrieval (prompt quoted in report), PG19/arXiv PPL
+  main_findings: 'Defines canonical passkey format: repeated ''grass is green...'' filler, passkey 1-50000, correct if first integer in first 100 tokens.'
+  relevance_to_us: med — R0 sanity task format
+  reproducible_or_adaptable: 'Yes'
+- id: chen2024stuffedmamba
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'Stuffed Mamba: Oversized States Lead to the Inability to Forget'
+  authors: Yingfa Chen, Xinrong Zhang, Shengding Hu, Xu Han, Zhiyuan Liu, Maosong Sun
+  year: 2024
+  venue_or_status: arXiv 2410.07145 (v4 Jan 2026)
+  url: https://arxiv.org/html/2410.07145
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Why do RNNs fail beyond training length; state size vs capacity
+  mechanism: State collapse analysis; passkey; per-position LM loss
+  manipulated_vars: training length (to 256K), model/state size
+  controlled_vars: RedPajama-V2 (docs >=4K), NTP only
+  model_sizes_and_training: Mamba-2 130M-1.3B official + continued pretraining; from scratch 36M, 47M, 85M
+  benchmarks: 5-digit passkey (T_recall = max length with >95% acc), per-position LM loss
+  main_findings: Mamba-2 near-perfect passkey within 8K but poor >16K; LM loss rises past train length; forget threshold linear in state size; recall threshold exponential in state size (fits given; units unconfirmed); passkey used for LR/checkpoint selection (NTP-only training).
+  limitations: Sample counts n not stated; state-size units unclear.
+  relevance_to_us: high — passkey measurable zero-shot at 36-85M; per-position loss necessary diagnostic
+  reproducible_or_adaptable: Protocol adaptable
+- id: bai2023longbench
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'LongBench: A Bilingual, Multitask Benchmark for Long Context Understanding'
+  authors: Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, Juanzi Li
+  year: 2023
+  venue_or_status: ACL 2024 (arXiv 2308.14508)
+  url: https://arxiv.org/abs/2308.14508
+  code_url: https://github.com/THUDM/LongBench (not visited); lm-eval task 'longbench' present
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Bilingual long-context benchmark
+  mechanism: 21 datasets, 6 categories
+  benchmarks: single/multi-doc QA, summarization, few-shot, synthetic, code; avg ~6.7K EN words
+  main_findings: —
+  limitations: Natural tasks at floor for 20-60M (1.3B models score 11-18 avg per Gated DeltaNet).
+  relevance_to_us: low — exclude
+  reproducible_or_adaptable: 'No'
+- id: bai2024longbenchv2
+  aliases: []
+  reported_by:
+  - evaluation
+  title: 'LongBench v2: Towards Deeper Understanding and Reasoning on Realistic Long-context Multitasks'
+  authors: Yushi Bai, Shangqing Tu, Jiajie Zhang, et al.
+  year: 2024
+  venue_or_status: arXiv 2412.15204
+  url: https://arxiv.org/abs/2412.15204
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Hard realistic long-context MCQ
+  mechanism: 503 MCQs, 8K-2M words
+  benchmarks: LongBench v2
+  main_findings: Human experts 53.7% (15 min); best direct model 50.1%; o1-preview 57.7%.
+  limitations: Far beyond our scale.
+  relevance_to_us: low — exclude
+  reproducible_or_adaptable: 'No'
+- id: zhang2024infinitebench
+  aliases: []
+  reported_by:
+  - evaluation
+  title: '∞Bench: Extending Long Context Evaluation Beyond 100K Tokens'
+  authors: Xinrong Zhang, Yingfa Chen, Shengding Hu, Zihang Xu, Junhao Chen, Moo Khai Hao, Xu Han, Zhen Leng Thai, Shuo Wang, Zhiyuan Liu, Maosong Sun
+  year: 2024
+  venue_or_status: arXiv 2402.13718
+  url: https://arxiv.org/abs/2402.13718
+  code_url: https://github.com/OpenBMB/InfiniteBench (README read)
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: '>100K-token benchmark'
+  mechanism: 12 tasks synthetic + realistic
+  benchmarks: Retrieve.PassKey(590), Retrieve.Number(590), Retrieve.KV(500), Math.Find(350), Code.Debug, En.QA/MC/Sum/Dia, Zh.QA, Math.Calc, Code.Run
+  main_findings: Avg inputs 44K-193K tokens (README table).
+  limitations: Lengths exceed our 32K; natural tasks at floor. README [read-section].
+  relevance_to_us: low — task ideas only
+  reproducible_or_adaptable: 'No'
+- id: poli2024mad
+  aliases: []
+  reported_by:
+  - evaluation
+  title: Mechanistic Design and Scaling of Hybrid Architectures
+  authors: Michael Poli, Armin W Thomas, Eric Nguyen, Pragaash Ponnusamy, Björn Deiseroth, Kristian Kersting, Taiji Suzuki, Brian Hie, Stefano Ermon, Christopher Ré, Ce Zhang, Stefano Massaroli
+  year: 2024
+  venue_or_status: arXiv 2403.17844 (v2 Aug 2024)
+  url: https://arxiv.org/abs/2403.17844
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Do small synthetic tasks predict architecture scaling?
+  mechanism: MAD synthetic suite (recall, compression, ...)
+  manipulated_vars: architecture/hybrid topology
+  model_sizes_and_training: '>500 LMs 70M-7B'
+  benchmarks: MAD synthetics; compute-optimal PPL
+  main_findings: MAD performance correlates with compute-optimal perplexity; hybrids beat Transformer++/Hyena/Mamba.
+  limitations: Task list not accessed.
+  relevance_to_us: low-med — supports synthetic proxies
+  reproducible_or_adaptable: Unknown
+- id: sanford2024khop
+  aliases: []
+  reported_by:
+  - evaluation
+  title: Transformers, parallel computation, and logarithmic depth
+  authors: Clayton Sanford, Daniel Hsu, Matus Telgarsky
+  year: 2024
+  venue_or_status: arXiv 2402.09268
+  url: https://arxiv.org/abs/2402.09268
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Depth/parallelism of transformers
+  mechanism: MPC simulation
+  main_findings: Logarithmic depth suffices for transformers on basic tasks other models cannot solve efficiently (k-hop task definition not confirmed from abstract).
+  limitations: Abstract only; k-hop definition not verified.
+  relevance_to_us: low — background for multi-hop chains
+  reproducible_or_adaptable: 'No'
+- id: xiong2023effective
+  aliases: []
+  reported_by:
+  - evaluation
+  title: Effective Long-Context Scaling of Foundation Models
+  authors: Wenhan Xiong, Jingyu Liu, Igor Molybog, et al. (21 authors)
+  year: 2023
+  venue_or_status: arXiv 2309.16039
+  url: https://arxiv.org/abs/2309.16039
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Long-context continued pretraining of Llama 2
+  benchmarks: synthetic probing, LM, research benchmarks
+  main_findings: Could not confirm loss-vs-context power-law claim from abstract page.
+  limitations: Abstract only; not used for any claim.
+  relevance_to_us: low
+  reproducible_or_adaptable: 'No'
+- id: hu2024pplreflect
+  aliases: []
+  reported_by:
+  - evaluation
+  title: Can Perplexity Reflect Large Language Model's Ability in Long Text Understanding?
+  authors: Yutong Hu, Quzhe Huang, Mingxu Tao, Chen Zhang, Yansong Feng
+  year: 2024
+  venue_or_status: arXiv 2405.06105
+  url: https://arxiv.org/abs/2405.06105
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Does PPL track long-text understanding?
+  main_findings: No correlation between PPL and long-text understanding; PPL reflects local context.
+  limitations: Abstract only.
+  relevance_to_us: med — aggregate PPL insufficient
+  reproducible_or_adaptable: 'No'
+- id: kamradt2023niah
+  aliases: []
+  reported_by:
+  - evaluation
+  title: LLMTest_NeedleInAHaystack
+  authors: Greg Kamradt
+  year: 2023
+  venue_or_status: GitHub repository
+  url: https://github.com/gkamradt/LLMTest_NeedleInAHaystack
+  code_url: https://github.com/gkamradt/LLMTest_NeedleInAHaystack
+  access_level: '[read-section]'
+  access_detail: 'evaluation: [read-section]'
+  research_question: Pressure-test long-context retrieval
+  mechanism: Length x depth sweep, Paul Graham essay haystack
+  manipulated_vars: length (example 2K-32K, 8 steps), depth (11, sigmoid), seeds
+  benchmarks: single/multi-needle, UUID, UUID-chain
+  main_findings: README describes v2 tasks/scorers (exact match, fractional, hops correct).
+  limitations: README only.
+  relevance_to_us: low-med — grid design
+  reproducible_or_adaptable: Design
+- id: rae2019_pg19
+  aliases:
+  - deepmind_pg19
+  - rae2019pg19
+  reported_by:
+  - evaluation
+  - implementation
+  title: Compressive Transformers for Long-Range Sequence Modelling (PG-19)
+  authors: Jack W. Rae, Anna Potapenko, Siddhant M. Jayakumar, Timothy P. Lillicrap
+  year: 2019
+  venue_or_status: '[evaluation] arXiv 1911.05507 (ICLR 2020 per common citation, not verified) || [implementation] HF dataset card deepmind/pg19; introduced in arXiv 1911.05507 (Compressive Transformers; paper not opened, authors via arXiv API)'
+  url: https://arxiv.org/abs/1911.05507
+  other_urls:
+  - https://huggingface.co/datasets/deepmind/pg19
+  code_url: '[evaluation] https://huggingface.co/datasets/deepmind/pg19 || [implementation] Parquet mirror https://huggingface.co/datasets/emozilla/pg19 ; fla-hub/pg19'
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]; implementation: [abstract-only] (card) + datasets-server statistics'
+  research_question: '[evaluation] Long-range LM benchmark from books || [implementation] n/a (data)'
+  mechanism: Full public-domain books
+  model_sizes_and_training: 'Apache-2.0; train 28,602 / val 50 / test 100 books; 11.74 GB download; script-based on HF. emozilla mirror: 23 train Parquet shards of 0.26-0.30 GB + 24.9 MB test.'
+  benchmarks: '[evaluation] PG-19 || [implementation] Long-context LM perplexity'
+  main_findings: '[evaluation] HF card: 28,602 train / 50 val / 100 test books, pre-1919, Apache-2.0. || [implementation] Train text median about 301K chars, mean about 379K chars (partial stats, 13.7K rows), i.e. median about 80K tokens with a 16K BPE; essentially all books exceed 32K tokens.'
+  limitations: '[evaluation] Token statistics not seen. || [implementation] Pre-1919 English (domain shift); BABILong haystack overlap.'
+  relevance_to_us: '[evaluation] high — held-out long documents for LM-1 and eval filler || [implementation] high: long-document source and long-context eval set.'
+  reproducible_or_adaptable: 'Yes'
+  pi_notes: 'Merged: evaluation agent''s paper entry (arXiv 1911.05507, abstract only) and implementation agent''s dataset-card entry (HF deepmind/pg19 + datasets-server statistics).'
+- id: eleuther_lm_evaluation_harness
+  aliases:
+  - eleuther_lm_eval_harness
+  - eleuther_lmeval
+  reported_by:
+  - evaluation
+  - implementation
+  title: lm-evaluation-harness (RULER, BABILong, LongBench, InfiniteBench tasks)
+  authors: EleutherAI
+  year: 2026
+  venue_or_status: GitHub repository
+  url: https://github.com/EleutherAI/lm-evaluation-harness
+  code_url: https://github.com/EleutherAI/lm-evaluation-harness (commit d6de81643928d653435c431bae19945d41d32520)
+  access_level: '[code-inspected]'
+  access_detail: 'evaluation: [code-inspected]; implementation: [code-inspected]'
+  research_question: '[evaluation] Standardized evaluation || [implementation] n/a (software)'
+  mechanism: '[evaluation] tasks/ruler (13 tasks, generate_until, tokenizer required, default 4096, metadata max_seq_lengths); tasks/babilong (qa1-qa20 0K; babilong_longctx qa1-qa5 to 128K); longbench, longbench2, infinitebench, scrolls || [implementation] Task registry; HF model wrapper; includes ruler, babilong, longbench, longbench2, scrolls task families'
+  main_findings: '[evaluation] RULER tasks need HF tokenizer and generation; usable for cross-validation on public checkpoints. || [implementation] RULER requires a tokenizer from model_args; default max length 4096; lengths via --metadata; set max_length in model_args to avoid truncation. fla provides evals/harness.py to make fla models compatible.'
+  limitations: '[evaluation] Generation-based; custom hybrid models need an LM wrapper. || [implementation] Generation-based scoring is slow and launch-bound for tiny models.'
+  relevance_to_us: '[evaluation] med — cross-validation of custom generator || [implementation] med: standardised eval runner; may need custom log-likelihood scoring.'
+  reproducible_or_adaptable: '[evaluation] Reusable || [implementation] Yes.'
+- id: openai_mrcr
+  aliases: []
+  reported_by:
+  - evaluation
+  title: openai/mrcr dataset
+  authors: OpenAI
+  year: 2025
+  venue_or_status: Hugging Face dataset (MIT)
+  url: https://huggingface.co/datasets/openai/mrcr
+  access_level: '[abstract-only]'
+  access_detail: 'evaluation: [abstract-only]'
+  research_question: Open MRCR-style long-context eval
+  mechanism: 2/4/8-needle multi-round coreference
+  main_findings: Search-snippet level only; bugfix 12/2025 for ~10% datapoints.
+  limitations: Not visited directly; relationship to Michelangelo unverified.
+  relevance_to_us: low — floor at our scale
+  reproducible_or_adaptable: 'No'
+- id: bouthillier2021variance
+  aliases: []
+  reported_by:
+  - methodology
+  title: Accounting for Variance in Machine Learning Benchmarks
+  authors: Bouthillier, Delaunay, Bronzi, Trofimov, Nichyporuk, Szeto, Sepah, Raff, Madan, Voleti, Kahou, Michalski, Serdyuk, Arbel, Pal, Varoquaux, Vincent
+  year: 2021
+  venue_or_status: MLSys 2021 (arXiv:2103.03098)
+  url: https://arxiv.org/abs/2103.03098
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Which sources of variance affect ML benchmark conclusions and how should two pipelines be compared under a budget?
+  mechanism: Randomize seeds of each variance source 200x; simulate decision criteria (single point, average, P(A>B) test).
+  manipulated_vars: data bootstrap, data augmentation, data order, weight init, dropout, numerical noise, HPO procedure
+  controlled_vars: all other sources fixed while one varies; fixed hardware per task
+  model_sizes_and_training: 5 case studies (e.g., BERT on GLUE RTE/SST-2, VGG11 CIFAR-10, others)
+  benchmarks: GLUE-RTE, GLUE-SST2, CIFAR-10 and others
+  main_findings: Data sampling is the largest variance source; init variance generally <50% of bootstrap variance, on par with data order; adding more variance sources improves estimator (51x cheaper biased estimator); single-point comparisons ~10% FP and ~75% FN; recommend P(A>B) with gamma=0.75, significant if CI lower bound >0.5.
+  limitations: Classification-centric; few datasets; appendices not read by me.
+  relevance_to_us: high — justifies randomizing init+data order per seed, bootstrapping eval items, and P(A>B) as practical-significance companion.
+  reproducible_or_adaptable: adaptable (decision rule directly usable)
+- id: dodge2020finetuning
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'Fine-Tuning Pretrained Language Models: Weight Initializations, Data Orders, and Early Stopping'
+  authors: Dodge, Ilharco, Schwartz, Farhadi, Hajishirzi, Smith
+  year: 2020
+  venue_or_status: arXiv:2002.06305
+  url: https://arxiv.org/abs/2002.06305
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How much do seeds (init vs data order) affect BERT fine-tuning, and can early stopping save compute?
+  mechanism: Separate seeds for classifier init and data order; 2,100 fine-tuning trials.
+  manipulated_vars: weight-init seed, data-order seed
+  controlled_vars: hyperparameters, model
+  model_sizes_and_training: BERT fine-tuning on 4 GLUE tasks
+  benchmarks: MRPC, RTE, CoLA, SST
+  main_findings: Init and data order contribute comparably to variance; some inits good across tasks; start-many-stop-early (t,f,p) algorithm saves compute.
+  limitations: Fine-tuning, not pretraining; small datasets.
+  relevance_to_us: med — supports separate logged RNG streams for init and data order; warns against seed cherry-picking.
+  reproducible_or_adaptable: adaptable
+- id: picard2021seed
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'torch.manual_seed(3407) is all you need: On the influence of random seeds in deep learning architectures for computer vision'
+  authors: Picard
+  year: 2021
+  venue_or_status: arXiv:2109.08203
+  url: https://arxiv.org/abs/2109.08203
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How large is seed variance and how easy is it to find outlier seeds?
+  mechanism: Scan 10^4 seeds (ResNet-9 CIFAR-10, 30 s each) and 50 seeds on ImageNet with pretrained models.
+  manipulated_vars: random seed
+  controlled_vars: architecture, recipe
+  model_sizes_and_training: ResNet-9 CIFAR-10; ResNet50/ViT ImageNet fine-tuning
+  benchmarks: CIFAR-10, ImageNet
+  main_findings: Variance modest but outliers easy to find; spread does not shrink after convergence.
+  limitations: Short training; vision only.
+  relevance_to_us: med — pre-declare seed indices; disjoint sweep seeds; never report best seed.
+  reproducible_or_adaptable: adaptable
+- id: henderson2018rlmatters
+  aliases: []
+  reported_by:
+  - methodology
+  title: Deep Reinforcement Learning that Matters
+  authors: Henderson, Islam, Bachman, Pineau, Precup, Meger
+  year: 2018
+  venue_or_status: AAAI 2018 (arXiv:1709.06560)
+  url: https://arxiv.org/abs/1709.06560
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: What makes deep RL results irreproducible and how should they be reported?
+  mechanism: Controlled reruns varying seeds, hyperparameters, codebases; significance and bootstrap analyses.
+  manipulated_vars: random seeds, network architecture, reward scale, codebase
+  controlled_vars: hyperparameters within each experiment
+  model_sizes_and_training: TRPO, PPO, DDPG, ACKTR on MuJoCo
+  benchmarks: HalfCheetah, Hopper, etc.
+  main_findings: Two groups of 5 seeds (same HPs) of TRPO on HalfCheetah differ significantly (t=-9.09, p=0.0016); recommend bootstrap CIs, significance tests, bootstrap power analysis.
+  limitations: RL-specific variance much larger than supervised.
+  relevance_to_us: med — motivates power analysis for seed counts and reporting CIs.
+  reproducible_or_adaptable: adaptable
+- id: agarwal2021rliable
+  aliases: []
+  reported_by:
+  - methodology
+  title: Deep Reinforcement Learning at the Edge of the Statistical Precipice
+  authors: Agarwal, Schwarzer, Castro, Courville, Bellemare
+  year: 2021
+  venue_or_status: NeurIPS 2021 (Outstanding Paper); arXiv:2108.13264
+  url: https://arxiv.org/abs/2108.13264
+  code_url: https://agarwl.github.io/rliable
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How to report aggregate performance reliably with few runs?
+  mechanism: Stratified bootstrap CIs, IQM, performance profiles, probability of improvement.
+  manipulated_vars: number of runs N, aggregate metric
+  controlled_vars: algorithms/benchmarks
+  model_sizes_and_training: Atari 100k, ALE, Procgen, DMC agents
+  benchmarks: Atari 100k, ALE, Procgen, DeepMind Control
+  main_findings: 3-10 runs typical; point estimates misleading; percentile stratified bootstrap gives good coverage for N>=10 but underestimates with 3 runs; IQM has smaller CIs than median.
+  limitations: RL score aggregation; few-run bootstrap undercoverage.
+  relevance_to_us: 'high — we have 2-5 seeds: stratified (task x length) bootstrap plus seed-level t cross-check.'
+  reproducible_or_adaptable: adaptable (rliable library)
+- id: miller2024errorbars
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations'
+  authors: Miller
+  year: 2024
+  venue_or_status: arXiv:2411.00640
+  url: https://arxiv.org/abs/2411.00640
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How to compute SEs, compare models, and plan sample sizes for LM evals?
+  mechanism: Super-population framing; CLT SE, clustered SE, paired differences, variance reduction, power formulas.
+  manipulated_vars: n/a (methods paper)
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: 'examples: MATH, HumanEval, MGSM, DROP, RACE-H'
+  main_findings: Clustered SEs can be ~3x naive (DROP); paired differences reduce variance by 2Cov/n; n=(z_a/2+z_b)^2 omega^2/delta^2 (~969 for 3 pp); token-probability scoring removes conditional variance.
+  limitations: Read via tool extraction of HTML; assumes iid items within clusters.
+  relevance_to_us: high — paired item-level design, clustered items, and item-count power analysis (500/cell).
+  reproducible_or_adaptable: reproducible (formulas)
+- id: madaan2024variance
+  aliases: []
+  reported_by:
+  - methodology
+  title: Quantifying Variance in Evaluation Benchmarks
+  authors: Madaan, Singh, Schaeffer, Poulton, Koyejo, Stenetorp, Narang, Hupkes
+  year: 2024
+  venue_or_status: arXiv:2406.10229
+  url: https://arxiv.org/abs/2406.10229
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How large is seed variance on LM benchmarks and how to increase SNR?
+  mechanism: 10 Llama-style 7B models differing only in init seed (deterministic data order), 21 checkpoints each to 210B tokens.
+  manipulated_vars: init seed; discrete vs continuous metrics; cloze vs MCQ
+  controlled_vars: data, data order, hyperparameters
+  model_sizes_and_training: 7B, 210B tokens, 10 seeds
+  benchmarks: AGIEval, ARC-C, BBH, COPA, GSM8k, Hellaswag, HumanEval, MATH, MMLU, NQ, PIQA, SIQA, TriviaQA
+  main_findings: Seed SD 0.21-2.15 pp; generally below per-model 95% CI; continuous metrics have much higher SNR; monotonicity metric for benchmark stability.
+  limitations: Single large scale; standard short-context benchmarks.
+  relevance_to_us: high — report continuous gold log-prob alongside accuracy; model of deterministic data order across seeds.
+  reproducible_or_adaptable: adaptable
+- id: jordan_modded_nanogpt
+  aliases:
+  - modded_nanogpt
+  reported_by:
+  - methodology
+  - implementation
+  title: modded-nanogpt (NanoGPT speedrun)
+  authors: Keller Jordan and contributors
+  year: 2026
+  venue_or_status: GitHub repository (commit 4ea6b937337a4889b8cfe3f38a93d120048d8f71, 2026-09-28)
+  url: https://github.com/KellerJordan/modded-nanogpt
+  code_url: https://github.com/KellerJordan/modded-nanogpt (commit 4ea6b937337a)
+  access_level: '[code-inspected]'
+  access_detail: 'methodology: [code-inspected]; implementation: [code-inspected]'
+  research_question: '[methodology] Fastest time to 3.28 FineWeb val loss for a GPT-2-small-scale model. || [implementation] Fastest 8xH100 training to 3.28 FineWeb val loss'
+  mechanism: '[methodology] Record-tracking with statistical acceptance (p<0.01 that mean val loss <=3.28); many architecture/optimizer tricks (Muon, RoPE, QK-norm, ReLU^2, softcap, FlexAttention). || [implementation] Muon, ReLU^2, QK-norm, zero-init projections, untied embed/head, value embeddings, U-net skips, logit softcap, FlexAttention long-context sliding windows with window warmup, bf16'
+  manipulated_vars: '[methodology] architecture/optimizer/system per record || [implementation] Training recipe/architecture tricks (record table)'
+  controlled_vars: target loss, hardware (8xH100), data
+  model_sizes_and_training: '[methodology] ~124M-class, <330M tokens per record || [implementation] GPT-2 small scale; record under 40 s on 8xH100 (README)'
+  benchmarks: '[methodology] FineWeb val loss || [implementation] FineWeb validation loss'
+  main_findings: '[methodology] 80 reruns of the 2025-01-04 SoftCap record: val-loss std 0.0019, mean 3.2791 (records/track_1_short/2025-01-04_SoftCap/README.md). || [implementation] Muon was a large early gain (24.9 min record) and the FlexAttention 64K-ctx change cut time from 7.2 to 5.03 min (record table).'
+  limitations: '[methodology] Single metric (loss); 8xH100 not our hardware. || [implementation] Many tricks alter the attention pathway itself; the code has become complex.'
+  relevance_to_us: '[methodology] high — empirical anchor for LM-loss seed noise (~0.002 nats) at our scale; one-sample t-test acceptance practice; logging of code+env in run logs. || [implementation] med: borrow optimizer-level ideas only; avoid attention-pathway tricks that would confound the ratio manipulation.'
+  reproducible_or_adaptable: '[methodology] adaptable || [implementation] Partially.'
+- id: mlcommons_training_rules
+  aliases: []
+  reported_by:
+  - methodology
+  title: MLPerf Training Rules
+  authors: MLCommons
+  year: 2026
+  venue_or_status: Policy document (training_policies, master)
+  url: https://github.com/mlcommons/training_policies/blob/master/training_rules.adoc
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Fair, reproducible time-to-train benchmarking rules.
+  mechanism: Fixed quality targets, minimum number of runs, drop fastest/slowest, seed provenance rules, HP borrowing.
+  manipulated_vars: n/a
+  controlled_vars: quality targets, eval frequency, timing rules
+  model_sizes_and_training: various MLPerf benchmarks
+  benchmarks: MLPerf Training
+  main_findings: 10 runs for small-LLM pretraining; result = mean after dropping fastest and slowest; seeds from clock/urandom and logged; must represent median, not best-of-N; clock may not be paused.
+  limitations: Only first ~100k chars processed; throughput-focused.
+  relevance_to_us: med — no best-of-N, log all seeds, divergence handling analogue.
+  reproducible_or_adaptable: adaptable
+- id: zhou2024lengthgen
+  aliases: []
+  reported_by:
+  - methodology
+  title: Transformers Can Achieve Length Generalization But Not Robustly
+  authors: Zhou, Alon, Chen, Wang, Agarwal, Zhou
+  year: 2024
+  venue_or_status: arXiv:2402.09371
+  url: https://arxiv.org/abs/2402.09371
+  access_level: '[abstract-only]'
+  access_detail: 'methodology: [abstract-only]'
+  research_question: Can Transformers length-generalize on addition and how robust is it?
+  mechanism: Data format + position encoding choices.
+  manipulated_vars: data format, PE, seeds
+  controlled_vars: task
+  model_sizes_and_training: not read
+  benchmarks: integer addition
+  main_findings: Extrapolation to 2.5x input length possible; fragile — strongly affected by weight init and data order.
+  limitations: Abstract only; arithmetic task.
+  relevance_to_us: high — expect high seed variance on long-context/extrapolation metrics; motivates gate G3.
+  reproducible_or_adaptable: n/a
+- id: wortsman2023smallscale
+  aliases: []
+  reported_by:
+  - methodology
+  title: Small-scale proxies for large-scale Transformer training instabilities
+  authors: Wortsman, Liu, Xiao, Everett, Alemi, Adlam, Co-Reyes, Gur, Kumar, Novak, Pennington, Sohl-Dickstein, Xu, Lee, Gilmer, Kornblith
+  year: 2023
+  venue_or_status: arXiv:2309.14322 (ICLR 2024)
+  url: https://arxiv.org/abs/2309.14322
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Can large-scale instabilities be reproduced and mitigated in small models?
+  mechanism: LR sweeps across scales; LR-sensitivity metric; interventions.
+  manipulated_vars: LR, qk-layernorm, z-loss, warmup, weight decay coupling, muP, depth/width
+  controlled_vars: data, recipe
+  model_sizes_and_training: 2.4M-1.2B params; AdamW b2=0.95, eps 1e-8, clip 1, warmup 5e3 of 1e5 steps, cosine to 1e-5, indep. wd 1e-4, z-loss 1e-4
+  benchmarks: final eval loss (C4)
+  main_findings: Attention-logit growth and output-logit divergence appear in small models at high LR; qk-layernorm and z-loss reduce LR sensitivity; longer warmup and independent weight decay reduce sensitivity; depth increases sensitivity.
+  limitations: Loss only; dense Transformers only.
+  relevance_to_us: high — QK-norm + z-loss in all configs to make a shared LR defensible; report LR sensitivity.
+  reproducible_or_adaptable: adaptable
+- id: deepseek2024llm
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'DeepSeek LLM: Scaling Open-Source Language Models with Longtermism'
+  authors: DeepSeek-AI
+  year: 2024
+  venue_or_status: arXiv:2401.02954
+  url: https://arxiv.org/abs/2401.02954
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Scaling laws for hyperparameters and model/data allocation.
+  mechanism: Grid searches over batch size and LR at 1e17-2e19 FLOPs; near-optimal = within 0.25% of min generalization error.
+  manipulated_vars: batch size, LR, compute budget
+  controlled_vars: architecture, data
+  model_sizes_and_training: small proxies up to 7B/67B final
+  benchmarks: validation loss
+  main_findings: eta_opt = 0.3118 C^-0.1250; B_opt = 0.2920 C^0.3271; broad near-optimal band.
+  limitations: Fitted for their dense Transformer/data; our budget near lower edge of fit.
+  relevance_to_us: high — centres our LR grid (~2e-3) and batch (~128K tokens).
+  reproducible_or_adaptable: adaptable
+- id: yang2022mup
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'Tensor Programs V: Tuning Large Neural Networks via Zero-Shot Hyperparameter Transfer'
+  authors: Yang, Hu, Babuschkin, Sidor, Liu, Farhi, Ryder, Pachocki, Chen, Gao
+  year: 2022
+  venue_or_status: arXiv:2203.03466
+  url: https://arxiv.org/abs/2203.03466
+  code_url: https://github.com/microsoft/mup
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Can HPs tuned on small models transfer to large ones?
+  mechanism: Maximal Update Parametrization (muP).
+  manipulated_vars: width (and depth/batch with caveats)
+  controlled_vars: architecture family
+  model_sizes_and_training: Transformers, ResNets
+  benchmarks: loss/accuracy
+  main_findings: Optimal LR stable across width under muP; regularization HPs not transferable.
+  limitations: Transfer across layer-type composition not addressed.
+  relevance_to_us: low/med — does not solve fairness across r (fixed width); relevant only for an optional second width.
+  reproducible_or_adaptable: adaptable
+- id: kaplan2020scaling
+  aliases: []
+  reported_by:
+  - methodology
+  title: Scaling Laws for Neural Language Models
+  authors: Kaplan, McCandlish, Henighan, Brown, Chess, Child, Gray, Radford, Wu, Amodei
+  year: 2020
+  venue_or_status: arXiv:2001.08361
+  url: https://arxiv.org/abs/2001.08361
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How does LM loss scale with N, D, C?
+  mechanism: Power-law fits over many model sizes.
+  manipulated_vars: params, data, compute, shape
+  controlled_vars: data distribution
+  model_sizes_and_training: 768 to 1.5B non-embedding params
+  benchmarks: WebText2 loss
+  main_findings: Loss depends weakly on shape at fixed non-embedding N; C ~ 6N per token; embeddings excluded from N.
+  limitations: Older recipe; known discrepancies with Chinchilla.
+  relevance_to_us: med — match non-embedding params; FLOP accounting.
+  reproducible_or_adaptable: adaptable
+- id: hoffmann2022chinchilla
+  aliases: []
+  reported_by:
+  - methodology
+  title: Training Compute-Optimal Large Language Models
+  authors: Hoffmann, Borgeaud, Mensch, et al.
+  year: 2022
+  venue_or_status: arXiv:2203.15556 (NeurIPS 2022)
+  url: https://arxiv.org/abs/2203.15556
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Compute-optimal allocation of params vs tokens.
+  mechanism: Three estimation approaches over >400 models.
+  manipulated_vars: params, tokens
+  controlled_vars: data, recipe
+  model_sizes_and_training: 70M-16B; Chinchilla 70B on 1.4T tokens
+  benchmarks: loss, MMLU, etc.
+  main_findings: Scale params and tokens equally; Chinchilla 70B/1.4T (~20 tokens/param, ratio derived by me).
+  limitations: Large-scale fits; small-model regime differs.
+  relevance_to_us: med — sanity anchor for 1.0-1.1B tokens at ~41M non-emb params.
+  reproducible_or_adaptable: n/a
+- id: biderman2023pythia
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'Pythia: A Suite for Analyzing Large Language Models Across Training and Scaling'
+  authors: Biderman, Schoelkopf, Anthony, Bradley, O'Brien, Hallahan, et al.
+  year: 2023
+  venue_or_status: ICML 2023 (arXiv:2304.01373)
+  url: https://arxiv.org/abs/2304.01373
+  code_url: https://github.com/EleutherAI/pythia
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Controlled model suite for studying training dynamics and scaling.
+  mechanism: 8 sizes, identical data in identical order, 154 checkpoints each.
+  manipulated_vars: model size; dedup vs not
+  controlled_vars: data, order, batch (2M tokens, seq 2048)
+  model_sizes_and_training: 70M (18.9M non-emb, 6L d512 LR 1e-3) to 12B; 300B tokens
+  benchmarks: LAMBADA, PIQA, WinoGrande, ARC, SciQ, LogiQA
+  main_findings: 'Template for controlled suites: same order, many checkpoints (log-spaced early).'
+  limitations: Single seed per size.
+  relevance_to_us: high — identical data order across configs; checkpoint schedule; scale reference.
+  reproducible_or_adaptable: adaptable
+- id: groeneveld2024olmo
+  aliases: []
+  reported_by:
+  - methodology
+  title: 'OLMo: Accelerating the Science of Language Models'
+  authors: Groeneveld, Beltagy, Walsh, et al.
+  year: 2024
+  venue_or_status: ACL 2024 (arXiv:2402.00838)
+  url: https://arxiv.org/abs/2402.00838
+  code_url: https://github.com/allenai/OLMo
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Fully open LM release enabling reproduction.
+  mechanism: Open data (Dolma), code, logs; deterministic shuffling.
+  manipulated_vars: n/a
+  controlled_vars: data order reconstructable
+  model_sizes_and_training: 1B/7B, 2T+ tokens; AdamW b=(0.9,0.95), eps 1e-5; ~4M token batch
+  benchmarks: ARC, BoolQ, HellaSwag, PIQA, etc.
+  main_findings: Instances shuffled identically for each run; batch composition reconstructable from artifacts.
+  limitations: Large scale.
+  relevance_to_us: med — data order as pure function of seed/step; log batch hashes.
+  reproducible_or_adaptable: adaptable
+- id: kazemnejad2023nope
+  aliases: []
+  reported_by:
+  - methodology
+  title: The Impact of Positional Encoding on Length Generalization in Transformers
+  authors: Kazemnejad, Padhi, Natesan Ramamurthy, Das, Reddy
+  year: 2023
+  venue_or_status: NeurIPS 2023 (arXiv:2305.19466)
+  url: https://arxiv.org/abs/2305.19466
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Which PE length-generalizes best in decoder-only Transformers?
+  mechanism: Compare APE, T5-RPE, ALiBi, RoPE, NoPE on reasoning tasks; 3 seeds per pair.
+  manipulated_vars: positional encoding, scratchpad
+  controlled_vars: tasks, model
+  model_sizes_and_training: small decoder-only models; ~870 runs
+  benchmarks: synthetic reasoning/math tasks
+  main_findings: NoPE outperforms explicit PEs on length generalization.
+  limitations: Small synthetic tasks.
+  relevance_to_us: med — PE is a confound for H5; NoPE included in PE pilot.
+  reproducible_or_adaptable: adaptable
+- id: zhao2024seqcomp
+  aliases: []
+  reported_by:
+  - methodology
+  title: Analysing The Impact of Sequence Composition on Language Model Pre-Training
+  authors: Zhao, Qu, Staniszewski, Tworkowski, Liu, Milos, Wu, Minervini
+  year: 2024
+  venue_or_status: arXiv:2402.13991 (ACL 2024)
+  url: https://arxiv.org/abs/2402.13991
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How do packing and masking strategies affect pretraining?
+  mechanism: Compare causal masking vs intra-document causal masking; related-document packing (BM25Chunk).
+  manipulated_vars: masking, packing strategy
+  controlled_vars: model, data
+  model_sizes_and_training: not detailed in sections read
+  benchmarks: LM, ICL, knowledge, context utilisation
+  main_findings: Intra-document masking removes cross-document distraction and improves performance; BM25Chunk +11.6% ICL.
+  limitations: Transformer-only.
+  relevance_to_us: high — doc masking must be applied identically to attention and linear layers.
+  reproducible_or_adaptable: adaptable
+- id: ding2024bestfit
+  aliases: []
+  reported_by:
+  - methodology
+  title: Fewer Truncations Improve Language Modeling
+  authors: Ding, Wang, Paolini, Kumar, Deoras, Roth, Soatto
+  year: 2024
+  venue_or_status: arXiv:2404.10830 (ICML 2024)
+  url: https://arxiv.org/abs/2404.10830
+  access_level: '[abstract-only]'
+  access_detail: 'methodology: [abstract-only]'
+  research_question: Does avoiding document truncation in packing help?
+  mechanism: Best-fit packing via length-aware combinatorial optimization.
+  manipulated_vars: packing method
+  controlled_vars: compute/tokens
+  model_sizes_and_training: not read
+  benchmarks: reading comprehension, context following, program synthesis
+  main_findings: +4.7% reading comprehension, +16.8% context following, up to 58.3% less closed-domain hallucination.
+  limitations: Abstract only.
+  relevance_to_us: low/med — optional best-fit packing; log truncation stats.
+  reproducible_or_adaptable: adaptable
+- id: nvidia_rtx_blackwell_wp
+  aliases: []
+  reported_by:
+  - methodology
+  title: NVIDIA RTX Blackwell GPU Architecture (whitepaper v1.1)
+  authors: NVIDIA
+  year: 2025
+  venue_or_status: Whitepaper
+  url: https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: GPU specifications.
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: 'RTX 5080 (GB203): 84 SMs, 336 5th-gen tensor cores, peak BF16 tensor 112.6 dense TFLOPS with FP32 accumulate (225.1 sparse), FP16-acc 225.1 dense, 960 GB/s, 16 GB GDDR7.'
+  limitations: Peak numbers; achievable MFU for 20-60M models is much lower.
+  relevance_to_us: high — compute budget ceiling.
+  reproducible_or_adaptable: n/a
+- id: nvidia_cublas_reproducibility
+  aliases: []
+  reported_by:
+  - methodology
+  title: cuBLAS documentation — Results Reproducibility
+  authors: NVIDIA
+  year: 2026
+  venue_or_status: Documentation
+  url: https://docs.nvidia.com/cuda/cublas/index.html#results-reproducibility
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: When are cuBLAS results bitwise reproducible?
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: Bitwise reproducible within a toolkit version on same arch/SM count, except with multiple streams; CUBLAS_WORKSPACE_CONFIG=:16:8 or :4096:8 (~24 MiB) restores determinism.
+  limitations: Not across toolkit versions.
+  relevance_to_us: high — production env var setting.
+  reproducible_or_adaptable: n/a
+- id: pytorch_randomness_docs
+  aliases: []
+  reported_by:
+  - methodology
+  title: PyTorch Reproducibility notes (randomness)
+  authors: PyTorch
+  year: 2026
+  venue_or_status: Documentation (v2.15 docs)
+  url: https://docs.pytorch.org/docs/2.15/notes/randomness.html
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: How to control nondeterminism in PyTorch.
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: manual_seed seeds CPU+CUDA; numpy Generators separate; cudnn.benchmark vs deterministic distinct; use_deterministic_algorithms; SDPA warn_only=True still uses nondeterministic fused backends; seed_worker + generator for DataLoader; no guarantee across releases/platforms.
+  limitations: Does not mention CUBLAS_WORKSPACE_CONFIG on the visible page.
+  relevance_to_us: high — determinism policy.
+  reproducible_or_adaptable: n/a
+- id: pytorch_deterministic_algorithms_docs
+  aliases: []
+  reported_by:
+  - methodology
+  title: torch.use_deterministic_algorithms
+  authors: PyTorch
+  year: 2026
+  venue_or_status: Documentation (v2.15 docs)
+  url: https://docs.pytorch.org/docs/2.15/generated/torch.use_deterministic_algorithms.html
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Which ops become deterministic or raise errors.
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: warn_only=True warns instead of error; CUDA NLLLoss, CTCLoss backward, scatter_reduce raise; index_add, scatter_add_, cumsum, gather backward, Embedding backward become deterministic.
+  limitations: SDPA not listed on this page.
+  relevance_to_us: med — audit mode.
+  reproducible_or_adaptable: n/a
+- id: pytorch_cuda_semantics_docs
+  aliases: []
+  reported_by:
+  - methodology
+  title: PyTorch CUDA semantics notes
+  authors: PyTorch
+  year: 2026
+  venue_or_status: Documentation (v2.15 docs)
+  url: https://docs.pytorch.org/docs/2.15/notes/cuda.html
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: TF32, reduced-precision reductions, allocator, timing.
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: bf16 reduced-precision reduction on by default; expandable_segments allocator option; GPU ops async — time with CUDA events + synchronize; max_memory_allocated for peak tensor memory.
+  limitations: Page truncated at 100k chars.
+  relevance_to_us: high — cost-measurement protocol.
+  reproducible_or_adaptable: n/a
+- id: systemd_run_man
+  aliases: []
+  reported_by:
+  - methodology
+  title: systemd-run(1) man page
+  authors: systemd project
+  year: 2026
+  venue_or_status: Documentation
+  url: https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html
+  access_level: '[read-section]'
+  access_detail: 'methodology: [read-section]'
+  research_question: Run persistent transient services.
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: --user, --unit, -p properties, --same-dir, -E env, --collect; journalctl --user -u <unit>; user services stop at logout unless loginctl enable-linger.
+  limitations: n/a
+  relevance_to_us: high — job runner (screen/tmux absent; linger currently off).
+  reproducible_or_adaptable: n/a
+- id: flexattention_determinism_note
+  aliases: []
+  reported_by:
+  - methodology
+  title: FlexAttention Determinism (Nuggets)
+  authors: drisspg (site owner; author not named on page)
+  year: 2025
+  venue_or_status: Blog post, 2025-10-17
+  url: https://drisspg.github.io/nuggets/FlexAttention-Determinism
+  access_level: '[read-full]'
+  access_detail: 'methodology: [read-full]'
+  research_question: Why are FlexAttention backward gradients nondeterministic?
+  mechanism: Diagnosis via Inductor benchmarking distortion flags.
+  manipulated_vars: Inductor configs
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: dq/dk nondeterministic due to autotuning of reduction configs in preprocessing (sum(O*dO)); torch._inductor.config.deterministic=True gives bitwise reproducibility; autotune in dev, pin kernel_options in production.
+  limitations: Single blog post; PyTorch version not stated.
+  relevance_to_us: high — autotune is a nondeterminism source; pin caches; audit flag.
+  reproducible_or_adaptable: adaptable
+- id: dao_flash_attention_repo
+  aliases:
+  - flash_attention_repo
+  reported_by:
+  - methodology
+  - implementation
+  title: FlashAttention (FA2, FA3 hopper/, FA4 CuTeDSL)
+  authors: Tri Dao et al.
+  year: 2026
+  venue_or_status: '[methodology] GitHub repository (commit 478b5b012f9e2cefb241623142ca04490064b3d2, 2026-11-08) || [implementation] GitHub repo; PyPI flash-attn 2.8.3.post2, flash-attn-4 4.0.0b38'
+  url: https://github.com/Dao-AILab/flash-attention
+  code_url: https://github.com/Dao-AILab/flash-attention (commit 478b5b012f9e, 2026-11-08)
+  access_level: '[code-inspected]'
+  access_detail: 'methodology: [code-inspected]; implementation: [code-inspected]'
+  research_question: '[methodology] Fused attention kernels. || [implementation] n/a (software)'
+  mechanism: IO-aware exact attention kernels
+  main_findings: '[methodology] Python interface exposes deterministic= flag for backward; setup.py builds sm_120 with CUDA 12.8+ (requires nvcc, absent here). || [implementation] FA2 setup.py default FLASH_ATTN_CUDA_ARCHS=''80;90;100;110;120''. Release v2.8.3.post2 has cp312 x86_64 wheels only for torch 2.4-2.8 (GitHub API, VERIFIED-HERE), none for torch 2.11. FA3 is H100/H800 only. FA4 has flash_fwd_sm120/flash_bwd_sm120 using SM80 mma.sync with 99 KB SMEM; no split-KV, paged KV or block sparsity on SM120.'
+  limitations: '[methodology] Not buildable without nvcc; use torch SDPA/varlen_attn/FlexAttention instead. || [implementation] No nvcc on our machine, so no source build. FA4 on sm_120 not tested.'
+  relevance_to_us: '[methodology] med — determinism options and build constraints. || [implementation] high (negative): do not depend on flash-attn; use PyTorch SDPA/varlen_attn (VERIFIED-HERE).'
+- id: fla_issue_638_blackwell_gdn_bwd
+  aliases: []
+  reported_by:
+  - implementation
+  title: '[Bug] GatedDeltaNet backward error on Blackwell: ''operand #2 does not dominate this use'''
+  authors: 'wangsiyu (reporter); fix by rucnyz (PR #687)'
+  year: 2025
+  venue_or_status: 'GitHub issue #638, closed 2025-12-19'
+  url: https://github.com/fla-org/flash-linear-attention/issues/638
+  code_url: https://github.com/fla-org/flash-linear-attention/pull/687
+  access_level: '[read-full]'
+  access_detail: 'implementation: [read-full]'
+  research_question: n/a (bug)
+  mechanism: Triton TritonGPUHoistTMEMAlloc pass fused add into dot (TMEM accumulator) in prepare_wy_repr_bwd_kernel. Fixed by wrapping the dot result in inline asm mov.f32.
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: B200, Triton 3.5.0, torch 2.8/2.9
+  benchmarks: n/a
+  main_findings: Fixed upstream. The workaround is present in fla/ops/utils/op.py and applies to SM100 and SM120.
+  limitations: Reported on B200 (SM100), not SM120. Our SM120 test passed with the workaround active.
+  relevance_to_us: 'med: explains why fla >= 0.6 is required on Blackwell.'
+  reproducible_or_adaptable: n/a
+- id: fla_flame
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'flame: minimal torchtitan-based training framework for fla models'
+  authors: Songlin Yang, Yu Zhang et al.
+  year: 2026
+  venue_or_status: GitHub repo
+  url: https://github.com/fla-org/flame
+  code_url: https://github.com/fla-org/flame (commit 24dea9133e21, 2026-04-23)
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a (software)
+  mechanism: torchtitan trainer with online tokenisation and varlen packing (--training.varlen requires batch_size=1)
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 'Example: 340M Transformer, seq_len 65536 packed, context_len 4096, lr 1e-3 cosine, warmup 1024, 20480 steps. Configs: gated_deltanet_340M (21 layers, d=1024, head_dim 256, 6 heads, expand_v 2) vs transformer_340M (24 layers, d=1024, 16 heads).'
+  benchmarks: n/a
+  main_findings: Pins torchtitan@0b44d4c and declares transformers>=4.45, while fla 0.6.0 needs transformers>=5.6.2 (version-conflict risk). The GDN vs Transformer configs match params by changing depth, which is impossible in a fixed-depth ratio sweep.
+  limitations: Multi-GPU oriented; heavy for a single consumer GPU.
+  relevance_to_us: 'med: reference hyperparameters and packing convention; do not adopt as the trainer.'
+  reproducible_or_adaptable: Reference only.
+- id: dao_flash_attention_issue_1987
+  aliases: []
+  reported_by:
+  - implementation
+  title: Support for NVIDIA Blackwell (sm_120) architectures — any planned release date?
+  authors: FrankZhangRp (reporter); comments by johnnynunez et al.
+  year: 2025
+  venue_or_status: 'GitHub issue #1987, open as of check'
+  url: https://github.com/Dao-AILab/flash-attention/issues/1987
+  access_level: '[read-full]'
+  access_detail: 'implementation: [read-full]'
+  research_question: n/a
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: RTX PRO 6000 Blackwell (sm_120), CUDA 12.8, torch 2.8.0+cu128
+  benchmarks: n/a
+  main_findings: '''CUDA error ... flash_fwd_launch_template.h:188: invalid argument''. No maintainer fix released. A contributor points to PRs #2222/#2268 and says FA2 is arch-agnostic.'
+  limitations: Third-party comments only.
+  relevance_to_us: 'med: supports avoiding external flash-attn on sm_120.'
+  reproducible_or_adaptable: n/a
+- id: dao_flash_attention_issue_2361
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'flash-attention issue #2361 (nvcc crash compiling FA2 backward for sm_120, per search summary)'
+  authors: unknown
+  year: 2026
+  venue_or_status: GitHub issue (not opened by me)
+  url: https://github.com/Dao-AILab/flash-attention/issues/2361
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: n/a
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: RTX 5070 Ti per search snippet
+  benchmarks: n/a
+  main_findings: 'Search-result summary: building with FLASH_ATTN_CUDA_ARCHS=120 crashes nvcc on backward kernels. UNVERIFIED.'
+  limitations: Not read directly.
+  relevance_to_us: low
+  reproducible_or_adaptable: n/a
+- id: state_spaces_mamba
+  aliases: []
+  reported_by:
+  - implementation
+  title: mamba_ssm (Mamba / Mamba-2 CUDA+Triton kernels)
+  authors: Albert Gu, Tri Dao et al.
+  year: 2026
+  venue_or_status: GitHub repo; PyPI mamba-ssm 2.3.2.post1 (sdist only)
+  url: https://github.com/state-spaces/mamba
+  code_url: https://github.com/state-spaces/mamba (commit e9594ce1c732)
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a (software)
+  mechanism: Selective SSM kernels
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: 'setup.py adds compute_120/sm_120. GitHub release wheels (cp312 x86_64): cu12torch2.6-2.10, cu13torch2.9/2.10 plus NGC tags; no torch 2.11 wheel (VERIFIED-HERE via API).'
+  limitations: Not installed or tested on sm_120.
+  relevance_to_us: 'low: not needed (fla has a Triton Mamba2 layer if a control arm is wanted).'
+  reproducible_or_adaptable: Only with torch<=2.10 or a source build.
+- id: dao_causal_conv1d
+  aliases: []
+  reported_by:
+  - implementation
+  title: causal-conv1d CUDA kernel
+  authors: Tri Dao et al.
+  year: 2026
+  venue_or_status: GitHub repo; PyPI 1.7.0 (sdist only)
+  url: https://github.com/Dao-AILab/causal-conv1d
+  code_url: https://github.com/Dao-AILab/causal-conv1d (commit cd81f0413cad)
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a
+  mechanism: Depthwise causal conv CUDA kernel
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: setup.py includes sm_120. Release wheels up to torch 2.10 (cu12/cu13); none for torch 2.11.
+  limitations: Not tested.
+  relevance_to_us: 'low: fla''s Triton ShortConvolution (default backend) is used instead (VERIFIED-HERE).'
+  reproducible_or_adaptable: n/a
+- id: pytorch_sdpa_varlen_muon_2_11
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'PyTorch 2.11 built-ins: SDPA backends, torch.nn.attention.varlen.varlen_attn, flex_attention, torch.optim.Muon'
+  authors: PyTorch team
+  year: 2026
+  venue_or_status: torch 2.11.0+cu128 wheel (installed in project venv)
+  url: https://pytorch.org
+  code_url: 'local: .venv/lib/python3.12/site-packages/torch/nn/attention/varlen.py, torch/optim/_muon.py'
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a (software)
+  mechanism: 'varlen_attn wraps aten._flash_attention_forward (built-in FA2) with cu_seqlens; causal via window_size=(-1,0). The cuDNN varlen path is disabled (_should_use_cudnn returns False). Muon defaults: lr 1e-3, wd 0.1, momentum 0.95, nesterov, 5 Newton-Schulz steps.'
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 'VERIFIED-HERE on sm_120: SDPA flash 0.48 ms, cuDNN 0.54 ms, efficient 1.03 ms (fwd+bwd, B2 H8 T4096 D64 bf16). varlen_attn fwd/bwd and doc isolation OK. Compiled flex_attention doc mask OK.'
+  benchmarks: n/a
+  main_findings: A complete full-attention path with document masking needs no external package on sm_120.
+  limitations: Timings on a shared GPU.
+  relevance_to_us: 'high: full-attention mixer implementation.'
+  reproducible_or_adaptable: Yes.
+- id: triton_blackwell_support_notes
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'Triton/PyTorch Blackwell (sm_120) support notes: pytorch.github.io PR #1989; triton PR #9734'
+  authors: PyTorch / Triton maintainers
+  year: 2025
+  venue_or_status: GitHub PRs (search snippets only)
+  url: https://github.com/pytorch/pytorch.github.io/pull/1989 ; https://github.com/triton-lang/triton/pull/9734
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: n/a
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: 'PyTorch 2.7 shipped Triton 3.3 with Blackwell support. A later bug mapped sm_120 to ''sm_120a'' (torch 2.9.1/Triton 3.5.1), fixed in PR #9734. VERIFIED-HERE: Triton 3.6.0 works on our sm_120.'
+  limitations: Snippets only; not read in full.
+  relevance_to_us: med
+  reproducible_or_adaptable: n/a
+- id: karpathy_nanogpt
+  aliases: []
+  reported_by:
+  - implementation
+  title: nanoGPT
+  authors: Andrej Karpathy
+  year: 2023
+  venue_or_status: GitHub repo
+  url: https://github.com/karpathy/nanoGPT
+  code_url: https://github.com/karpathy/nanoGPT (commit 3adf61e154c3)
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a (software)
+  mechanism: 'Minimal GPT training: model.py 330 lines, train.py 336 lines, uint16 np.memmap data, SDPA flash attention, optional torch.compile'
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: Template for our single-GPU trainer and data format.
+  limitations: No varlen/document masking; GPT-2 tokenizer.
+  relevance_to_us: 'high: trainer skeleton to adapt.'
+  reproducible_or_adaptable: Adaptable.
+- id: jordan2024_muon_blog
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'Muon: An optimizer for hidden layers in neural networks'
+  authors: Keller Jordan
+  year: 2024
+  venue_or_status: Blog post
+  url: https://kellerjordan.github.io/posts/muon/
+  code_url: https://github.com/KellerJordan/Muon
+  access_level: '[read-full]'
+  access_detail: 'implementation: [read-full]'
+  research_question: Faster optimisation of 2-D hidden weights
+  mechanism: Nesterov momentum update orthogonalised with 5 Newton-Schulz steps, coefficients (3.4445, -4.7750, 2.0315), in bf16
+  manipulated_vars: Optimizer
+  controlled_vars: Task/arch within comparisons
+  model_sizes_and_training: Speedrun (124M) and 774M/1.5B runs
+  benchmarks: CIFAR-10 speed; NanoGPT speedrun val loss; HellaSwag
+  main_findings: About 1.35x faster to target on the speedrun (author). Applies only to 2-D hidden weights; embeddings, head and scalars use AdamW; Q, K, V treated as separate matrices.
+  limitations: Author's own evidence; scale beyond tested range open; per-step slower than AdamW.
+  relevance_to_us: 'med: optional optimizer; torch 2.11 ships torch.optim.Muon. Untested with GDN params (A_log, dt_bias must stay on AdamW without weight decay).'
+  reproducible_or_adaptable: Yes.
+- id: liu2024_mobilellm
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'MobileLLM: Optimizing Sub-billion Parameter Language Models for On-Device Use Cases'
+  authors: Zechun Liu, Changsheng Zhao, Forrest Iandola, Chen Lai, Yuandong Tian, Igor Fedorov, Yunyang Xiong, Ernie Chang, et al. (12 authors)
+  year: 2024
+  venue_or_status: arXiv 2402.14905
+  url: https://arxiv.org/abs/2402.14905
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: Architecture choices at sub-billion scale
+  mechanism: Deep-thin models, embedding sharing, GQA, block-wise weight sharing
+  manipulated_vars: Depth/width, sharing schemes
+  controlled_vars: Param budget
+  model_sizes_and_training: 125M, 350M
+  benchmarks: Zero-shot reasoning, chat, API calling
+  main_findings: +2.7% (125M) and +4.3% (350M) over prior SOTA; weight sharing adds +0.7/+0.8%.
+  limitations: Abstract only.
+  relevance_to_us: 'med: supports tied embeddings and depth >= 12 at our scale.'
+  reproducible_or_adaptable: n/a
+- id: hf_fineweb_edu
+  aliases: []
+  reported_by:
+  - implementation
+  title: FineWeb-Edu dataset
+  authors: HuggingFaceFW
+  year: 2024
+  venue_or_status: HF dataset card
+  url: https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
+  access_level: '[abstract-only] (card) + VERIFIED-HERE statistics'
+  access_detail: 'implementation: [abstract-only] (card) + VERIFIED-HERE statistics'
+  research_question: n/a (data)
+  mechanism: Educational-quality-filtered web text
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: License ODC-By; default 1.53B rows; sample-10BT 9.67M rows, sample-100BT 97.3M, sample-350BT 339M; Parquet; token_count column (GPT-2 tokens)
+  benchmarks: n/a
+  main_findings: 'VERIFIED-HERE (shard sample/10BT/000_00000, 726K docs): mean 1,040, median 628, p99 7,989 GPT-2 tokens. >8K: 0.951% of docs / 13.14% of tokens. >16K: 0.203% / 5.21%. >32K: 0.037% / 1.79%. >64K: 0.006% / 0.46%.'
+  limitations: Long-document-poor.
+  relevance_to_us: 'high: primary pretraining corpus.'
+  reproducible_or_adaptable: Yes.
+- id: common_pile_arxiv
+  aliases: []
+  reported_by:
+  - implementation
+  title: Common Pile v0.1 — arXiv papers (filtered)
+  authors: EleutherAI and collaborators (per card)
+  year: 2025
+  venue_or_status: HF dataset card; paper arXiv 2506.05209 (not opened)
+  url: https://huggingface.co/datasets/common-pile/arxiv_papers_filtered
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: n/a (data)
+  mechanism: Openly licensed arXiv papers (LaTeX to HTML via LaTeXML to text via Trafilatura)
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: Per-document CC BY / CC BY-SA / CC0; 304,048 docs; about 19 GB text; 6.04 GB Parquet
+  benchmarks: n/a
+  main_findings: Card warns of possible license mis-assignment.
+  limitations: Length distribution not measured by me.
+  relevance_to_us: 'med: optional second long-document domain.'
+  reproducible_or_adaptable: Yes.
+- id: roneneldan_tinystories
+  aliases: []
+  reported_by:
+  - implementation
+  title: TinyStories dataset
+  authors: Ronen Eldan, Yuanzhi Li
+  year: 2023
+  venue_or_status: HF dataset card; paper arXiv 2305.07759 (not opened)
+  url: https://huggingface.co/datasets/roneneldan/TinyStories
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: n/a (data)
+  mechanism: Synthetic short children's stories
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: CDLA-Sharing-1.0; 2,141,709 stories; 7.62 GB files
+  benchmarks: n/a
+  main_findings: Mean 896 chars, max 5,499 chars (datasets-server statistics), so no long documents.
+  limitations: Unsuitable for long-context study.
+  relevance_to_us: 'low: smoke tests only.'
+  reproducible_or_adaptable: n/a
+- id: princeton_prolong_data
+  aliases: []
+  reported_by:
+  - implementation
+  title: princeton-nlp/prolong-data-64K dataset card
+  authors: Princeton NLP
+  year: 2024
+  venue_or_status: HF dataset card
+  url: https://huggingface.co/datasets/princeton-nlp/prolong-data-64K
+  access_level: '[abstract-only]'
+  access_detail: 'implementation: [abstract-only]'
+  research_question: n/a (data)
+  mechanism: Pre-tokenized (Llama-3) MDS shards packed to 65,536 with document indices
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: About 31B tokens, 149 GB; license not stated on card
+  benchmarks: n/a
+  main_findings: 'Composition: code repos 6.4B, books 6.4B, FineWeb-Edu 6.4B, FineWeb-2023-50 6.4B, plus StackExchange, Wikipedia, arXiv, OpenWebMath (1B each), textbooks 0.75B, Tulu-v2 0.25B.'
+  limitations: Wrong tokenizer for us; large.
+  relevance_to_us: 'low-med: mix proportions as a reference.'
+  reproducible_or_adaptable: Not directly.
+- id: inaccessible_long_data_collections_slimpajama
+  aliases: []
+  reported_by:
+  - implementation
+  title: togethercomputer/Long-Data-Collections and cerebras/SlimPajama-627B (attempted)
+  authors: Together AI; Cerebras
+  year: 2023
+  venue_or_status: HF datasets
+  url: https://huggingface.co/datasets/togethercomputer/Long-Data-Collections ; https://huggingface.co/datasets/cerebras/SlimPajama-627B
+  access_level: '[abstract-only] (NOT ACCESSED: HTTP 401 / not accessible without authentication on 2026-11-09)'
+  access_detail: 'implementation: [abstract-only] (NOT ACCESSED: HTTP 401 / not accessible without authentication on 2026-11-09)'
+  research_question: n/a
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 'Mirror DKYoon/SlimPajama-6B: 5.51M rows, 14.0 GB Parquet (datasets-server); license not checked'
+  benchmarks: n/a
+  main_findings: Could not assess licence or contents.
+  limitations: Inaccessible.
+  relevance_to_us: low
+  reproducible_or_adaptable: n/a
+- id: hf_transformers_hybrid_configs
+  aliases: []
+  reported_by:
+  - implementation
+  title: 'HF transformers 5.22.2 hybrid model code: Qwen3-Next, Qwen3.5, Olmo Hybrid, Jamba, Nemotron-H'
+  authors: Hugging Face + model authors
+  year: 2026
+  venue_or_status: transformers 5.22.2 (installed)
+  url: https://github.com/huggingface/transformers
+  code_url: 'local: .venv/lib/python3.12/site-packages/transformers/models/{qwen3_next,qwen3_5,olmo_hybrid,jamba,nemotron_h}'
+  access_level: '[code-inspected]'
+  access_detail: 'implementation: [code-inspected]'
+  research_question: n/a (software)
+  mechanism: layer_types lists with 'linear_attention' / 'full_attention'
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: Qwen3-Next default 48 layers, d=2048, linear heads 16 key / 32 value of dim 128, attention head_dim 256, partial_rotary 0.25
+  benchmarks: n/a
+  main_findings: 'Qwen3-Next and Qwen3.5: full_attention_interval=4 (layers 3, 7, 11, ...). Qwen3-Next attention has a sigmoid output gate (attn_output * sigmoid(gate)). Olmo Hybrid: i%4==3, at least one attention layer, linear_allow_neg_eigval=True. Jamba: attn_layer_period=8, offset=4. Nemotron-H: layers_block_type list (attention/Mamba-2/MLP/MoE); NOT a controlled full-vs-linear ratio experiment.'
+  limitations: Production configs, not controlled studies.
+  relevance_to_us: 'med: placement conventions (3:1 with attention at end of each block); gated-attention option for param matching.'
+  reproducible_or_adaptable: Conventions adaptable.
+- id: pytorch_torchtitan
+  aliases: []
+  reported_by:
+  - implementation
+  title: torchtitan
+  authors: PyTorch team
+  year: 2026
+  venue_or_status: GitHub repo
+  url: https://github.com/pytorch/torchtitan
+  code_url: https://github.com/pytorch/torchtitan (commit 3da9eac83509)
+  access_level: '[code-inspected] (pyproject/listing only)'
+  access_detail: 'implementation: [code-inspected] (pyproject/listing only)'
+  research_question: n/a (software)
+  mechanism: Large-scale distributed LLM training (FSDP/TP/PP)
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: n/a
+  benchmarks: n/a
+  main_findings: Python >= 3.11; model zoo (llama3, deepseek_v3, ...). Overkill for one GPU.
+  limitations: Not adopted.
+  relevance_to_us: low
+  reproducible_or_adaptable: n/a
+- id: small_model_configs_reference
+  aliases: []
+  reported_by:
+  - implementation
+  title: Small LM configs (Pythia-14m/70m, SmolLM2-135M, TinyStories-33M) — embedding share reference
+  authors: EleutherAI; HuggingFaceTB; Eldan & Li
+  year: 2024
+  venue_or_status: HF config.json files
+  url: https://huggingface.co/EleutherAI/pythia-70m ; https://huggingface.co/HuggingFaceTB/SmolLM2-135M ; https://huggingface.co/roneneldan/TinyStories-33M
+  access_level: '[code-inspected] (config.json)'
+  access_detail: 'implementation: [code-inspected] (config.json)'
+  research_question: n/a
+  mechanism: n/a
+  manipulated_vars: n/a
+  controlled_vars: n/a
+  model_sizes_and_training: 'Pythia-70m: V=50304, d=512, 6 layers, untied. Pythia-14m: V=50304, d=128. SmolLM2-135M: V=49152, d=576, 30 layers, tied. TinyStories-33M: V=50257, d=768, 4 layers.'
+  benchmarks: n/a
+  main_findings: With a 50K vocab at d=512 untied, about 51.5M of Pythia-70m's params are embeddings, which motivates our 16K tied vocab.
+  limitations: n/a
+  relevance_to_us: med
+  reproducible_or_adaptable: n/a
+- id: borobia2026_component_ablation_hybrid
+  aliases: []
+  reported_by:
+  - pi
+  title: 'Component Ablation for Efficient Hybrid Language Model Architectures: Performance, Resilience, and Compression Implications'
+  authors: Hector Borobia, Elies Seguí-Mas, Guillermina Tormo-Carbó
+  year: 2026
+  venue_or_status: arXiv 2603.22473 (v1 23 Mar 2026; v2 5 Jun 2026)
+  url: https://arxiv.org/abs/2603.22473
+  access_level: '[abstract-only]'
+  access_detail: 'pi: [abstract-only] (WebFetch 2026-11-09)'
+  research_question: How much does each component type (softmax attention vs linear-attention/SSM pathway) contribute in existing hybrid LMs?
+  mechanism: Component-level ablation of pretrained hybrids (Qwen3.5-0.8B, Falcon-H1-0.5B)
+  manipulated_vars: removal of attention or linear/SSM pathway; layer-wise interventions
+  controlled_vars: pretrained checkpoints
+  model_sizes_and_training: sub-1B pretrained models (no training)
+  benchmarks: likelihood, downstream benchmarks (long-context retrieval not stated in abstract)
+  main_findings: Removing either pathway substantially hurts; likelihood especially sensitive to the linear/SSM pathway; component importance is position-dependent, largest in early/mid layers (abstract).
+  limitations: Ablation of existing models, not a from-scratch ratio sweep; abstract only.
+  relevance_to_us: 'low-med: weak, post-hoc evidence that layer position matters (H4); not ratio evidence.'
+  reproducible_or_adaptable: ablation diagnostic adaptable to our checkpoints
+  ratio_evidence: post-hoc ablation of existing hybrids (not a ratio sweep)
+- id: ashrafi2026_hylo_upcycling
+  aliases: []
+  reported_by:
+  - pi
+  title: 'Long-Context Aware Upcycling: A New Frontier for Hybrid LLM Scaling'
+  authors: Parsa Ashrafi Fashi, Utkarsh Saxena, Mehdi Rezagholizadeh, Aref Jafari, Akash Haridas, Mingyu Yang, Vansh Bhatia, Guihong Li, Vikram Appia, Emad Barsoum
+  year: 2026
+  venue_or_status: arXiv 2604.24715 (v1 27 Apr 2026)
+  url: https://arxiv.org/abs/2604.24715
+  access_level: '[abstract-only]'
+  access_detail: 'pi: [abstract-only] (WebFetch 2026-11-09)'
+  research_question: Can pretrained Transformers be upcycled into long-context hybrids (HyLo)?
+  mechanism: MLA blocks + Mamba2 or Gated DeltaNet blocks; staged long-context training; distillation
+  manipulated_vars: not stated in abstract
+  controlled_vars: not stated in abstract
+  model_sizes_and_training: 1B/3B scale; HyLo-Qwen-1.7B on 10B tokens
+  benchmarks: RULER, RULER-64K (subtasks not stated)
+  main_findings: Extends usable context up to 32x via post-training; KV cache reduced >90%; beats upcycled hybrid baselines on RULER (abstract).
+  limitations: Upcycling, not from scratch; ratio/placement variation not stated in abstract.
+  relevance_to_us: 'low: confirms the field''s interest; not ratio evidence.'
+  reproducible_or_adaptable: 'no'
+  ratio_evidence: upcycling (not a ratio sweep)
+- id: pitorro2024_ssm_machine_translation
+  aliases: []
+  reported_by:
+  - pi
+  title: How Effective are State Space Models for Machine Translation?
+  authors: Hugo Pitorro, Pavlo Vasylenko, Marcos Treviso, André F. T. Martins
+  year: 2024
+  venue_or_status: arXiv 2407.05489 (7 Jul 2024)
+  url: https://arxiv.org/abs/2407.05489
+  access_level: '[abstract-only]'
+  access_detail: 'pi: [abstract-only] (WebFetch 2026-11-09)'
+  research_question: Transformers vs linear recurrent models (RetNet, Mamba, Mamba+attention hybrids) for MT
+  mechanism: Mamba with integrated attention
+  manipulated_vars: architecture
+  controlled_vars: not stated in abstract
+  model_sizes_and_training: not stated in abstract
+  benchmarks: sentence- and paragraph-level MT
+  main_findings: '''integrating attention into Mamba improves translation quality'' (abstract). A search snippet claimed two attention layers suffice and placement has minimal effect; NOT in the abstract and NOT verified.'
+  limitations: abstract only; MT task, not long-context retrieval
+  relevance_to_us: 'low: unverified lead for H4 priors'
+  reproducible_or_adaptable: n/a
+  ratio_evidence: unverified (placement claim only in a search snippet)

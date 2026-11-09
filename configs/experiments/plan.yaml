@@ -1,0 +1,270 @@
+# Machine-readable plan for experimental stages S0 (infrastructure + verification),
+# S1 (reproduction pilot) and S2 (LM-regime feasibility pilot, FEAS).
+# Source of truth for every rule: reports/experimental_protocol.md v1.0 (frozen 2026-11-09).
+# Downstream stages (S3+) are listed under `downstream` with reserved IDs; they are blocked by gates.
+# GPU-hours are contended estimates (protocol §13.2). Experimental stage numbers are NOT the README
+# project stages (S0 = README Stage 4; S1-S3 = README Stage 5; S4-S7 = README Stage 6).
+
+schema_version: 1
+plan_id: outeropt-S0-S2
+protocol: reports/experimental_protocol.md
+protocol_version: "1.0"
+frozen_on: "2026-11-09"
+decision_log: reports/decisions.md
+competing_explanations: reports/competing_explanations.md
+
+environment:
+  python: "3.12"
+  packages:
+    torch: "2.11.0+cu128"
+    triton: "3.6.0"
+    flash-linear-attention: "0.6.0"
+    fla_commit: "98193113ecb7835143252a786e06933e371b67cc"
+    transformers: "5.22.2"
+    tokenizers: "0.23.3"
+    numpy: "2.5.4"
+    wonderwords: "pin exact version in uv.lock at S0-EVAL-01"
+  env_vars_production:
+    CUBLAS_WORKSPACE_CONFIG: ":4096:8"
+    PYTHONHASHSEED: "0"
+    TRITON_CACHE_DIR: ".cache/triton"
+    FLA_CACHE_RESULTS: "1"
+    FLA_FLASH_QLA: "0"
+  audit_mode:
+    use_deterministic_algorithms: true
+    cudnn_sdpa_in_training: false
+  gpu:
+    device: "RTX 5080 16 GB, sm_120, shared with CARLA"
+    per_process_memory_fraction: 0.44   # about 7.0 GiB cap
+    max_peak_gib: 7.0
+  torch_compile: false                  # except the FlexAttention benchmark comparator
+  rng:
+    project_salt: 271828182
+    seedsequence: "numpy.random.SeedSequence(entropy=project_salt, spawn_key=(seed_index, stream_id, ...))"
+    streams: {init_shared: 0, init_mixer: 1, data_A: 2, data_B: 3, tef: 4}
+    mixer_type_ids: {F_g: 1, F_gc: 2, GDN-A: 3, GDN-E: 4, GLA: 5, GDN-nc: 6}
+    eval_test_entropy: 20261109
+    eval_dev_entropy: 77
+    bench_entropy: 0
+    bootstrap_entropy: 2026
+    seed_indices: {core: "0..n0-1", trigger: "n0, n0+1", lr_sweep: 100, feas: [101, 102], audits: [900, 901, 902]}
+
+data:
+  fineweb_edu:
+    repo: HuggingFaceFW/fineweb-edu
+    config: sample-10BT
+    revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+    train_files: ["sample/10BT/001_00000.parquet", "sample/10BT/002_00000.parquet", "sample/10BT/003_00000.parquet",
+                  "sample/10BT/004_00000.parquet", "sample/10BT/005_00000.parquet", "sample/10BT/006_00000.parquet"]
+    heldout_file: "sample/10BT/000_00000.parquet"
+    heldout_split: "sha256(doc_id) parity: even -> test filler + LM-1 + LM-2; odd -> dev filler"
+    license: ODC-By
+  pg19:
+    repo: emozilla/pg19
+    revision: c021754c8e01c5b1cc83a1f549c1f97fbbb756b8
+    train: "data/train-000NN-of-00023-*.parquet (23 shards)"
+    validation: "data/validation-00000-of-00001-0f92e2337f79aeac.parquet"   # dev filler (50 books)
+    test: "data/test-00000-of-00001-29a571947c0b5ccc.parquet"               # test filler + LM-1 (100 books)
+    license_note: "Apache-2.0 per deepmind/pg19 card; mirror API exposes no license field"
+  tokenizer:
+    type: byte-level BPE
+    vocab_size: 16384
+    pre_tokenizer: ["Split(\\d, isolated)", "ByteLevel"]
+    training_text: "1 GB: 80% FineWeb-Edu shard 001, 20% PG19 train; sampling seed 0"
+    special_tokens: {"<|endoftext|>": 0, "<|pad|>": 1, "<|reserved_0..5|>": "2-7"}
+    answer_rule: "values are exactly 4 single-digit tokens; separator tokens belong to the prompt"
+
+model_scales:
+  D384: {L: 12, d: 384, d_ff: 1024, vocab: 16384, tied: true, F_g_heads: 6, GDN_A_heads: 3,
+         n0_seeds: 5, stageA_tokens: 600047616, stageA_steps: 4578, stageB_options_steps: [229, 458, 687],
+         nonemb_params: {k0: 21309384, k12: 21280128}, total_params_k0: 27600840}
+  D512: {L: 12, d: 512, d_ff: 1536, vocab: 16384, tied: true, F_g_heads: 8, GDN_A_heads: 4,
+         n0_seeds: 4, stageA_tokens: 800063488, stageA_steps: 6104, stageB_options_steps: [763, 1526, 2289],
+         nonemb_params: {k0: 41007200, k12: 40968704}, total_params_k0: 49395808}
+
+mixers:
+  F_g: {desc: "MHA d/64 x 64; per-head unshared QK-RMSNorm gains; RoPE theta 5e5 after QK-norm, positions reset per document; headwise sigmoid output gate W_g (d x H); no conv; no bias",
+        params: {D384: 592896, D512: 1053696}}
+  F_gc: {desc: "F_g + causal depthwise ShortConv(4) on q,k,v before QK-norm/RoPE; SiLU on v only; document-aware",
+         params: {D384: 597504, D512: 1059840}}
+  GDN-A: {call: "fla.layers.GatedDeltaNet(hidden_size=d, head_dim=64, num_heads=d//128, expand_v=2, use_gate=True, use_short_conv=True, conv_size=4, conv_bias=False, allow_neg_eigval=False, norm_eps=1e-5, mode='chunk')",
+          params: {D384: 595334, D512: 1056904}}
+  GDN-E: {call: "as GDN-A with num_heads=1, head_dim=d//2", params: {D384: 594050, D512: 1054210}}
+  ssmax_optional: "q <- q * s_h * ln(t+1), s_h learnable, init 1/ln(4096); adopted only by S2-DEC-SSMAX"
+
+schedules:
+  optimizer: {name: AdamW, fused: true, betas: [0.9, 0.95], eps: 1.0e-8, weight_decay: 0.1,
+              wd_applies_to: "ndim>=2 incl. tied embedding, conv kernels, W_g",
+              wd_excludes: "1-D tensors (all gains), A_log, dt_bias, ssmax s_h",
+              grad_clip: 1.0, z_loss: 1.0e-4}
+  init: {linear: "N(0, 0.02)", output_proj: "N(0, 0.02/sqrt(24))", embedding: "N(0, 0.02)", gains: 1.0,
+         fla_specific: "keep fla init for A_log, dt_bias, conv, o_norm (VT-10)"}
+  stageA: {seq_len: 4096, batch_tokens: 131072, micro_batch: "2 x 4096 flattened (cu_seqlens), no checkpointing",
+           warmup_steps: 500, lr_after_warmup: constant, mix: {fineweb_edu: 0.85, pg19_4k_windows: 0.15}}
+  stageB: {seq_len: 32768, batch_tokens: 131072, micro_batch: "1 x 32768, per-block activation checkpointing",
+           lr: "linear decay eta* -> 0 over stage", mix: {pg19_32k_windows: 0.60, fineweb_edu_packed: 0.40}}
+  tef: {steps: 1000, batch_tokens: 65536, rewarm_steps: 50, lr: 3.0e-4, checkpoints: [250, 500, 1000],
+        anchors_seed0_extend_to: 4000, extend_checkpoints: [2000, 4000],
+        buckets: [512, 1024, 2048, 4096, 8192, 16384, 32768], equal_items_per: [bucket, family],
+        synthetic_share_default: 0.90, loss: "0.5*mean CE(answer tokens) + 0.5*mean CE(other tokens)",
+        queries_per_item: 4}
+  lr_sweep: {grid: [1.0e-3, 1.4e-3, 2.0e-3, 2.8e-3], k: [0, 3, 12], steps: 1145, warmup: 115, stable_until: 916,
+             decay_steps: 229, metric: "LM-2 subset loss at 4K", rule: "minimax regret <= 0.02 nats -> shared eta*",
+             edge_extension: [0.7e-3, 4.0e-3]}
+
+# ---------------------------------------------------------------------------------------------
+stages:
+  - stage: S0
+    name: "Infrastructure and implementation verification"
+    gate: G0
+    gpu_hours_estimate: 3.0
+    gate_rule: "all S0-VT-* pass; throughput floors met; peak VRAM <= 7 GiB; Triton cache archived"
+    experiments:
+      - {id: S0-DATA-01, kind: data, gpu_hours: 0, desc: "download pinned FineWeb-Edu shards 000-006 and emozilla/pg19; write data/MANIFEST.json with per-file sha256"}
+      - {id: S0-DATA-02, kind: data, gpu_hours: 0, depends_on: [S0-DATA-01], desc: "train 16,384 BPE tokenizer (protocol §6.2); save tokenizer.json + sha256"}
+      - {id: S0-DATA-03, kind: data, gpu_hours: 0, depends_on: [S0-DATA-02], desc: "pre-tokenise to uint16 shards; held-out splits; stateless loader keyed on (seed, step)"}
+      - {id: S0-DATA-04, kind: data, gpu_hours: 0, depends_on: [S0-DATA-03], desc: "effective-context histograms for Stage A, Stage B and TEF streams"}
+      - {id: S0-EVAL-01, kind: data, gpu_hours: 0, depends_on: [S0-DATA-02], desc: "word lists A/B from wonderwords noun/adjective lists (RULER niah.py L97-98 @db43f92), single-token filter, sha256-parity split; templates T1-T4"}
+      - {id: S0-EVAL-02, kind: data, gpu_hours: 0, depends_on: [S0-EVAL-01, S0-DATA-03], desc: "token-space item generators; generate dev items (seed 77: FD, DG, DC) and test items (seed 20261109: CS, MS, Tier 0); sha256 manifest; frozen at G5"}
+      - {id: S0-EVAL-03, kind: data, gpu_hours: 0, depends_on: [S0-EVAL-01], desc: "TEF generator (protocol §7.3), training namespaces"}
+      - {id: S0-VT-01, kind: test, desc: "parameter counts equal protocol §3.3-3.4 exactly", pass: "exact"}
+      - {id: S0-VT-02, kind: test, desc: "causal mask (F_g varlen/SDPA, F_gc, GDN chunk/recurrent)", pass: "attention max abs <= 1e-6 fp32; GDN rel RMS <= 3e-3; fp64 grad of out_t wrt x_{t'>t} == 0"}
+      - {id: S0-VT-03, kind: test, desc: "document isolation incl. conv state, F_gc conv, RoPE reset", pass: "GDN exact (0.0); attention rel RMS <= 1e-2 bf16 / 1e-5 fp32"}
+      - {id: S0-VT-04, kind: test, desc: "GDN chunk vs fp64 naive recurrence; T in {512, 32768}; 2 decay regimes; 4 geometries", pass: "rel RMS <= 3e-3 (fp32/TF32), <= 1e-2 (bf16); grad rel RMS <= 5e-3 at T=512"}
+      - {id: S0-VT-05, kind: test, desc: "recurrent vs chunked equivalence", pass: "outputs rel RMS <= 3e-3 fp32 / 1e-2 bf16; final state rel max <= 2e-3 / 8e-3"}
+      - {id: S0-VT-06, kind: test, desc: "cached vs uncached decode, k in {0,3,12}", pass: "fp32 argmax agreement 1.000 and max |dlogit| <= 2e-2"}
+      - {id: S0-VT-07, kind: test, desc: "branched query scoring vs separate forwards", pass: "|d logp_gold| < 1e-3 fp32; EM identical"}
+      - {id: S0-VT-08, kind: test, desc: "explicit fla ops by keyword; no auto mode switch (gated_deltanet.py L227-230); SDPA backend pinned and asserted", pass: "assertions hold"}
+      - {id: S0-VT-09, kind: test, desc: "weight-transplant logits: C12 (gate bypassed, gains tied) vs transformers Qwen3ForCausalLM; C0 vs fla GatedDeltaNetForCausalLM; headwise-gate unit test", pass: "fp32 logits within 1e-3 relative"}
+      - {id: S0-VT-10, kind: test, desc: "init: A_log/dt_bias preserved; out-proj std; shared modules bit-identical across k per seed", pass: "all hold"}
+      - {id: S0-VT-11, kind: test, desc: "data: batch hashes identical across k; stateless loader; cu_seqlens/positions; exact mix proportions; held-out disjointness", pass: "all hold"}
+      - {id: S0-VT-12, kind: test, desc: "eval items: exact length T; 4 single-digit answer tokens; zero train/eval tuple overlap; no EOS inside contexts", pass: "all hold"}
+      - {id: S0-VT-13, kind: test, gpu_hours: 0.5, desc: "determinism audit: k in {0,3,12} x 200 steps x 2 processes (seeds 900-902); kill -9 at step 137 and during ckpt write; production resume", pass: "audit bitwise (loss trace + param sha256); production |dloss| < 0.005 at resume+500"}
+      - {id: S0-VT-14, kind: test, desc: "inference-state nbytes after prefill at T in {1K, 32K}", pass: "equal to analytic bytes"}
+      - {id: S0-VT-15, kind: test, gpu_hours: 0.3, desc: "benchmark harness self-test incl. FlexAttention device-side length update in one captured graph (U-10)", pass: "backend assertion, no masks, cold/hot >= 1.5, MEAS-B App. A within 15%; Flex failure -> prefill-only comparator"}
+      - {id: S0-VT-16, kind: test, desc: "GDN-E at K=256/192 and GLA fwd/bwd finite; numerics as VT-04", pass: "pass or config-D fallback (D512)"}
+      - {id: S0-VT-17, kind: test, desc: "TEF generator balance and answer mask", pass: "equal counts per bucket/family +-1 per 1000 steps"}
+      - {id: S0-VT-18, kind: test, desc: "analysis code on synthetic data reproduces PI-SIM operating characteristics", pass: "within +-0.01 at 20,000 replicates"}
+      - {id: S0-VT-19, kind: measurement, gpu_hours: 0.5, desc: "warm Triton cache for every train/eval/bench shape (IS_VARLEN both branches; all lengths); archive tarball sha256", pass: "done"}
+      - {id: S0-VT-20, kind: measurement, desc: "peak memory per stage for C0 and C12", pass: "<= 7 GiB"}
+      - {id: S0-THR-01, kind: measurement, gpu_hours: 1.0, desc: "contended throughput, Stage A / Stage B / TEF, configs C0, C3, C12, X-gc12, X-E0 at D384 and D512",
+         pass: "Stage A >= 95K tok/s (D384) / >= 70K (D512); C12 Stage B >= 27K (D384) / >= 20K (D512)",
+         on_fail: "D512 path: Stage A 0.6B (pre-registered)"}
+
+  - stage: S1
+    name: "Reproduction pilot: Zoology MQAR (runs before any LM training)"
+    gate: G-RP
+    gpu_hours_estimate: 3.0
+    depends_on: [G0]
+    source: {repo: "https://github.com/HazyResearch/zoology", commit: 1ad20d193b6113cae1e8f3c655c300d7b4b3f4bb,
+             config: "zoology/experiments/mqar_example_configs/original_mqar_configs.py",
+             models: "zoology/experiments/models_repo.py L5-29 (attention), L265-293 (gated_delta_net)"}
+    common: {vocab: 8192, batch: 256, test_batch: 32, epochs: 32, n_layers: 2, conv_mixer: "BaseConv kernel 3, implicit long conv",
+             train: "(64,4)x100K; (128,8)x20K; (256,16|32|64)x20K", test: "(64,4|8|16),(128,32),(256,64),(512,128),(1024,256) x1000",
+             logger: "wandb disabled", cache_dir: "data/zoology/"}
+    lr_grid: [1.0e-3, 3.162e-3, 1.0e-2, 3.162e-2]
+    cut_rule: "if the first timed run implies > 3.0 GPU-h total, keep the 2 best LRs per family (chosen on the first d_model completed at 4 LRs)"
+    gate_rule: "(a) re-run Zoology models best-over-LR overall test accuracy: GDN >= 0.95 at d_model >= 128, attention >= 0.95 at d_model >= 64, GDN non-decreasing in d_model; (b) our mixers within +-0.03 of Zoology's at matched d_model and LR; re-run numbers only"
+    experiments:
+      - {id: S1-ZOO-ATTN-D064, model: "zoology MHA (2 heads, dropout 0.1)", d_model: 64, lrs: all, runs: 4}
+      - {id: S1-ZOO-ATTN-D128, model: "zoology MHA (2 heads, dropout 0.1)", d_model: 128, lrs: all, runs: 4}
+      - {id: S1-ZOO-GDN-D128, model: "zoology GatedDeltaNet (2 heads, use_gate False, conv 4)", d_model: 128, lrs: all, runs: 4}
+      - {id: S1-ZOO-GDN-D256, model: "zoology GatedDeltaNet (2 heads, use_gate False, conv 4)", d_model: 256, lrs: all, runs: 4}
+      - {id: S1-OURS-ATTN-D064, model: "our SDPA attention configured as zoology MHA (no gate, no QK-norm, no RoPE)", d_model: 64, lrs: best_of_S1-ZOO-ATTN-D064, runs: 1}
+      - {id: S1-OURS-ATTN-D128, model: "our SDPA attention configured as zoology MHA", d_model: 128, lrs: best_of_S1-ZOO-ATTN-D128, runs: 1}
+      - {id: S1-OURS-GDN-D128, model: "our fla-GDN wrapper in zoology geometry", d_model: 128, lrs: best_of_S1-ZOO-GDN-D128, runs: 1}
+      - {id: S1-OURS-GDN-D256, model: "our fla-GDN wrapper in zoology geometry", d_model: 256, lrs: best_of_S1-ZOO-GDN-D256, runs: 1}
+      - {id: S1-OURS-CFGA-D128, model: "GDN config-A head geometry (d_k 64, d_v 128)", d_model: 128, lrs: best_gdn, runs: 1, role: exploratory}
+      - {id: S1-OURS-CFGA-D256, model: "GDN config-A head geometry (d_k 64, d_v 128)", d_model: 256, lrs: best_gdn, runs: 1, role: exploratory}
+
+  - stage: S2
+    name: "LM-regime feasibility pilot (FEAS): decides scale, Stage-B budget, SSMax, TEF share, contexts per cell"
+    gate: FEAS
+    gpu_hours_estimate: {FEAS-384: 9.8, FEAS-512_conditional: 11.8, conditional_TEF_reruns: "<= 3.0"}
+    depends_on: [G-RP]
+    common:
+      scale: D384
+      lr_provisional: 2.0e-3            # FEAS precedes the LR sweep (D034); restart once at 1.4e-3 on divergence
+      stageA: {tokens: 300023808, steps: 2289, warmup_steps: 500, lr: constant}
+      stageB_branches_from: "end of Stage A (end-of-stable checkpoint)"
+      tef: "1000 steps, 90/10 default, checkpoints 250/500/1000"
+      eval: {at_tef_1000: FD, at_tef_250: DC, plus: ["LM-2 before/after TEF", "attention diagnostics for k=12 at 32K"]}
+    experiments:
+      # seed 101
+      - {id: S2-F384-C0-s101-A, config: C0, seed: 101, phase: stageA, gpu_hours: 0.69}
+      - {id: S2-F384-C0-s101-B030, parent: S2-F384-C0-s101-A, phase: stageB, steps: 229, tokens: 30015488, gpu_hours: 0.09}
+      - {id: S2-F384-C0-s101-B090, parent: S2-F384-C0-s101-A, phase: stageB, steps: 687, tokens: 90046464, gpu_hours: 0.27}
+      - {id: S2-F384-C0-s101-B030-T, parent: S2-F384-C0-s101-B030, phase: tef, gpu_hours: 0.19}
+      - {id: S2-F384-C0-s101-B090-T, parent: S2-F384-C0-s101-B090, phase: tef, gpu_hours: 0.19}
+      - {id: S2-F384-C12-s101-A, config: C12, seed: 101, phase: stageA, gpu_hours: 0.69}
+      - {id: S2-F384-C12-s101-B030, parent: S2-F384-C12-s101-A, phase: stageB, steps: 229, tokens: 30015488, gpu_hours: 0.20}
+      - {id: S2-F384-C12-s101-B090, parent: S2-F384-C12-s101-A, phase: stageB, steps: 687, tokens: 90046464, gpu_hours: 0.59}
+      - {id: S2-F384-C12-s101-B030-T, parent: S2-F384-C12-s101-B030, phase: tef, gpu_hours: 0.43}
+      - {id: S2-F384-C12-s101-B090-T, parent: S2-F384-C12-s101-B090, phase: tef, gpu_hours: 0.43}
+      # seed 102
+      - {id: S2-F384-C0-s102-A, config: C0, seed: 102, phase: stageA, gpu_hours: 0.69}
+      - {id: S2-F384-C0-s102-B030, parent: S2-F384-C0-s102-A, phase: stageB, steps: 229, tokens: 30015488, gpu_hours: 0.09}
+      - {id: S2-F384-C0-s102-B090, parent: S2-F384-C0-s102-A, phase: stageB, steps: 687, tokens: 90046464, gpu_hours: 0.27}
+      - {id: S2-F384-C0-s102-B030-T, parent: S2-F384-C0-s102-B030, phase: tef, gpu_hours: 0.19}
+      - {id: S2-F384-C0-s102-B090-T, parent: S2-F384-C0-s102-B090, phase: tef, gpu_hours: 0.19}
+      - {id: S2-F384-C12-s102-A, config: C12, seed: 102, phase: stageA, gpu_hours: 0.69}
+      - {id: S2-F384-C12-s102-B030, parent: S2-F384-C12-s102-A, phase: stageB, steps: 229, tokens: 30015488, gpu_hours: 0.20}
+      - {id: S2-F384-C12-s102-B090, parent: S2-F384-C12-s102-A, phase: stageB, steps: 687, tokens: 90046464, gpu_hours: 0.59}
+      - {id: S2-F384-C12-s102-B030-T, parent: S2-F384-C12-s102-B030, phase: tef, gpu_hours: 0.43}
+      - {id: S2-F384-C12-s102-B090-T, parent: S2-F384-C12-s102-B090, phase: tef, gpu_hours: 0.43}
+      # SSMax arm (U-03), seed 101, small branch only
+      - {id: S2-F384-C12ssmax-s101-A, config: C12, attention_variant: ssmax, seed: 101, phase: stageA, gpu_hours: 0.69}
+      - {id: S2-F384-C12ssmax-s101-B030, parent: S2-F384-C12ssmax-s101-A, phase: stageB, steps: 229, gpu_hours: 0.20}
+      - {id: S2-F384-C12ssmax-s101-B030-T, parent: S2-F384-C12ssmax-s101-B030, phase: tef, gpu_hours: 0.43}
+      - {id: S2-F384-EVAL, kind: evaluation, gpu_hours: 0.9, desc: "FD suite on all *-T checkpoints at TEF 1000; DC at TEF 250; LM-2; attention diagnostics"}
+      # conditional reruns (pre-registered fallbacks)
+      - {id: S2-F384-TEF5050, kind: conditional, condition: "forgetting gate fails at 90/10", runs: "TEF 50/50 on S2-F384-C{0,12}-s101-B090", gpu_hours: 0.6}
+      - {id: S2-F384-TEF5050-LR1e-4, kind: conditional, condition: "forgetting gate still fails at 50/50", runs: "TEF 50/50, LR 1e-4, on S2-F384-C{0,12}-s101-B090; adopted regardless (final fallback)", gpu_hours: 0.6}
+      - {id: S2-F384-TEFANS, kind: conditional, condition: "elicitation check fails (C12 dev R1 D=3 at 4K < 50% at TEF 1000 for both seeds)", runs: "answer-only-loss TEF on all 9 Stage-B branches", gpu_hours: 2.9}
+      # FEAS-512 (only if the D384 rule fails); seed 101; standard FEAS-1/2 thresholds
+      - {id: S2-F512-C0-s101-A, kind: conditional, condition: "S2-DEC-U01 rejects D384", scale: D512, config: C0, seed: 101, phase: stageA, tokens: 300023808, gpu_hours: 0.94}
+      - {id: S2-F512-C0-s101-B0100, kind: conditional, parent: S2-F512-C0-s101-A, phase: stageB, steps: 763, gpu_hours: 0.39}
+      - {id: S2-F512-C0-s101-B0300, kind: conditional, parent: S2-F512-C0-s101-A, phase: stageB, steps: 2289, gpu_hours: 1.18}
+      - {id: S2-F512-C0-s101-B0100-T, kind: conditional, parent: S2-F512-C0-s101-B0100, phase: tef, gpu_hours: 0.26}
+      - {id: S2-F512-C0-s101-B0300-T, kind: conditional, parent: S2-F512-C0-s101-B0300, phase: tef, gpu_hours: 0.26}
+      - {id: S2-F512-C12-s101-A, kind: conditional, condition: "S2-DEC-U01 rejects D384", scale: D512, config: C12, seed: 101, phase: stageA, tokens: 300023808, gpu_hours: 0.94}
+      - {id: S2-F512-C12-s101-B0100, kind: conditional, parent: S2-F512-C12-s101-A, phase: stageB, steps: 763, gpu_hours: 0.87}
+      - {id: S2-F512-C12-s101-B0300, kind: conditional, parent: S2-F512-C12-s101-A, phase: stageB, steps: 2289, gpu_hours: 2.61}
+      - {id: S2-F512-C12-s101-B0100-T, kind: conditional, parent: S2-F512-C12-s101-B0100, phase: tef, gpu_hours: 0.57}
+      - {id: S2-F512-C12-s101-B0300-T, kind: conditional, parent: S2-F512-C12-s101-B0300, phase: tef, gpu_hours: 0.57}
+      - {id: S2-F512-C12ssmax-s101-A, kind: conditional, scale: D512, config: C12, attention_variant: ssmax, seed: 101, phase: stageA, gpu_hours: 0.94}
+      - {id: S2-F512-C12ssmax-s101-B0100, kind: conditional, parent: S2-F512-C12ssmax-s101-A, phase: stageB, steps: 763, gpu_hours: 0.87}
+      - {id: S2-F512-C12ssmax-s101-B0100-T, kind: conditional, parent: S2-F512-C12ssmax-s101-B0100, phase: tef, gpu_hours: 0.57}
+      - {id: S2-F512-EVAL, kind: conditional, gpu_hours: 0.8, desc: "FD suite at TEF 1000; DC at TEF 250"}
+    decisions:
+      - id: S2-DEC-FEAS3
+        rule: "delta = S12(large branch) - S12(small branch) at 32K, R1/R-load FD ladder mean, seed-averaged: <=3 pp -> smallest; 3-10 pp -> middle; >10 pp -> largest (D384: 30/60/90M; D512: 0.1/0.2/0.3B)"
+        records: decisions.md
+      - id: S2-DEC-U01
+        rule: "D384 iff for BOTH seeds 101 and 102 at 32K (branch 30M if FEAS-3 picks 30M, else 90M; TEF 1000): S12 >= 0.85*S12(C0) AND S12 - S0 >= 25 pp. Else FEAS-512 with S12 >= 0.80*S12(C0) and S12 - S0 >= 20 pp at 32K. Else L_ext = 16K at D512 if the same holds at 16K. Else stop and re-scope with the user"
+        records: decisions.md
+      - id: S2-DEC-SSMAX
+        rule: "adopt SSMax for every attention layer iff (C12 ssmax - C12 plain), seed 101, small branch, TEF 1000: >= +3 pp at 32K AND >= -2 pp at 4K on the R1/R-load FD ladder mean"
+      - id: S2-DEC-U08
+        rule: "forgetting gate: LM-2 rise <= 0.05 nats for k=0 and k=12, and |rise12 - rise0| <= 0.02 -> 90/10; else 50/50; else 50/50 at LR 1e-4"
+      - id: S2-DEC-ELICIT
+        rule: "if C12 dev R1 D=3 at 4K < 50% at TEF 1000 for both seeds -> answer-only loss (S2-F384-TEFANS); if still < 50% -> promote direct-supervision screen and consult the user"
+      - id: S2-DEC-U15
+        rule: "design effect DE = 1 + 3*ICC (one-way random effects, FD 16K/32K retrieval cells, pooled over k in {0,12}); DE > 2 -> 600 contexts for confirmatory retrieval cells at 16K/32K, else 300"
+      - id: S2-DEC-DSPROMO
+        rule: "promote the direct-supervision screen before S3 iff every FD level of a family is at floor (<= 5% EM) or ceiling (>= 95%) for k=0 or for k=12"
+
+# ---------------------------------------------------------------------------------------------
+downstream:   # reserved IDs; each is blocked by the listed gate (details in protocol §13)
+  - {id: S3-LR, blocked_by: FEAS, desc: "LR sweep: k in {0,3,12} x {1.0,1.4,2.0,2.8}e-3 x 1145 steps at 4K, seed 100, chosen scale", gpu_hours: {D384: 4.2, D512: 5.6}}
+  - {id: G5-FREEZE, blocked_by: G-LR, desc: "commit and hash protocol, configs, src, item manifest, analysis code (VT-18), Triton cache, uv.lock; decision row with commit hashes"}
+  - {id: S4a-CORE-SEED0, blocked_by: G5, desc: "C12 and C0 seed 0 full budget, then G-FULL (DG at 32K: S12 >= 0.80*C0 and S12 - S0 >= 20 pp)"}
+  - {id: S4b-CORE, blocked_by: G-FULL, desc: "core k in {0,1,3,12} x n0 seeds (n0 = 5 at D384, 4 at D512)", gpu_hours: {D384: 38.4, D512: 63.8}}
+  - {id: S4-TRIGGER, blocked_by: S4b-CORE, desc: "U-05: +2 seeds to all four anchors if blinded pooled residual SD > 2.5 pp or any anchor seed range > 12 pp", gpu_hours: {D384: 15.3, D512: 31.9}}
+  - {id: S5a-CONTROLS, blocked_by: G5, desc: "X-gc12 x 2 seeds; X-nope3, X-nope12 x seed 0", gpu_hours: {D384: 8.8, D512: 19.0}}
+  - {id: S5b-BRANCHES, blocked_by: S4b-CORE, desc: "seed 0: TEF to 4000 steps at {0,1,3,12}; 2x Stage B (+TEF) at {0,3,12}", gpu_hours: {D384: 5.8, D512: 12.8}}
+  - {id: S6-EVAL, blocked_by: S5b-BRANCHES, desc: "frozen CS/MS/DG/DC/Tier-0 suites", gpu_hours: {D384: 9.8, D512: 12.1}}
+  - {id: S6-COST, blocked_by: G-cost, desc: "analytic costs always; measured costs in idle windows (2 sessions)", gpu_hours: 3.0}
+  - {id: TIER-A-DECISION, blocked_by: S6-EVAL, desc: "H1, H1-min, H3, H5(a) verdicts; U-02 / U-06 / U-13 triggers; consult user if primary cell fell back to 8K"}
+  - {id: S7-TIER-B, blocked_by: TIER-A-DECISION, desc: "curve C2, C6 x 2 (first) -> k* -> placement (2 arms x n0) and GDN-E {0, k*} x 2 -> conditional arms", gpu_hours: {D384: 36.9, D512: 66.9}}
+  - {id: S8-TIER-C, blocked_by: S7-TIER-B, desc: "optional arms in protocol §15 priority order (GLA first; promotion rule U-13)"}
