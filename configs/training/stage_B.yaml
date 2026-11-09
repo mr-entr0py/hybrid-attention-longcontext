@@ -1,0 +1,23 @@
+# Stage B (decay), protocol §6.3: 32K, 60% PG19 32K windows + 40% FineWeb-Edu packed to 32K (exact per
+# 20-sequence window), linear decay eta* -> 0 over B steps from the branch point S. Model and AdamW
+# state are loaded from the parent Stage-A final.pt. 131,072 tokens/step = 1 x 32K x 4 accumulation,
+# per-block activation checkpointing for every k.
+inherits: base.yaml
+stage: B
+schedule:
+  kind: linear_decay
+  peak_lr: run
+  steps:                      # FEAS-3 options (protocol §3.1); `steps_option` in the run YAML picks one
+    D384: {30M: 229, 60M: 458, 90M: 687}
+    D512: {100M: 763, 200M: 1526, 300M: 2289}
+data:
+  stream: stage
+  stage: B
+  seq_len: 32768
+  micro_batch: 1
+  accum: 4
+  mix: {}                     # loader default: 12 PG19 per 20 sequences
+runtime:
+  activation_checkpointing: true
+validation:
+  every: 100

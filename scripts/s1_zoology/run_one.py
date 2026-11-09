@@ -22,7 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zoology_compat import (  # noqa: E402
-    RESULTS_DIR, CaptureLogger, claim_gpu, setup_zoology, zoology_commit, zoology_dirty,
+    DATA_CACHE_DIR, MICRO_BATCH, RESULTS_DIR, CaptureLogger, claim_gpu, setup_zoology, zoology_commit,
+    zoology_dirty,
 )
 from s1_configs import build_runs, describe_config  # noqa: E402
 
@@ -47,28 +48,41 @@ def main() -> None:
     ap.add_argument("--out-dir", default=str(RESULTS_DIR / "runs"))
     ap.add_argument("--max-epochs", type=int, default=None,
                     help="ONLY for smoke tests; results written with smoke=True and never used for G-RP")
+    ap.add_argument("--micro-batch", type=int, default=MICRO_BATCH,
+                    help="rows per micro-batch in the exact grad-accumulation shim (engineering only)")
+    ap.add_argument("--fresh", action="store_true", help="delete an existing checkpoint instead of resuming")
+    ap.add_argument("--abort-after-epoch", type=int, default=None,
+                    help="TEST ONLY: exit(3) right after validating this epoch (exercises resume)")
     args = ap.parse_args()
 
     import torch
 
+    smoke = args.max_epochs is not None
+    # Per-epoch checkpoint (zoology_compat._patch_fit_resumable); removed after success.
+    ckpt = DATA_CACHE_DIR / "ckpt" / (f"{args.run_id}.smoke{args.max_epochs}.pt" if smoke else f"{args.run_id}.pt")
+    if args.fresh and ckpt.exists():
+        ckpt.unlink()
+
     claim_gpu()
-    setup_zoology()
+    setup_zoology(micro_batch=args.micro_batch, ckpt_path=ckpt)
     import zoology.train as ztrain
 
     runs = {r.run_id: r for r in build_runs()}
     run = runs[args.run_id]
     cfg = run.config
-    smoke = args.max_epochs is not None
     if smoke:
         cfg.max_epochs = args.max_epochs
 
-    epoch_times: list[float] = []
     t_start = time.time()
 
     def on_valid(logger: CaptureLogger) -> None:
-        epoch_times.append(time.time() - t_start)
-        print(f"[s1] {run.run_id} epoch {int(logger.valid[-1]['epoch'])} "
-              f"valid/acc={logger.valid[-1]['valid/accuracy']:.4f} t={epoch_times[-1]:.0f}s", flush=True)
+        ep = int(logger.valid[-1]["epoch"])
+        print(f"[s1] {run.run_id} epoch {ep} "
+              f"valid/acc={logger.valid[-1]['valid/accuracy']:.4f} t={logger.epoch_end_s[-1]:.0f}s", flush=True)
+        if args.abort_after_epoch is not None and ep == args.abort_after_epoch:
+            print(f"[s1] TEST abort after epoch {ep}", flush=True)
+            sys.stdout.flush()
+            os._exit(3)
 
     CaptureLogger.on_valid = staticmethod(on_valid)  # type: ignore[assignment]
     CaptureLogger.instances.clear()
@@ -76,8 +90,8 @@ def main() -> None:
 
     ztrain.train(cfg)  # Zoology's own training loop (Trainer.fit, AdamW + cosine, early stopping)
 
-    wall = time.time() - t_start
     lg = CaptureLogger.instances[-1]
+    wall = lg.elapsed_s()  # compute time summed over attempts (excludes work lost after a crash)
     final = lg.valid[-1]
     best = max(lg.valid, key=lambda r: r["valid/accuracy"])
     result = {
@@ -98,9 +112,11 @@ def main() -> None:
         "best_overall_acc": best["valid/accuracy"],
         "valid_history": lg.valid,
         "train_loss_by_epoch": lg.train_loss_by_epoch(),
-        "epoch_end_times_s": epoch_times,
+        "epoch_end_times_s": lg.epoch_end_s,
         "wall_time_s": wall,
+        "resumed_at_epochs": lg.resumed_at_epochs,  # [] = uninterrupted
         "peak_mem_gib": torch.cuda.max_memory_allocated() / 2**30,
+        "micro_batch": args.micro_batch,  # DEVIATION: exact gradient accumulation (zoology_compat)
         "model_info": lg.extra,
         "provenance": {
             "zoology_commit": zoology_commit(),
@@ -121,6 +137,8 @@ def main() -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(result, indent=1))
     os.replace(tmp, path)  # atomic: the queue treats an existing JSON as "done"
+    if ckpt.exists():
+        ckpt.unlink()
     print(f"[s1] wrote {path} final_acc={result['final_overall_acc']:.4f} wall={wall:.0f}s", flush=True)
 
 

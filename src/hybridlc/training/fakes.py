@@ -101,10 +101,8 @@ class FakeHybridLM(nn.Module):
 
     def __init__(self, cfg: Any, seed_index: int):
         super().__init__()
-        g = lambda: getattr(cfg, "__getitem__", None) and cfg  # noqa: E731
         get = (lambda k: cfg[k]) if isinstance(cfg, dict) else (lambda k: getattr(cfg, k))
         d, d_ff, V, pattern = get("d_model"), get("d_ff"), get("vocab_size"), get("pattern")
-        del g
         self.embed = nn.Embedding(V, d)
         self.blocks = nn.ModuleList(_FakeBlock(d, d_ff, "A" if c in "AC" else "-") for c in pattern)
         self.norm_f = nn.RMSNorm(d)
@@ -141,6 +139,7 @@ def build_fake_model(cfg: Any, seed_index: int) -> FakeHybridLM:
 # data
 # ----------------------------------------------------------------------------------------------
 _STAGE_CODE = {"A": 2, "B": 3, "LR": 2, "LM2": 7, "TEF": 4}
+IGNORE_INDEX = 1  # <|pad|>, the ignore_index of chunked_ce (as in hybridlc.data.loader)
 
 
 def _pack(rng: np.random.Generator, n_tokens: int, vocab: int, mean_doc: int) -> tuple[np.ndarray, list[int]]:
@@ -176,29 +175,37 @@ class FakeStageStream:
         return np.random.default_rng(seed_sequence(self.data_seed, _STAGE_CODE[self.stage], step, micro))
 
     def get(self, step: int, micro: int) -> dict[str, Any]:
+        """Same semantics as the real loader: ``labels[t]`` is the next token of the source stream
+        (so a document's last token predicts the next ``<|endoftext|>``); the final position of each
+        sequence has no continuation here and gets ``IGNORE_INDEX`` (= pad id 1)."""
         rng = self._rng(step, micro)
         all_ids, cu, pos_ids, labels = [], [0], [], []
-        for _ in range(self.micro_batch):
-            ids, starts = _pack(rng, self.seq_len, self.vocab, self.mean_doc)
+        for j in range(self.micro_batch):
+            ids, starts = _pack(rng, self.seq_len + 1, self.vocab, self.mean_doc)
+            lab = ids[1:].copy()
+            lab[-1] = IGNORE_INDEX
+            ids = ids[:-1]
+            starts = [s for s in starts if s < self.seq_len]
             bounds = starts + [self.seq_len]
-            lab = np.empty_like(ids)
             pos = np.empty_like(ids)
             for a, b in zip(bounds[:-1], bounds[1:]):
-                lab[a:b - 1] = ids[a + 1:b]
-                lab[b - 1] = -100  # last token of a segment has no in-document target
                 pos[a:b] = np.arange(b - a)
-                cu.append(cu[-1] + (b - a))
+                cu.append(j * self.seq_len + b)
             all_ids.append(ids)
             labels.append(lab)
             pos_ids.append(pos)
         ids = np.concatenate(all_ids)
-        h = hashlib.sha256(ids.astype(np.uint16).tobytes()).hexdigest()
+        lab = np.concatenate(labels)
+        h = hashlib.sha256()
+        h.update(ids.astype("<u2").tobytes())
+        h.update(lab.astype("<u2").tobytes())
+        h.update(np.asarray(cu, dtype="<i4").tobytes())
         return {
             "input_ids": torch.from_numpy(ids)[None],
-            "labels": torch.from_numpy(np.concatenate(labels))[None],
+            "labels": torch.from_numpy(lab)[None],
             "cu_seqlens": torch.tensor(cu, dtype=torch.int32),
             "position_ids": torch.from_numpy(np.concatenate(pos_ids))[None],
-            "batch_hash": h,
+            "batch_hash": h.hexdigest(),
         }
 
 
@@ -216,7 +223,7 @@ class FakeTEFStream(FakeStageStream):
 
     def _answer_mask(self, step: int, micro: int, labels: np.ndarray) -> np.ndarray:
         rng = np.random.default_rng(seed_sequence(self.data_seed, STREAMS["tef"], step, micro, 99))
-        return (rng.random(labels.shape) < 0.1) & (labels >= 0)
+        return (rng.random(labels.shape) < 0.1) & (labels != IGNORE_INDEX)
 
     def get(self, step: int, micro: int) -> dict[str, Any]:
         b = super().get(step, micro)
@@ -226,7 +233,7 @@ class FakeTEFStream(FakeStageStream):
             lab = super().get(step, m)["labels"][0].numpy() if m != micro else b["labels"][0].numpy()
             am = self._answer_mask(step, m, lab)
             n_ans += int(am.sum())
-            n_oth += int(((lab >= 0) & ~am).sum())
+            n_oth += int(((lab != IGNORE_INDEX) & ~am).sum())
             if m == micro:
                 masks.append(am)
         am = masks[0]
@@ -235,7 +242,7 @@ class FakeTEFStream(FakeStageStream):
         if n_ans:
             w[am] = 0.5 / n_ans
         if n_oth:
-            w[(lab >= 0) & ~am] = (0.5 if n_ans else 1.0) / n_oth
+            w[(lab != IGNORE_INDEX) & ~am] = (0.5 if n_ans else 1.0) / n_oth
         b["loss_weights"] = torch.from_numpy(w)[None]
         return b
 

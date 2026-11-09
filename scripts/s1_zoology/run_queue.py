@@ -10,11 +10,13 @@ Order:
   (first run's wall time × 16). If it exceeds 3.0 GPU-h, PHASE2 (attention d128, GDN d256)
   runs only the 2 best LRs per family, chosen on that family's PHASE1 width.
 A run is "done" when experiments/s1_zoology/runs/<run_id>.json exists; re-launching skips it.
-Each run is a separate subprocess (fresh CUDA context); a failed run is retried once.
+Each run is a separate subprocess (fresh CUDA context); a failed attempt is retried and resumes
+from the run's last per-epoch checkpoint (up to MAX_ATTEMPTS attempts).
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -29,7 +31,9 @@ RES = REPO / "experiments" / "s1_zoology"
 RUNS = RES / "runs"
 LOGS = RES / "logs"
 CUT_FILE = RES / "cut_decision.json"
-MAX_ATTEMPTS = 2
+# Attempts per run. Each attempt resumes from the last per-epoch checkpoint, so a retry after
+# a driver watchdog kill (cudaErrorLaunchTimeout on the shared display GPU) loses < 1 epoch.
+MAX_ATTEMPTS = int(os.environ.get("S1_MAX_ATTEMPTS", "6"))
 
 
 def _done(rid: str) -> bool:

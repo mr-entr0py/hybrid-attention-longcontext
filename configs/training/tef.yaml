@@ -1,0 +1,23 @@
+# Task-exposure fine-tune, protocol §7.3: from the end of Stage B (LR 0) with AdamW moments carried,
+# 50-step linear re-warm 0 -> 3e-4, then constant 3e-4. 65,536 tokens/step = 1 x 32K x 2 accumulation
+# with checkpointing. Loss weights (D014 1/2-1/2) come from TEFStream's loss_weights.
+inherits: base.yaml
+stage: TEF
+schedule:
+  kind: warmup_constant
+  warmup_steps: 50
+  peak_lr: 3.0e-4             # fixed by the protocol (not eta*)
+  steps: 1000
+data:
+  stream: tef
+  stage: TEF
+  seq_len: 32768
+  micro_batch: 1
+  accum: 2
+  kwargs: {}                  # TEFStream defaults = protocol (90/10 synthetic/replay, 1/2-1/2 loss)
+runtime:
+  activation_checkpointing: true
+validation:
+  every: 250
+checkpoint:
+  milestone_steps: [250, 500, 1000, 2000, 4000]

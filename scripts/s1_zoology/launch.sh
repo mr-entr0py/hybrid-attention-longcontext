@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch the S1(a) Zoology MQAR queue detached (protocol §17). Resumable: re-run to continue.
-# Prerequisite (needs user permission, see reports/s1_reproduction.md):
-#   source .venv/bin/activate && uv pip install -e third_party/zoology --no-deps --no-build-isolation
+# Prerequisite (done by the orchestrator): Zoology @1ad20d1 installed editable in .venv
+#   (uv pip install -e third_party/zoology --no-deps), plus pydantic, wandb, torchvision 0.26.0+cu128.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$REPO/.venv/bin/activate"

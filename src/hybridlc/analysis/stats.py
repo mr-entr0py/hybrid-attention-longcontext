@@ -41,7 +41,12 @@ Direction = Literal["greater", "less", "two-sided"]
 # Estimands
 # =============================================================================================
 def l_contrast(s_k: np.ndarray, s_0: np.ndarray, s_12: np.ndarray) -> np.ndarray:
-    """L_k = S_k - 0.2 S_0 - 0.8 S_12 (§2). With G > 0, L_k >= 0 iff R(k) >= 0.8."""
+    """L_k = S_k - 0.2 S_0 - 0.8 S_12 (§2). With G > 0, L_k >= 0 iff R(k) >= 0.8.
+
+    pandas inputs keep their index (aligned by seed); numpy inputs broadcast.
+    """
+    if any(isinstance(v, (pd.Series, pd.DataFrame)) for v in (s_k, s_0, s_12)):
+        return s_k - L_WEIGHT_S0 * s_0 - L_WEIGHT_S12 * s_12
     return np.asarray(s_k) - L_WEIGHT_S0 * np.asarray(s_0) - L_WEIGHT_S12 * np.asarray(s_12)
 
 
@@ -49,7 +54,10 @@ L_CONTRAST_COEFS: dict[str, float] = {"k": 1.0, "0": -L_WEIGHT_S0, "12": -L_WEIG
 
 
 def recovery(s_k: np.ndarray, s_0: np.ndarray, s_12: np.ndarray) -> np.ndarray:
-    """R(k) = (S_k - S_0) / (S_12 - S_0); NaN where the gap is exactly 0."""
+    """R(k) = (S_k - S_0) / (S_12 - S_0); NaN where the gap is exactly 0. pandas inputs keep their index."""
+    if any(isinstance(v, pd.Series) for v in (s_k, s_0, s_12)):
+        g = s_12 - s_0
+        return ((s_k - s_0) / g.where(g != 0)).astype(float)
     s_k, s_0, s_12 = map(np.asarray, (s_k, s_0, s_12))
     g = s_12 - s_0
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -147,6 +155,31 @@ def welch_t(x: np.ndarray, y: np.ndarray, direction: Direction = "two-sided", *,
         df = (vx + vy) ** 2 / (vx ** 2 / (nx - 1) + vy ** 2 / (ny - 1))
     t, p, lo, hi = _p_and_bounds(est, se, df, direction, alpha)
     return TTest(est, se, df, t, p, lo, hi, direction, nx + ny)
+
+
+def welch_contrast(groups: Sequence[np.ndarray], coefs: Sequence[float], direction: Direction = "greater", *,
+                   alpha: float = ALPHA_FW) -> TTest:
+    """Unpaired linear contrast ``sum_i c_i mean(x_i)`` with Welch–Satterthwaite df.
+
+    Each group has shape ``(..., n_i)`` (batch dims shared). Used for Reviewer A's Welch fallback in the
+    operating-characteristics replication and available as a heteroscedastic sensitivity check.
+    """
+    parts = [(float(c), np.asarray(x, float)) for c, x in zip(coefs, groups)]
+    v = [c * c * x.var(-1, ddof=1) / x.shape[-1] for c, x in parts]
+    vs = sum(v)
+    se = np.sqrt(vs)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df = vs ** 2 / sum(vi ** 2 / (x.shape[-1] - 1) for vi, (_, x) in zip(v, parts))
+    est = sum(c * x.mean(-1) for c, x in parts)
+    t, p, lo, hi = _p_and_bounds(est, se, df, direction, alpha)
+    return TTest(est, se, df, t, p, lo, hi, direction, sum(x.shape[-1] for _, x in parts))
+
+
+def paired_t_power(delta: float, sd: float, n: int, alpha: float = ALPHA_FW) -> float:
+    """Exact power of the one-sided one-sample t test (noncentral t), true mean ``delta``, SD ``sd``."""
+    ncp = delta / (sd / np.sqrt(n))
+    tc = sps.t.ppf(1 - alpha, n - 1)
+    return float(sps.nct.sf(tc, n - 1, ncp))
 
 
 def pooled_two_sample_t(x: np.ndarray, y: np.ndarray, direction: Direction = "two-sided", *,

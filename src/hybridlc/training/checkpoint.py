@@ -102,6 +102,15 @@ def latest_checkpoint(ckpt_dir: str | os.PathLike) -> Path | None:
     return lst[-1][1] if lst else None
 
 
+def latest_step(ckpt_dir: str | os.PathLike) -> int | None:
+    """Step of the newest full checkpoint from file names only (no load); ``final.pt`` -> -1."""
+    d = Path(ckpt_dir)
+    if (d / "final.pt").is_file():
+        return -1
+    lst = list_step_checkpoints(d)
+    return lst[-1][0] if lst else None
+
+
 def save_full(ckpt_dir: str | os.PathLike, step: int, *, model: torch.nn.Module,
               optimizer: torch.optim.Optimizer, meta: dict[str, Any], trainer_state: dict[str, Any],
               keep_last: int = 2, final: bool = False,

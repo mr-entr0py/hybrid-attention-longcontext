@@ -26,6 +26,7 @@ length"). Files are named ``<task>_<level>_C0.jsonl``."""
 ALL_LENGTHS: Final[tuple[int, ...]] = (1024, 2048, 4096, 8192, 16384, 32768)  # §9.3
 LONG_LENGTHS: Final[tuple[int, ...]] = (16384, 32768)  # §11.2 long band
 FALLBACK_LENGTH: Final[int] = 8192  # §11.2 / I-05
+Q_PER_CONTEXT: Final[int] = 4  # §9.1 query branching: Q = 4 queries per context
 
 # Configuration name -> k (number of F_g layers of 12), §3.2.
 CONFIG_K: Final[dict[str, int]] = {

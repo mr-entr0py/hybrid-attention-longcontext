@@ -12,7 +12,7 @@ Documents with empty text are skipped (counted in meta). The literal string
 ``<|endoftext|>`` inside a document is tokenised as plain text, so id 0 occurs
 only at document starts (asserted).
 
-Usage: nohup python scripts/data_pretokenize.py [--workers 22] > data/logs/pretok.log 2>&1 &
+Usage: nohup python scripts/data_pretokenize.py [--workers 4 --threads 6] > data/logs/pretok.log 2>&1 &
 """
 from __future__ import annotations
 
@@ -34,8 +34,15 @@ TMP = S.TOKENS_DIR / "_tmp"
 _TOK = None  # per-worker tokenizer
 
 
-def _init_worker() -> None:
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+def _init_worker(threads: int) -> None:
+    """Load the tokenizer once per worker; batch encoding uses ``threads`` Rayon threads.
+
+    Few processes x several threads (rather than one process per core) keeps the
+    resident memory bounded: a PG19 row group holds ~600 books (~250 MB of text), and
+    the machine is shared with a CARLA simulator.
+    """
+    os.environ["TOKENIZERS_PARALLELISM"] = "true" if threads > 1 else "false"
+    os.environ["RAYON_NUM_THREADS"] = str(threads)
     global _TOK
     from hybridlc.data.tokenizer import load_raw_tokenizer
     _TOK = load_raw_tokenizer(plain_specials=True)
@@ -81,7 +88,7 @@ def run_task(t: dict) -> dict:
     bufs: dict[str, dict[str, list]] = {}
     row = t["row0"]
     n_empty = 0
-    for batch in pf.iter_batches(batch_size=1000 if t["corpus"] == "fwe" else 25,
+    for batch in pf.iter_batches(batch_size=1000 if t["corpus"] == "fwe" else 48,
                                  row_groups=[t["rg"]], columns=["text", id_col]):
         texts = batch.column("text").to_pylist()
         ids = batch.column(id_col).to_pylist()
@@ -134,19 +141,116 @@ def length_stats(lens: np.ndarray) -> dict:
     return d
 
 
+def _sha256_path(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while chunk := fh.read(1 << 24):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _source_sha256s() -> dict[str, str]:
     """file -> SHA-256 from the download report (verified against HF LFS hashes)."""
     rep = json.loads((S.RAW_DIR / "download_report.json").read_text())
     return {r["file"]: r["sha256"] for r in rep}
 
 
+#: Held-out filter priority (see ``filter_heldout``): earlier splits win exact-text ties.
+HELDOUT_PRIORITY = [("fwe", "test"), ("pg19", "test"), ("fwe", "dev"), ("pg19", "validation")]
+TRAIN_SPLITS = [("fwe", "train"), ("pg19", "train")]
+
+
+def filter_heldout(out_root: Path) -> dict:
+    """Remove exact-text duplicates of training documents from the held-out stores.
+
+    FineWeb-Edu deduplicates only *within* a crawl dump, so shard 000 contains documents
+    whose text (under a different doc id) also occurs in shards 001-006 (measured: 12,718
+    test-half and 12,892 dev-half documents). Protocol §6.1/§16 (VT-11) require held-out and
+    training document-hash intersections to be empty, so a held-out document is dropped if
+    its text hash (first 16 bytes of SHA-256(text)) occurs in any training split, in a
+    higher-priority held-out split (``HELDOUT_PRIORITY``: test before dev), or earlier in its
+    own split (canonical order). Training stores are never modified. The filter is
+    idempotent; dropped counts are written to ``<split>.meta.json['heldout_filter']``.
+    """
+    train: set[bytes] = set()
+    for c, s in TRAIN_SPLITS:
+        train.update(map(bytes, np.load(out_root / c / f"{s}.docs.npz")["text_hash"]))
+    prior: set[bytes] = set()  # text hashes kept by higher-priority held-out splits
+    report = {}
+    for c, s in HELDOUT_PRIORITY:
+        d = out_root / c
+        z = dict(np.load(d / f"{s}.docs.npz"))
+        idx = np.load(d / f"{s}.idx.npy")
+        keep = np.zeros(len(idx) - 1, dtype=bool)
+        n_train = n_prior = n_own = 0
+        own: set[bytes] = set()
+        for i, h in enumerate(map(bytes, z["text_hash"])):
+            if h in train:
+                n_train += 1
+            elif h in prior:
+                n_prior += 1
+            elif h in own:
+                n_own += 1
+            else:
+                keep[i] = True
+                own.add(h)
+        meta_p = d / f"{s}.meta.json"
+        meta = json.loads(meta_p.read_text())
+        prev = meta.get("heldout_filter")
+        if keep.all():
+            rep = dict(n_dropped=0, n_kept=int(keep.sum()))
+            if prev is None:
+                meta["heldout_filter"] = rep
+                meta_p.write_text(json.dumps(meta, indent=1))
+            report[f"{c}/{s}"] = prev or rep
+            prior |= own
+            continue
+        tokens = np.memmap(d / f"{s}.bin", dtype=np.uint16, mode="r")
+        lens = np.diff(idx)
+        kept_idx = np.flatnonzero(keep)
+        new_lens = lens[kept_idx]
+        tmp_bin = d / f"{s}.bin.filtering"
+        bin_h = hashlib.sha256()
+        with open(tmp_bin, "wb") as fh:
+            for i in kept_idx.tolist():
+                b = np.asarray(tokens[idx[i]:idx[i + 1]]).tobytes()
+                bin_h.update(b)
+                fh.write(b)
+        del tokens
+        os.replace(tmp_bin, d / f"{s}.bin")
+        new_idx = np.concatenate([[0], np.cumsum(new_lens)]).astype(np.int64)
+        np.save(d / f"{s}.idx.npy", new_idx)
+        np.savez(d / f"{s}.docs.npz", **{k: v[kept_idx] for k, v in z.items()})
+        rep = dict(n_before=int(len(keep)), n_kept=int(keep.sum()), n_dropped=int((~keep).sum()),
+                   n_dropped_text_in_training=int(n_train),
+                   n_dropped_text_in_higher_priority_heldout=int(n_prior),
+                   n_dropped_dup_within_split=int(n_own),
+                   tokens_before=int(idx[-1]), tokens_kept=int(new_idx[-1]),
+                   rule="drop if text_hash in training splits, in a higher-priority held-out split "
+                        f"(priority {[f'{a}/{b}' for a, b in HELDOUT_PRIORITY]}), or earlier in the same split",
+                   n_training_text_hashes=len(train))
+        meta.update(bin_sha256=bin_h.hexdigest(), idx_sha256=_sha256_path(d / f"{s}.idx.npy"),
+                    length_stats=length_stats(new_lens), heldout_filter=rep)
+        meta_p.write_text(json.dumps(meta, indent=1))
+        report[f"{c}/{s}"] = rep
+        prior |= own
+        print(f"held-out filter {c}/{s}: dropped {rep['n_dropped']} of {rep['n_before']} documents", flush=True)
+    return report
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--workers", type=int, default=22)
+    ap.add_argument("--workers", type=int, default=4, help="worker processes")
+    ap.add_argument("--threads", type=int, default=6, help="Rayon threads per worker")
     ap.add_argument("--only", default=None, help="restrict to one corpus (fwe|pg19)")
     ap.add_argument("--max-tasks", type=int, default=None, help="debug: first N tasks per file")
     ap.add_argument("--out", default=str(S.TOKENS_DIR))
+    ap.add_argument("--filter-only", action="store_true",
+                    help="only (re)apply the held-out exact-duplicate filter to existing stores")
     args = ap.parse_args()
+    if args.filter_only:
+        print(json.dumps(filter_heldout(Path(args.out)), indent=1))
+        return 0
     from hybridlc.data.tokenizer import tokenizer_sha256
 
     out_root = Path(args.out)
@@ -161,10 +265,10 @@ def main() -> int:
     t0 = time.time()
     results: dict[int, dict] = {}
     ctx = get_context("spawn")
-    with ctx.Pool(args.workers, initializer=_init_worker) as pool:
+    with ctx.Pool(args.workers, initializer=_init_worker, initargs=(args.threads,)) as pool:
         for k, r in enumerate(pool.imap_unordered(run_task, order, chunksize=1)):
             results[r["tid"]] = r
-            if k % 100 == 0 or k == len(order) - 1:
+            if k < 60 or k % 200 == 0 or k == len(order) - 1:
                 ntok = sum(o["n_tok"] for rr in results.values() for o in rr["out"].values())
                 el = time.time() - t0
                 print(f"[{el:7.0f}s] {k+1}/{len(order)} tasks, {ntok/1e9:.3f}B tokens, {ntok/el/1e6:.2f}M tok/s",
@@ -184,10 +288,13 @@ def main() -> int:
         files = sorted({t["file"] for t, _ in items}, key=lambda f: [t["fidx"] for t in tasks if t["file"] == f][0])
         fpos = {f: i for i, f in enumerate(files)}
         lens, idh, txh, srow, sfile = [], [], [], [], []
+        bin_h = hashlib.sha256()
         with open(d / f"{split}.bin", "wb") as fh:
             for t, o in items:
                 with open(o["stem"] + ".bin", "rb") as src:
-                    shutil.copyfileobj(src, fh, 1 << 24)
+                    while chunk := src.read(1 << 24):  # copy and hash in one pass
+                        bin_h.update(chunk)
+                        fh.write(chunk)
                 z = np.load(o["stem"] + ".npz")
                 lens.append(z["lens"]); idh.append(z["id_hash"]); txh.append(z["text_hash"])
                 srow.append(z["src_row"]); sfile.append(np.full(len(z["lens"]), fpos[t["file"]], np.int16))
@@ -203,12 +310,15 @@ def main() -> int:
                     tokenizer_sha256=tok_sha,
                     source_files=[dict(file=f, sha256=shas.get(f)) for f in files],
                     n_empty_docs_skipped_in_source_files=n_empty,
-                    bin_sha256=None,
+                    bin_sha256=bin_h.hexdigest(),
+                    idx_sha256=_sha256_path(d / f"{split}.idx.npy"),
                     length_stats=length_stats(lens_a))
         (d / f"{split}.meta.json").write_text(json.dumps(meta, indent=1))
         summary[f"{corpus}/{split}"] = meta["length_stats"]
         print(f"{corpus}/{split}: {meta['length_stats']['n_docs']} docs, {idx[-1]/1e6:.1f}M tokens", flush=True)
     shutil.rmtree(TMP)
+    if not args.only and not args.max_tasks:
+        print(json.dumps(filter_heldout(out_root), indent=1), flush=True)
     print(json.dumps(summary, indent=1))
     print(f"done in {time.time()-t0:.0f}s", flush=True)
     return 0

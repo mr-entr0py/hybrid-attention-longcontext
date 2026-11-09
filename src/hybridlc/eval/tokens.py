@@ -87,7 +87,12 @@ class TokenSpace:
     @property
     def ends_sentence(self) -> np.ndarray:
         """bool[V]: token i ends a sentence (a needle may be inserted right after it)."""
-        return _ends_sentence_table(self)
+        return _ends_sentence_table(self)[0]
+
+    @property
+    def starts_space(self) -> np.ndarray:
+        """bool[V]: token i's text starts with whitespace (a needle may be inserted right before it)."""
+        return _ends_sentence_table(self)[1]
 
     def _fingerprint(self) -> str:
         """SHA-256 identifying the tokenizer (sha of tokenizer.json when saved, else of its JSON dump)."""
@@ -102,24 +107,29 @@ class TokenSpace:
         return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-_TABLES: dict[int, np.ndarray] = {}
+_TABLES: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
 
-def _ends_sentence_table(ts: TokenSpace) -> np.ndarray:
+def _ends_sentence_table(ts: TokenSpace) -> tuple[np.ndarray, np.ndarray]:
+    """(ends_sentence[V], starts_space[V]) from each token's decoded text."""
     key = id(ts)
     t = _TABLES.get(key)
     if t is None:
         texts = ts.tok.batch_decode([[i] for i in range(ts.vocab_size)])
-        t = np.zeros(ts.vocab_size, dtype=bool)
+        es = np.zeros(ts.vocab_size, dtype=bool)
+        ss = np.zeros(ts.vocab_size, dtype=bool)
         for i, s in enumerate(texts):
-            if "\n" in s:
-                t[i] = True
-                continue
+            ss[i] = len(s) > 0 and s[0].isspace()
             r = s.rstrip(_TRAIL)
-            if r.endswith(_SENT_END) and len(s.strip()) > 0:
-                t[i] = True
-        t[ts.eot_id] = False
-        t.setflags(write=False)
+            if "\n" in s.rstrip(" \t") and s.strip() == "":  # pure newline tokens end a line/paragraph
+                es[i] = True
+            elif r.endswith(_SENT_END) and len(s.strip()) > 0:
+                es[i] = True
+        es[ts.eot_id] = False
+        ss[ts.eot_id] = False
+        es.setflags(write=False)
+        ss.setflags(write=False)
+        t = (es, ss)
         _TABLES[key] = t
     return t
 

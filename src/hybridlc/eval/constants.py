@@ -80,6 +80,8 @@ R0_N = 100
 TEF_STEPS_PER_BLOCK = 1000  # equal counts per bucket & family are exact per 1,000-step block
 TEF_BATCH_TOKENS = 65536
 TEF_SEQ_LEN = 32 * K
+#: 90% synthetic tokens. With 1 K = 1,024 this gives floor(0.9 x 1,000 x 65,536 / 65,024) = 907
+#: items per bucket per 1,000 steps; the protocol's "~928" [INF] used decimal K (65.5e6 / 63.5e3).
 TEF_SYNTHETIC_SHARE = 0.90
 TEF_FAMILY_MIX = {
     "retrieval": {"R1": 0.40, "R-load": 0.40, "R3": 0.10, "R-dist": 0.10},

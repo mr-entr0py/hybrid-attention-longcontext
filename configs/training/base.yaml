@@ -1,0 +1,56 @@
+# Shared training recipe (protocol §7.1 optimisation, §13.3 G-div/G-OOM, §18 runbook).
+# Stage recipes inherit this file. Keys map 1:1 onto hybridlc.training.config dataclasses.
+optim:
+  name: adamw
+  fused: true                 # torch.optim.AdamW(fused=True)
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1           # decoupled; ndim>=2 incl. tied embedding, conv kernels, W_g
+  no_wd_name_patterns: [ssmax]  # SSMax s_h (also 1-D); 1-D tensors and _no_weight_decay always excluded
+  grad_clip: 1.0              # global L2 norm
+  z_loss_coef: 1.0e-4         # 1e-4 * mean(logsumexp^2) over loss tokens
+  ce_chunk: 4096              # fp32 logits per 4,096-token chunk with recompute
+  ignore_index: 1             # <|pad|>
+logging:
+  every: 10                   # metrics.jsonl cadence (protocol §18)
+  trace_every_step: true      # per-step loss / grad-norm bit patterns + batch hash (VT-13)
+  attn_stats: true            # attention max-logit / entropy via the optional collect_attn_stats hook
+gdiv:
+  ema_decay: 0.99
+  margin: 1.0
+  patience: 50                # trigger when loss > EMA + 1.0 for > 50 consecutive steps, or NaN
+  max_restarts: 1             # one automatic restart from the last checkpoint
+  fallback_lr: null           # FEAS only (D034): restart once from scratch at 1.4e-3
+oom:
+  max_consecutive: 3          # G-OOM: 3 consecutive no-progress OOM failures -> failed
+runtime:
+  device: cuda
+  mem_fraction: 0.44          # ~7.0 GiB of 16 GB (shared GPU with CARLA)
+  precision: bf16             # bf16 autocast, fp32 master weights and Adam moments
+  audit: false                # production runs in default (non-deterministic) mode (§18)
+  activation_checkpointing: false
+  env: {}
+checkpoint:
+  every: 250                  # full atomic checkpoint (fp32 model, AdamW, RNG, step, hashes)
+  keep_last: 2
+  save_final: true
+  milestone_steps: []
+  milestone_tokens: []
+validation:
+  # LM-2 held-out subset (FineWeb-Edu test half, 4K). The protocol fixes the cadence (§18) but not the
+  # interval-subset size; 64 micro-batches x 2 x 4K = 128 sequences (0.5M tokens) is used, identical
+  # for every run (data_seed 0, the LM2 stream ignores it anyway).
+  every: 0
+  stage: LM2
+  seq_len: 4096
+  micro_batch: 2
+  n_batches: 64
+  data_seed: 0
+  final_n_batches: 0
+  at_start: false
+impl:
+  model_factory: "hybridlc.models.build:build_model"
+  stage_stream: "hybridlc.data.loader:StageStream"
+  tef_stream: "hybridlc.data.tef:TEFStream"
+  loss_fn: "hybridlc.models.loss:chunked_ce"
+  model_config: "hybridlc.models.config:ModelConfig"

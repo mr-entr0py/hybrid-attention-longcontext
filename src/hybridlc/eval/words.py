@@ -11,11 +11,20 @@
 [IMPL] A-count needs animal names, which wonderwords does not tag; the fixed list
 ``ANIMALS`` below is used (also filtered and split by parity). A-freq probe words are the
 single-token nouns of the namespace list minus animals.
+
+[IMPL] A-freq / A-count *background* words (each used <= 3 times per list, §9.3) need more
+distinct words than the ~4.4K wonderwords words of one parity provide at 32K (3 x 4.4K x ~2
+tokens < 32K). The background pool is therefore the namespace-parity wonderwords words plus
+every tokenizer-vocabulary token of the form ``" " + [a-z]{3,}`` whose word has the namespace
+SHA-256 parity (so lists A and B stay disjoint word-by-word) and that is a dictionary word
+(the vendored SCOWL list, ``assets/``), which drops sub-word fragments. Animals are excluded.
 """
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -105,6 +114,26 @@ class WordList:
 
 
 _LISTS: dict[tuple[int, str], WordList] = {}
+_VOCAB_WORD = re.compile(r"^ [a-z]{3,}$")
+
+
+SCOWL_PATH = Path(__file__).resolve().parent / "assets" / "scowl_american_lower.txt"
+SCOWL_SHA256 = "37edcc1d0ae721dc10919159618edbd8ff5cae6f0149065bb8b6310a579f6932"
+
+
+def scowl_words() -> frozenset[str]:
+    """The vendored SCOWL lowercase word list (SHA-256 checked; see assets/README.md)."""
+    b = SCOWL_PATH.read_bytes()
+    if hashlib.sha256(b).hexdigest() != SCOWL_SHA256:
+        raise RuntimeError(f"{SCOWL_PATH} SHA-256 mismatch")
+    return frozenset(b.decode("ascii").split())
+
+
+def vocab_words(ts: TokenSpace) -> list[str]:
+    """Dictionary words ``w`` (SCOWL, lowercase a-z, len >= 3) for which ``" " + w`` is one vocabulary token."""
+    texts = ts.tok.batch_decode([[i] for i in range(ts.vocab_size)])
+    dic = scowl_words()
+    return sorted({t[1:] for t in texts if _VOCAB_WORD.match(t) and t[1:] in dic})
 
 
 def single_token_words(ts: TokenSpace, words: list[str]) -> tuple[list[str], np.ndarray]:
@@ -137,7 +166,8 @@ def word_list(ts: TokenSpace, name: str) -> WordList:
     # Background words: every list word (noun/adj/verb) except animals, as token arrays of
     # length 1..4 (" word"). Animal *tokens* are banned too so A-count is unambiguous.
     animal_tok = set(animal_ids.tolist())
-    bg_words = sorted({w for k in ("noun", "adjective", "verb") for w in pick(raw[k])} - animal_set)
+    bg_words = sorted(({w for k in ("noun", "adjective", "verb") for w in pick(raw[k])}
+                       | set(pick(vocab_words(ts)))) - animal_set)
     bg_encs = ts.enc_many([" " + w for w in bg_words])
     background, background_words = [], []
     for w, e in zip(bg_words, bg_encs):

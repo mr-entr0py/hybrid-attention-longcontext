@@ -1,0 +1,21 @@
+# LR selection (S3), protocol §7.2: Stage-A recipe at 4K, seed index 100, 1,145 steps x 131,072 tokens,
+# compressed WSD: 115 warm-up steps, constant to step 916, linear decay to 0 over the last 229 steps.
+# Metric: final LM-2 subset loss on 2,000 x 4K held-out sequences (= 1,000 micro-batches of 2 x 4K).
+inherits: base.yaml
+stage: LR
+schedule:
+  kind: wsd
+  warmup_steps: 115
+  stable_until: 916
+  peak_lr: run                # grid {1.0, 1.4, 2.0, 2.8} x 1e-3 (+0.7e-3 / 4.0e-3 edge extension)
+  steps: 1145
+data:
+  stream: stage
+  stage: LR
+  seq_len: 4096
+  micro_batch: 2
+  accum: 16
+  mix: {}
+validation:
+  every: 500
+  final_n_batches: 1000

@@ -59,8 +59,8 @@ def tef_rng(seed_index: int, *extra: str | int) -> np.random.Generator:
     return np.random.Generator(np.random.PCG64(tef_seed_sequence(seed_index, *extra)))
 
 
-def child_rng(rng: np.random.Generator, index: int) -> np.random.Generator:
-    """Independent child generator ``index`` of ``rng``'s seed sequence.
+def child_rng(rng: np.random.Generator, *index: str | int) -> np.random.Generator:
+    """Independent child generator ``index`` (one or more str/int keys) of ``rng``'s seed sequence.
 
     Unlike ``rng.spawn`` this does not depend on how many children were spawned
     before, so item ``i`` of a cell is identical whatever ``n`` is (prefix stability:
@@ -69,5 +69,6 @@ def child_rng(rng: np.random.Generator, index: int) -> np.random.Generator:
     ss = rng.bit_generator.seed_seq
     if not isinstance(ss, np.random.SeedSequence):
         raise TypeError("child_rng needs a Generator built from a SeedSequence")
-    child = np.random.SeedSequence(entropy=ss.entropy, spawn_key=tuple(ss.spawn_key) + (int(index),))
+    child = np.random.SeedSequence(entropy=ss.entropy,
+                                   spawn_key=tuple(ss.spawn_key) + tuple(key_int(i) for i in index))
     return np.random.Generator(np.random.PCG64(child))

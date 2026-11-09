@@ -102,6 +102,7 @@ class ValidationConfig:
     mix: dict[str, float] = field(default_factory=dict)
     final_n_batches: int = 0      # > 0: a larger evaluation at the end (LR sweep: 2,000 x 4K = 1,000)
     at_start: bool = False
+    kwargs: dict[str, Any] = field(default_factory=dict)  # extra stream kwargs (tests: synthetic root)
 
 
 @dataclass
@@ -144,6 +145,14 @@ class RuntimeConfig:
     audit: bool = False                     # deterministic algorithms (VT-13, standing replicate)
     activation_checkpointing: bool = False  # per block (Stage B / TEF at 32K)
     env: dict[str, str] = field(default_factory=dict)
+    #: G-throughput reference (tok/s measured at G0 for this stage/scale/config); None disables the
+    #: alert. A ``throughput_alert`` registry annotation is written once the windowed tok/s has been
+    #: below ``(1 - throughput_tolerance) * g0_tok_s`` for more than ``throughput_alert_after_s``.
+    g0_tok_s: float | None = None
+    #: torch intra-op CPU threads (None = torch default). Non-semantic; tests use 1 on a busy host.
+    cpu_threads: int | None = None
+    throughput_tolerance: float = 0.30
+    throughput_alert_after_s: float = 3600.0
 
 
 @dataclass
@@ -190,6 +199,7 @@ class RunConfig:
     parent_ckpt: str | None = None
     model_meta: dict[str, Any] = field(default_factory=dict)  # k, tier, ... (informational)
     source: str | None = None
+    tag: str | None = None         # optional non-semantic suffix (e.g. VT-13 replicate "p2")
     run_id: str = ""
 
     # -- identity ---------------------------------------------------------------------------
@@ -198,9 +208,10 @@ class RunConfig:
         memory cap and other bookkeeping (protocol §18: "SHA-256 of the semantic config")."""
         d = asdict(self)
         for k in ("run_id", "paths", "logging", "checkpoint", "oom", "validation", "source",
-                  "parent_ckpt", "model_meta"):
+                  "parent_ckpt", "model_meta", "tag"):
             d.pop(k, None)
-        d["runtime"].pop("mem_fraction", None)
+        for k in ("mem_fraction", "g0_tok_s", "throughput_tolerance", "throughput_alert_after_s", "cpu_threads"):
+            d["runtime"].pop(k, None)
         d["gdiv"] = {"fallback_lr": d["gdiv"]["fallback_lr"]}  # detection thresholds are fixed
         return d
 
@@ -208,8 +219,9 @@ class RunConfig:
         return _config_hash(self.semantic_dict())
 
     def compute_run_id(self) -> str:
-        tag = STAGE_TAG[self.stage]
-        return f"{self.exp_stage}{tag}-{self.scale}-{self.config_name}-s{self.seed_index}-{self.config_hash()[:8]}"
+        st = STAGE_TAG[self.stage]
+        rid = f"{self.exp_stage}{st}-{self.scale}-{self.config_name}-s{self.seed_index}-{self.config_hash()[:8]}"
+        return f"{rid}-{self.tag}" if self.tag else rid
 
     def model_config_hash(self) -> str:
         return _config_hash(self.model)
@@ -232,12 +244,13 @@ class RunConfig:
         """Instantiate the contract ``ModelConfig`` (falls back to a namespace if absent)."""
         cls = _try_import(self.impl.model_config)
         if cls is None:
-            return FallbackModelConfig(**self.model)
-        try:
-            return cls(**self.model)
-        except TypeError:
-            overrides = {k: v for k, v in self.model.items() if k != "pattern"}
-            return cls.for_scale(self.scale, self.model["pattern"], **overrides)
+            cls = FallbackModelConfig
+        names = {f.name for f in dataclasses.fields(cls)} if dataclasses.is_dataclass(cls) else None
+        kw = {k: v for k, v in self.model.items() if names is None or k in names}
+        dropped = set(self.model) - set(kw)
+        if dropped & set(MODEL_FIELDS):
+            raise ValueError(f"{cls.__name__} lacks contract fields {sorted(dropped & set(MODEL_FIELDS))}")
+        return cls(**kw)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -351,13 +364,19 @@ def _build(cls: type, d: dict[str, Any] | None) -> Any:
 # run loading
 # ----------------------------------------------------------------------------------------------
 def _select_steps(steps_spec: Any, scale: str, option: str | None) -> int:
-    """``steps`` may be an int, ``{scale: int}`` or ``{scale: {option: int}}``."""
+    """``steps`` may be an int, ``{scale: int}`` or ``{scale: {option: int}}``.
+
+    In the option form, a ``default`` key names the option used when the run YAML gives none.
+    """
     s = steps_spec
     if isinstance(s, dict):
         if scale not in s:
             raise ValueError(f"schedule.steps has no entry for scale {scale}: {list(s)}")
         s = s[scale]
     if isinstance(s, dict):
+        s = dict(s)
+        default = s.pop("default", None)
+        option = option if option is not None else default
         if option is None:
             raise ValueError(f"this stage needs steps_option, one of {list(s)}")
         if str(option) not in {str(k) for k in s}:
@@ -367,7 +386,7 @@ def _select_steps(steps_spec: Any, scale: str, option: str | None) -> int:
 
 
 def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
-                    paths: PathsConfig | None = None, _depth: int = 0) -> RunConfig:
+                    paths: PathsConfig | None = None, tag: str | None = None, _depth: int = 0) -> RunConfig:
     """Load and fully resolve a run YAML into a :class:`RunConfig` (with its ``run_id``)."""
     if _depth > 8:
         raise RecursionError("parent chain too deep")
@@ -375,7 +394,7 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
     run = load_yaml(path)
     allowed = {"exp_stage", "model", "training", "seed_index", "lr", "steps_option", "steps_multiplier",
                "parent", "continue_parent_step", "config_name", "model_overrides", "overrides", "paths",
-               "notes"}
+               "notes", "tag"}
     unknown = set(run) - allowed
     if unknown:
         raise ValueError(f"{path}: unknown run keys {sorted(unknown)}")
@@ -428,13 +447,15 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
         runtime=_build(RuntimeConfig, tdoc.get("runtime")), impl=_build(ImplConfig, tdoc.get("impl")),
         paths=paths or _build(PathsConfig, run.get("paths")),
         model_meta={k: mdoc[k] for k in mdoc if k not in ("fields",)}, source=str(path),
+        tag=tag if tag is not None else run.get("tag"),
     )
 
     # parent (branch point)
     parent = run.get("parent")
     if parent:
         if isinstance(parent, str):
-            pcfg = load_run_config(resolve_path(parent, path.parent), paths=cfg.paths, _depth=_depth + 1)
+            pcfg = load_run_config(resolve_path(parent, path.parent), paths=cfg.paths, tag=cfg.tag,
+                                   _depth=_depth + 1)
             if pcfg.model != cfg.model:
                 raise ValueError(f"parent {pcfg.run_id} has a different model config")
             cfg.parent_run_id = pcfg.run_id

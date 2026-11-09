@@ -1,0 +1,24 @@
+# Stage A (stable), protocol §6.3: 4K, 85% FineWeb-Edu packed + 15% PG19 4K windows (exact per
+# 640-sequence window), 500-step linear warm-up to eta* then constant. 131,072 tokens/step = 2 x 4K
+# micro-batches x 16 accumulation steps, no activation checkpointing. The end-of-run final.pt (with
+# AdamW state) is the branch point S.
+inherits: base.yaml
+stage: A
+schedule:
+  kind: warmup_constant
+  warmup_steps: 500
+  peak_lr: run                # eta* from the run YAML (`lr`)
+  steps:
+    D384: {default: full, full: 4578, FEAS: 2289}           # 0.6B tokens; FEAS 0.3B (plan S2)
+    D512: {default: full, full: 6104, FEAS: 2289, "0.6B": 4578}  # 0.8B; G0 D512 throughput fallback 0.6B
+data:
+  stream: stage
+  stage: A
+  seq_len: 4096
+  micro_batch: 2
+  accum: 16
+  mix: {}                     # loader default: 96 PG19 per 640 sequences
+validation:
+  every: 500
+checkpoint:
+  milestone_tokens: [50000000, 100000000, 200000000, 400000000]   # bf16 weights-only (§18); S = final

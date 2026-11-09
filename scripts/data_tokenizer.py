@@ -15,10 +15,12 @@ Usage: nohup python scripts/data_tokenizer.py > data/logs/tokenizer.log 2>&1 &
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -84,8 +86,8 @@ def sample_pg19(rng: np.random.Generator, budget: int) -> tuple[list[str], dict]
                      row_order_sha256=h.hexdigest())
 
 
-def compression_eval() -> dict:
-    tok = load_raw_tokenizer(plain_specials=True)
+def compression_eval(tok_dir: Path = S.TOKENIZER_DIR) -> dict:
+    tok = load_raw_tokenizer(tok_dir, plain_specials=True)
     res = {}
     # FWE shard 000 dev half: first 3,000 odd-parity documents in file order.
     pf = pq.ParquetFile(S.raw_path(S.FWE_REPO, S.FWE_HELDOUT_FILE))
@@ -110,6 +112,9 @@ def compression_eval() -> dict:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=str(S.TOKENIZER_DIR), help="output dir (a scratch dir for reproducibility checks)")
+    out = Path(ap.parse_args().out)
     t0 = time.time()
     rng = np.random.default_rng(SAMPLING_SEED)  # local generator, not the global RNG
     fwe_budget = int(TOTAL_BYTES * FWE_FRACTION)
@@ -119,15 +124,15 @@ def main() -> int:
           f"PG19 {pg_info['bytes']/1e6:.1f} MB ({pg_info['n_docs']} books) in {time.time()-t0:.0f}s", flush=True)
     texts = fwe + pg
     t1 = time.time()
-    train_tokenizer(texts, length=len(texts))
+    train_tokenizer(texts, out_dir=out, length=len(texts))
     train_s = time.time() - t1
     del texts, fwe, pg
-    print(f"trained in {train_s:.0f}s; sha256 {tokenizer_sha256()}", flush=True)
-    comp = compression_eval()
+    print(f"trained in {train_s:.0f}s; sha256 {tokenizer_sha256(out)}", flush=True)
+    comp = compression_eval(out)
     report = dict(total_bytes=TOTAL_BYTES, fwe_fraction=FWE_FRACTION, sampling_seed=SAMPLING_SEED,
-                  fwe=fwe_info, pg19=pg_info, train_seconds=train_s, tokenizer_sha256=tokenizer_sha256(),
+                  fwe=fwe_info, pg19=pg_info, train_seconds=train_s, tokenizer_sha256=tokenizer_sha256(out),
                   compression=comp)
-    (S.TOKENIZER_DIR / "training_report.json").write_text(json.dumps(report, indent=1))
+    (out / "training_report.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report, indent=1), flush=True)
     return 0
 

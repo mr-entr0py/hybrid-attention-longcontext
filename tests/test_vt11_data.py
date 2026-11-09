@@ -21,6 +21,8 @@ from hybridlc.data.storeio import synthetic_corpus
 
 REAL = (S.TOKENS_DIR / "fwe" / "train.bin").exists() and (S.TOKENS_DIR / "pg19" / "train.bin").exists()
 realdata = pytest.mark.skipif(not REAL, reason="data/tokens not built")
+HAVE_TOK = (S.TOKENIZER_DIR / "tokenizer.json").exists()
+needs_tokenizer = pytest.mark.skipif(not HAVE_TOK, reason="data/tokenizer not trained")
 
 
 @pytest.fixture(scope="module")
@@ -238,7 +240,7 @@ def test_real_streams_and_throughput():
         assert rate > 1.5e6, f"stage {st}: {rate:.0f} tok/s"  # 10x the ~150K tok/s training rate
 
 
-@realdata
+@needs_tokenizer
 def test_tokenizer_contract():
     from hybridlc.data.tokenizer import load_tokenizer
 
@@ -248,3 +250,110 @@ def test_tokenizer_contract():
         ["<|endoftext|>", "<|pad|>"] + [f"<|reserved_{i}|>" for i in range(6)]
     assert tok.convert_ids_to_tokens(tok.encode(" 4821", add_special_tokens=False)) == ["Ġ", "4", "8", "2", "1"]
     assert tok.decode(tok.encode("key 0042 is x", add_special_tokens=False)) == "key 0042 is x"
+
+
+@realdata
+def test_real_manifest_and_store_hashes():
+    """MANIFEST.json lists every store with the SHA-256 recorded at build time; small stores re-hash equal."""
+    import hashlib
+
+    m = json.loads(S.MANIFEST_PATH.read_text())
+    assert m["pins"][S.FWE_REPO]["revision"] == S.FWE_REVISION
+    assert m["pins"][S.PG19_REPO]["revision"] == S.PG19_REVISION
+    assert all(r["verified"] for r in m["raw_files"]) and len(m["raw_files"]) == 7 + 25
+    for sp in S.SPLITS:
+        e = m["tokens"][f"{sp.corpus}/{sp.split}"]
+        meta = json.loads((S.TOKENS_DIR / sp.corpus / f"{sp.split}.meta.json").read_text())
+        assert e["bin_sha256"] == meta["bin_sha256"] and e["n_tokens"] == meta["length_stats"]["n_tokens"]
+        store = get_store(sp.corpus, sp.split)
+        assert store.n_tokens == e["n_tokens"] and store.n_docs == e["n_docs"]
+    for split in ("validation", "test"):  # cheap enough to re-hash
+        p = S.TOKENS_DIR / "pg19" / f"{split}.bin"
+        assert hashlib.sha256(p.read_bytes()).hexdigest() == m["tokens"][f"pg19/{split}"]["bin_sha256"]
+    assert m["tokens"]["pg19/validation"]["n_docs"] == 50 and m["tokens"]["pg19/test"]["n_docs"] == 100
+
+
+@realdata
+def test_real_stores_eot_only_at_doc_starts():
+    """Spot check (pretokenisation asserts this for every document): id 0 exactly at document starts,
+    ids 1..7 never."""
+    g = np.random.default_rng(0)
+    for sp in S.SPLITS:
+        st = get_store(sp.corpus, sp.split)
+        for i in g.choice(st.n_docs, size=min(200, st.n_docs), replace=False):
+            d = st.doc(int(i))
+            assert d[0] == 0 and not np.any(d[1:] <= 7)
+
+
+@realdata
+def test_real_stage_A_full_window_exact():
+    """Protocol shapes on the real corpus: one full 20-step Stage-A window has exactly 96/640 PG19
+    sequences and 32 x 4,096 tokens per step; one 5-step Stage-B window has 12/20."""
+    for stage, steps, n_pg, n_seq in (("A", 20, 96, 640), ("B", 5, 12, 20)):
+        s = StageStream(stage, 0)
+        kinds = []
+        for step in range(steps):
+            ntok = 0
+            for m in range(s.accum):
+                b = s.get_numpy(step, m)
+                _check_batch(b, s.seq_len, s.micro_batch)
+                ntok += b["input_ids"].size
+                kinds += b["sources"]
+            assert ntok == 131072
+        assert len(kinds) == n_seq and kinds.count("pg19") == n_pg
+
+
+@realdata
+def test_real_lr_and_lm2_streams():
+    lr = StageStream("LR", 100)
+    a = StageStream("A", 100)
+    assert lr.get_numpy(3, 5)["batch_hash"] == a.get_numpy(3, 5)["batch_hash"]  # LR sweep = Stage-A recipe
+    assert lr.get_numpy(3, 5)["batch_hash"] != StageStream("A", 0).get_numpy(3, 5)["batch_hash"]
+    lm2 = StageStream("LM2", 0)
+    assert lm2.num_steps() * lm2.seqs_per_step == 2000
+    _check_batch(lm2.get_numpy(0, 0), 4096, 2)
+    _check_batch(lm2.get_numpy(999, 0), 4096, 2)
+
+
+@realdata
+def test_real_parity_assignment_against_raw_ids():
+    """Kept shard-000 documents sit in the split given by SHA-256(doc_id) parity (checked against the raw
+    parquet ids via src_row), and the stored id_hash matches."""
+    import hashlib
+
+    import pyarrow.parquet as pq
+
+    ids = pq.read_table(S.raw_path(S.FWE_REPO, S.FWE_HELDOUT_FILE), columns=["id"]).column("id").to_pylist()
+    g = np.random.default_rng(1)
+    for split in ("test", "dev"):
+        z = np.load(S.TOKENS_DIR / "fwe" / f"{split}.docs.npz")
+        for i in g.choice(len(z["src_row"]), size=500, replace=False):
+            doc_id = ids[int(z["src_row"][i])]
+            assert S.fwe_heldout_split(doc_id) == split
+            assert hashlib.sha256(doc_id.encode()).digest()[:16] == bytes(z["id_hash"][i])
+        meta = json.loads((S.TOKENS_DIR / "fwe" / f"{split}.meta.json").read_text())
+        assert meta["heldout_filter"]["n_kept"] == len(z["src_row"])
+
+
+@realdata
+def test_real_store_tokens_match_raw_text():
+    """Stored documents equal [EOT] + encode(raw text) for random FWE-test and PG19-validation rows,
+    and decode back to the raw text."""
+    import pyarrow.parquet as pq
+
+    from hybridlc.data.tokenizer import load_raw_tokenizer
+
+    tok = load_raw_tokenizer(plain_specials=True)
+    g = np.random.default_rng(2)
+    pg_val = next(S.raw_path(S.PG19_REPO, "data").glob("validation-*.parquet"))
+    for corpus, split, path, n in (("fwe", "test", S.raw_path(S.FWE_REPO, S.FWE_HELDOUT_FILE), 30),
+                                   ("pg19", "validation", pg_val, 3)):
+        store = get_store(corpus, split)
+        z = np.load(S.TOKENS_DIR / corpus / f"{split}.docs.npz")
+        texts = pq.read_table(path, columns=["text"]).column("text")
+        for i in g.choice(store.n_docs, size=n, replace=False):
+            text = texts[int(z["src_row"][i])].as_py()
+            ids = tok.encode(text, add_special_tokens=False).ids
+            d = store.doc(int(i))
+            assert d[0] == 0 and np.array_equal(d[1:], np.asarray(ids, np.uint16))
+            assert tok.decode(d[1:].tolist(), skip_special_tokens=False) == text

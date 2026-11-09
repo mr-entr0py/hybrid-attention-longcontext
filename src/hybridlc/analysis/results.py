@@ -192,7 +192,8 @@ def load_item_results(
         df = pd.DataFrame(cols)
         df.attrs.update(skipped_reruns=skipped, inputs=inputs)
         return df
-    for run_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+    for run_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))):
+        # directories starting with "_" (e.g. ``_bench``) hold non-item results and are skipped
         rid = run_dir.name
         if runs_f is not None and rid not in runs_f:
             continue
