@@ -1,5 +1,23 @@
 # Live status (orchestrator notes; update on every check)
 
+## RESUME PROCEDURE (when the user says "continue")
+1. `git add -A && git commit -m WIP` to save any partial agent output.
+2. Resume every workflow listed under **Active workflows** whose latest notification showed failed agents: `Workflow({scriptPath: <path>, resumeFromRunId: <runId>})`. Finished agents replay from cache.
+3. Check the detached jobs listed below (`pgrep`, tail their logs) and restart them with their launch scripts if they died.
+4. Append a timestamped entry to this file.
+
+## Active workflows (scripts live in ~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/)
+| Workflow | Script | Run ID | State |
+|---|---|---|---|
+| S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 22:12; at integrator / verify |
+| Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | resumed 22:12; at critic B / PI |
+
+## Detached jobs
+| Job | Launch / resume | Log | State |
+|---|---|---|---|
+| S1(a) Zoology queue | `bash scripts/s1_zoology/launch.sh` | experiments/s1_zoology/logs/queue.log | all done |
+
+## Log
 **2026-11-09 ~18:10 IST**
 
 - CARLA is paused by the user, so the GPU is in use by project jobs only.

@@ -45,7 +45,11 @@ def _load(rid: str) -> dict:
 
 
 def _run(rid: str) -> None:
-    for attempt in range(1, MAX_ATTEMPTS + 1):
+    # Log numbering continues after any logs left by earlier queue launches, so failed
+    # attempts from a previous launch are kept (never overwritten).
+    first = 1 + max((int(p.name.rsplit(".attempt", 1)[1].split(".")[0])
+                     for p in LOGS.glob(f"{rid}.attempt*.log")), default=0)
+    for attempt in range(first, first + MAX_ATTEMPTS):
         if _done(rid):
             return
         log = LOGS / f"{rid}.attempt{attempt}.log"
