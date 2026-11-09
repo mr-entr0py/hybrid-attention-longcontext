@@ -58,10 +58,10 @@ The repository is the project's external memory: literature notes, decisions, pr
 ## Status
 
 - [x] Project framing
-- [ ] Stage 1: literature investigation (in progress)
-- [ ] Stage 2: experimental methodology
-- [ ] Stage 3: independent review
-- [ ] Stage 4: infrastructure
+- [x] Stage 1: literature investigation (`reports/literature/`, `literature_review.md`, `literature_db.yaml`)
+- [x] Stage 2: experimental methodology (`reports/initial_proposal.md`)
+- [x] Stage 3: independent adversarial review and debate (`reports/reviews/`); protocol frozen (`reports/experimental_protocol.md` v1.0)
+- [ ] Stage 4: infrastructure (S0) and reproduction pilot (S1): in progress
 - [ ] Stage 5: pilots
 - [ ] Stage 6: main experiments
 - [ ] Stage 7: analysis
