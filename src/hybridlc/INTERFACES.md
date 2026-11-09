@@ -32,6 +32,11 @@ Conventions:
   - `attn_head_dim=64`, `rope_theta=5e5`, `nope=False`, `ssmax=False`, `init_std=0.02`, `tie_embeddings=True`, `norm_eps=1e-5`.
   - `ModelConfig.for_scale('D384'|'D512', pattern, **overrides)`.
   - `patterns.py`: `centred(k, L=12)`, `placement(kstar, 'early'|'middle'|'late')`, and named configs C0..C12, X-*, per protocol §3.2.
+- `models/mixers.py` (added by S1 for protocol §17 part (b); consumer: `scripts/s1_zoology/our_mixers.py`):
+  - `build_mixer(kind: str, cfg: ModelConfig, layer_idx: int, **overrides) -> nn.Module`. `kind` is a pattern char (`A`, `C`, `-`, `E`, `G`, `N`). `build_model` should use it, so the S1(b) module is the same code as the LM's.
+  - Mixer `forward(x[B,T,d], cu_seqlens=None, position_ids=None) -> [B,T,d]`. With `cu_seqlens=None`, x is a dense batch of independent sequences (no padding) and positions are 0..T-1 per row.
+  - F_g/F_gc overrides (defaults = protocol §3.3): `n_heads=d//attn_head_dim`, `head_dim=cfg.attn_head_dim`, `qk_norm=True`, `rope=not cfg.nope`, `out_gate=True`.
+  - GDN overrides: keyword arguments passed through to `fla.layers.GatedDeltaNet` (`num_heads`, `head_dim`, `expand_v`, `use_gate`, `use_short_conv`, `conv_size`). Defaults = GDN-A.
 - `models/build.py`: `build_model(cfg, seed_index) -> HybridLM`. Initialisation follows protocol §7.1 and §8.1: shared modules are bit-identical across patterns for the same seed_index, and fla-specific tensors keep fla's own init.
 - `HybridLM(nn.Module)`
   - `forward(input_ids[1,N] long, cu_seqlens[int32, n_docs+1], position_ids[1,N] long) -> hidden[1,N,d]`. Varlen training path, final RMSNorm already applied.
