@@ -1,7 +1,10 @@
 """VT-10: initialisation (protocol §7.1, §8.1, §16).
 
-* ``A_log`` and ``dt_bias`` (and the GDN conv kernels / o_norm) survive the global init: they equal
-  what fla's own constructor draws under the mixer's stream-derived seed;
+* ``A_log`` and ``dt_bias`` (and o_norm) survive the global init: they equal what fla's own
+  constructor draws under the mixer's stream-derived seed;
+* short-conv kernels (GDN/GLA ShortConvolution, F_gc conv) follow fla's *model* init N(0, 0.02)
+  (``GatedDeltaNetPreTrainedModel._init_weights``), not the constructor's U(-0.5, 0.5)
+  (verification round 3, GDN-CONV-INIT-NOT-FLA-MODEL-INIT);
 * output-projection std ≈ 0.02/√24, other linears ≈ 0.02, gains = 1;
 * shared modules bit-identical across k for a given seed (SHA-256 of embedding/MLP/norm tensors in
   C0 vs C12 and the other table configs), different across seeds;
@@ -46,7 +49,10 @@ def test_fla_tensors_keep_fla_init(name: str) -> None:
         assert torch.equal(mx.A_log, ref.A_log) and torch.equal(mx.dt_bias, ref.dt_bias)
         assert mx.A_log._no_weight_decay and mx.dt_bias._no_weight_decay
         for conv in ("q_conv1d", "k_conv1d", "v_conv1d"):
-            assert torch.equal(getattr(mx, conv).weight, getattr(ref, conv).weight)
+            w = getattr(mx, conv).weight
+            # fla model init N(0, 0.02) (round 3), not the constructor's U(-1/2, 1/2) (std 0.289)
+            assert not torch.equal(w, getattr(ref, conv).weight)
+            assert abs(w.std().item() / 0.02 - 1) < 0.1 and w.abs().max().item() < 0.15, (conv, w.std())
         assert torch.equal(mx.o_norm.weight, torch.ones_like(mx.o_norm.weight))
         a = mx.A_log.exp()
         assert (a > 0).all() and (a < 16).all()
@@ -82,7 +88,7 @@ def test_fgc_conv_and_ssmax_init() -> None:
     model = build_model(cfg, 0)
     mx = model.layers[0].mixer
     w = mx.conv.weight
-    assert w.abs().max().item() <= 0.5 and w.std().item() > 0.2  # U(−1/√4, 1/√4): std 0.289
+    assert abs(w.std().item() / 0.02 - 1) < 0.1 and w.abs().max().item() < 0.15  # N(0, 0.02), as GDN
     assert torch.allclose(mx.ssmax_s, torch.full_like(mx.ssmax_s, 1 / math.log(4096)))
     assert mx.ssmax_s.ndim == 1 and mx.q_norm.ndim == 1  # no weight decay by the ndim rule
 
@@ -129,3 +135,30 @@ def test_tied_embedding() -> None:
     m = build_model(ModelConfig.for_scale(SCALE, "C0"), 0)
     assert m.lm_head_weight is m.embed.weight
     assert not any(n.endswith("bias") and not n.endswith("dt_bias") for n, _ in m.named_parameters())  # no biases
+
+
+def test_conv_init_matches_fla_model_init() -> None:
+    """GDN-CONV-INIT-NOT-FLA-MODEL-INIT (verification round 3): the repo's GDN short-conv kernels have
+    the distribution of fla's own model init (GatedDeltaNetForCausalLM, initializer_range 0.02), and
+    the linear draws did not move when the convs were added (they are drawn after every linear)."""
+    pytest.importorskip("fla")
+    from fla.models import GatedDeltaNetConfig, GatedDeltaNetForCausalLM
+
+    cfg = ModelConfig.for_scale("D512", "C3")
+    model = build_model(cfg, 0)
+    torch.manual_seed(0)
+    ref = GatedDeltaNetForCausalLM(GatedDeltaNetConfig(
+        hidden_size=512, num_heads=4, head_dim=64, expand_v=2, num_hidden_layers=1, vocab_size=1024,
+        intermediate_size=1536, use_short_conv=True, conv_size=4, initializer_range=0.02))
+    ra = ref.model.layers[0].attn
+    mx = model.layers[0].mixer
+    for conv in ("q_conv1d", "k_conv1d", "v_conv1d"):
+        ours, theirs = getattr(mx, conv).weight, getattr(ra, conv).weight
+        assert ours.shape == theirs.shape
+        so, st = ours.std().item(), theirs.std().item()
+        assert abs(so - st) / st < 0.15 and abs(so / 0.02 - 1) < 0.1, (conv, so, st)
+    # every conv of every mixer kind is redrawn (F_gc too); GLA ShortConvolution too
+    for name in ("X-gc12", "O-gla3"):
+        m = build_model(ModelConfig.for_scale(SCALE, name), 1)
+        convs = [p for n, p in m.named_parameters() if "conv" in n and n.endswith("weight")]
+        assert convs and all(abs(p.std().item() / 0.02 - 1) < 0.15 for p in convs), name

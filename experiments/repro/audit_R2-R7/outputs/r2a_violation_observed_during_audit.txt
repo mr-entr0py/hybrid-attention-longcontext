@@ -1,0 +1,11 @@
+# Auditor observation, 2026-11-10 (R2(a) single-queue rule), transcribed verbatim from this session's tool output.
+# 1) Audit job (lock label AUDIT-reeval, --wait-exclusive, --timeout 600) launched ~12:23 IST ended with:
+gpu_lock: 'AUDIT-reeval' GPU not project-exclusive within 600 s
+# 2) `python scripts/repro/gpu_lock.py status` during that wait (~12:3x IST) printed:
+#    "locked": false, "holder": {},
+#    "project_gpu_processes": [{"pid": 1992411, "name": "python", "used_mib": "1014",
+#                               "cmd": "python -m pytest -q -m not slow -p no:cacheprovider "}]
+#    i.e. an S0 pytest held a CUDA context WITHOUT the GPU lock. It had exited by 12:33:21.
+# 3) At 12:35:40 IST an S0 run took the lock correctly: holder label "G0-full-suite", pid 1996342,
+#    wait_exclusive true; child pid 1996350 `python -m pytest tests/ -q -rfEs ... --junitxml=runs/_logs/g0_full_suite.xml`.
+#    The audit's GPU job AUDIT-lambada then timed out on the lock (rc 75, 240 s) and was moved to CPU.

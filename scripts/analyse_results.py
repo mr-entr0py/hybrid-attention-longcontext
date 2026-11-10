@@ -30,7 +30,13 @@ from hybridlc.analysis.pipeline import AnalysisSpec, dumps, run_analysis
 from hybridlc.analysis.protocol import BOOTSTRAP_B
 from hybridlc.analysis.results import (eval_weights_audit, load_item_results, load_registry, rescore_audit,
                                       suite_completeness_audit)
+from hybridlc.eval.constants import AFREQ_WINDOW_FLOOR
 from hybridlc.utils.provenance import sha256_file
+
+
+def _floor_mean(v):
+    """Mean of a per-query heuristic column (bool or 0/0.5/1), None when the cell has none."""
+    return float(v.dropna().astype(float).mean()) if v.notna().any() else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -77,7 +83,8 @@ def main(argv: list[str] | None = None) -> int:
         bm = json.loads(Path(a.branch_map).read_text())
         reg = {rid: (dataclasses.replace(info, branch=bm[rid]) if rid in bm else info) for rid, info in reg.items()}
     t0 = time.time()
-    df = load_item_results(a.results, reg, extra_fields=("recency_heuristic_correct",))
+    win_field = f"window{AFREQ_WINDOW_FLOOR}_count_heuristic"
+    df = load_item_results(a.results, reg, extra_fields=("recency_heuristic_correct", win_field))
     if df.empty:
         print(f"no item-level results under {a.results}", file=sys.stderr)
         return 2
@@ -87,8 +94,10 @@ def main(argv: list[str] | None = None) -> int:
                .agg(n_queries=("em_tf", "size"), n_contexts=("context_id", "nunique"), em_tf=("em_tf", "mean"),
                     logp_gold=("logp_gold", "mean"),
                     # A-freq counting-free floor ("the probe that occurs last"), ~rho/(1+rho) (AFREQ-RECENCY-FLOOR)
-                    recency_floor=("recency_heuristic_correct",
-                                   lambda v: float(v.dropna().astype(float).mean()) if v.notna().any() else None))
+                    recency_floor=("recency_heuristic_correct", _floor_mean),
+                    # A-freq short-window counter floor (last 1,024 context tokens, ties 1/2): near ceiling
+                    # at T <= 4K, so short-T A-freq is local frequency comparison (AFREQ-SHORT-WINDOW-FLOOR)
+                    **{f"window{AFREQ_WINDOW_FLOOR}_floor": (win_field, _floor_mean)})
                .reset_index())
     cells.to_csv(out / "cell_summary.csv", index=False)
     files = list(df.attrs.get("inputs", [])) + ([a.registry] if Path(a.registry).is_file() else [])

@@ -39,6 +39,11 @@ BOS_AT_START = True
 AFREQ_N_Y = 8  # n_X = round(8 * rho)
 AFREQ_PAIRS = 4
 AFREQ_MAX_BACKGROUND_OCC = 3
+#: Windowed-count heuristic floors for A-freq (verification round 3, AFREQ-SHORT-WINDOW-FLOOR): a
+#: counter that sees only the last W context tokens (ties = 1/2). Analysis/reporting only; the
+#: frozen items are unchanged. AFREQ_WINDOW_FLOOR is the one reported in cell_summary.csv.
+AFREQ_WINDOW_FLOORS = (256, 1024, 4096)
+AFREQ_WINDOW_FLOOR = 1024
 ACOUNT_RANGE = (1, 9)  # c in 1..9
 ACOUNT_N_QUERIED = 4  # [IMPL] 4 queried animals (one per query) ...
 ACOUNT_N_DISTRACTORS = 4  # ... plus 4 distractor animals (§9.4)

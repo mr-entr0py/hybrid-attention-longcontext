@@ -12,11 +12,19 @@ Initialisation (``HybridLM.__init__`` with a ``seed_index``; never touches the c
   W_down ~ N(0, 0.02/√24); norm gains = 1.
 * **mixers** draw from stream ``init_mixer`` with key ``(s, 1, layer_idx, MIXER_TYPE_ID[char])``.
   The first draw seeds the (scoped) global RNG for the mixer constructor, so fla's own tensors
-  (``A_log`` ~ log U(0,16), ``dt_bias``, conv kernels, ``o_norm``) keep fla's distribution; then every
+  (``A_log`` ~ log U(0,16), ``dt_bias``, ``o_norm``) keep fla's distribution; then every
   ``nn.Linear`` weight is redrawn N(0, 0.02), except the residual output projection (F_g W_O, GDN /
   GLA ``o_proj``) N(0, 0.02/√24).  W_g ~ N(0, 0.02) (gate starts at ≈ 0.5).  QK-norm gains = 1.
-  F_gc conv kernels ~ U(−1/√4, 1/√4) (nn.Conv1d's default, as fla's ShortConvolution).  The only
-  bias in the family (GLA ``gk_proj[1].bias``, an fla default) is zeroed as fla's ``_init_weights``.
+  The only bias in the family (GLA ``gk_proj[1].bias``, an fla default) is zeroed as fla's
+  ``_init_weights``.
+* **short-conv kernels** (GDN / GLA ``ShortConvolution``, F_gc ``CausalDWConv``) are redrawn
+  N(0, 0.02) from the same ``init_mixer`` generator, *after* all linears (so the linear draws are
+  unchanged).  This is fla's own *model* initialisation (``GatedDeltaNetPreTrainedModel._init_weights``
+  re-draws every ``nn.Conv1d`` N(0, initializer_range=0.02), as in the VT-09 transplant target
+  ``GatedDeltaNetForCausalLM``), not the layer constructor's nn.Conv1d default U(−1/√4, 1/√4)
+  (std 0.289, ≈ 14× larger), which no fla model trains with.  F_gc mirrors it.  [IMPL] reading of
+  §7.1 "conv kernels keep fla's own initialisation" (verification round 3,
+  GDN-CONV-INIT-NOT-FLA-MODEL-INIT; the whole §7.1 init table is fla's ``_init_weights``).
 """
 
 from __future__ import annotations
@@ -109,9 +117,13 @@ class HybridLM(nn.Module):
                     init_normal_(mod.weight, out_std if is_out else std, gen)
                     if mod.bias is not None:
                         mod.bias.zero_()
-                elif isinstance(mod, CausalDWConv):
-                    b = mod.init_bound()
-                    mod.weight.copy_(torch.empty(mod.weight.shape).uniform_(-b, b, generator=gen))
+            # Short-conv kernels: N(0, init_std) like fla's model-level ``_init_weights`` (see the
+            # module docstring), drawn after every linear so the linear draws do not move.
+            for _, mod in mixer.named_modules():
+                if isinstance(mod, (nn.Conv1d, CausalDWConv)):
+                    init_normal_(mod.weight, std, gen)
+                    if getattr(mod, "bias", None) is not None:
+                        mod.bias.zero_()
 
     def _init_shared(self) -> None:
         s = self.seed_index

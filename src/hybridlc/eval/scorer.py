@@ -34,8 +34,8 @@ from typing import Any
 import numpy as np
 import torch
 
-from hybridlc.eval.constants import (LM1_BUCKET_EDGES, LM3_DELTA_EDGES, LM4_SCORED_FROM, RESCORE_FRACTION,
-                                     frozen_batch_size)
+from hybridlc.eval.constants import (AFREQ_WINDOW_FLOORS, LM1_BUCKET_EDGES, LM1_MAX_FWE_DOCS, LM1_N_PG19_BOOKS, LM3_DELTA_EDGES,
+                                     LM4_SCORED_FROM, RESCORE_FRACTION, frozen_batch_size)
 from hybridlc.eval.items import load_items, sha256_file
 
 ERROR_OF_TYPE = {"context": "binding", "absent": "absent", "stale": "stale", "other_chain": "wrong_chain",
@@ -245,6 +245,12 @@ def _afreq_heuristics(item: dict, q: dict, task: str | None) -> dict:
     last" (or first) scores ~rho/(1+rho), not ``chance`` = 1/2. Each A-freq row records whether these
     two heuristics would be correct on this query, so the per-cell heuristic floor can be reported
     next to the score (empty dict for other tasks; None when not computable).
+
+    Verification round 3 (AFREQ-SHORT-WINDOW-FLOOR): rows also carry ``window{W}_count_heuristic``
+    for W in ``AFREQ_WINDOW_FLOORS`` -- the score (1, 0, or 1/2 on a tie) of a counter that sees only
+    the last W context tokens. At T <= 4K a last-1,024-token counter is near ceiling, so short-T
+    A-freq measures local frequency comparison, not long-range integration; the floor that matters
+    for a short-memory mechanism is this one, not the recency floor.
     """
     if task != "A-freq":
         return {}
@@ -253,10 +259,16 @@ def _afreq_heuristics(item: dict, q: dict, task: str | None) -> dict:
     others = [int(c[0]) for c in q["candidates"] if int(c[0]) != x]
     px = np.flatnonzero(ctx == x)
     py = np.flatnonzero(ctx == others[0]) if len(others) == 1 else np.zeros(0, int)
+    win_keys = [f"window{W}_count_heuristic" for W in AFREQ_WINDOW_FLOORS]
     if not len(px) or not len(py):
-        return dict(recency_heuristic_correct=None, primacy_heuristic_correct=None)
-    return dict(recency_heuristic_correct=bool(px.max() > py.max()),
-                primacy_heuristic_correct=bool(px.min() < py.min()))
+        return dict(recency_heuristic_correct=None, primacy_heuristic_correct=None, **{k: None for k in win_keys})
+    out: dict[str, Any] = dict(recency_heuristic_correct=bool(px.max() > py.max()),
+                               primacy_heuristic_correct=bool(px.min() < py.min()))
+    n = len(ctx)
+    for k, W in zip(win_keys, AFREQ_WINDOW_FLOORS):
+        cx, cy = int((px >= n - W).sum()), int((py >= n - W).sum())
+        out[k] = 1.0 if cx > cy else (0.0 if cx < cy else 0.5)
+    return out
 
 
 # =========================================================================== LM scoring
@@ -341,6 +353,27 @@ def _score_lm_items(model: Any, items: list[dict], cell_name: str) -> list[dict]
     return rows
 
 
+def lm_source_counts(rows: list[dict], task: str | None) -> dict:
+    """Per-source item counts of a Tier-0 LM cell for the result header.
+
+    For LM-1 the planned counts (§9.6: up to 300 FWE test-half documents >= 32,768 tokens plus 100
+    PG19-test books) are reported next to the actual ones: only 78 of the 100 PG19-test books have
+    >= 32,768 tokens, so the frozen LM-1 cell holds 201 FWE + 78 PG19 = 279 items (DEVIATION recorded
+    in reports/s0_integration.md §12, verification round 3, LM1-PG19-BOOK-SHORTFALL).
+    """
+    counts: dict[str, int] = {}
+    for r in rows:
+        fs = r.get("filler_source")
+        k = (fs.get("kind") if isinstance(fs, dict) else fs) or "unknown"
+        counts[str(k)] = counts.get(str(k), 0) + 1
+    out: dict[str, Any] = {"source_counts": dict(sorted(counts.items()))}
+    if task == "LM-1":
+        out["source_counts_planned"] = {"fwe": LM1_MAX_FWE_DOCS, "pg19": LM1_N_PG19_BOOKS}
+        out["source_note"] = ("FWE: every eligible (>= T tokens) test-half document up to the cap; PG19: the "
+                              "PG19-test books with >= T tokens (books shorter than T are excluded)")
+    return out
+
+
 # =========================================================================== entry points
 def score_file(model: Any, item_path: str | Path, out_jsonl: str | Path, batch_size: int | None = None,
                score_candidates: bool = True, extra_meta: dict | None = None, autocast: bool | None = None) -> Path:
@@ -369,6 +402,8 @@ def score_file(model: Any, item_path: str | Path, out_jsonl: str | Path, batch_s
     with open(out, "x") as f:
         for r in rows:
             f.write(json.dumps(r, sort_keys=True, allow_nan=True) + "\n")
+    if cell.get("task") in LM_TASKS:
+        extra_meta = {**lm_source_counts(rows, cell.get("task")), **(extra_meta or {})}
     hdr = _header(model, item_path, dict(cell=cell, n_rows=len(rows), batch_size=bs, frozen_batch_size=frozen,
                                          batch_size_deviation=bs != frozen, scoring_path=_scoring_path(model),
                                          autocast_bf16=use_ac and dev.type == "cuda", device=str(dev),

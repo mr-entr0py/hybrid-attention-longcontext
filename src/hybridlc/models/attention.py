@@ -141,8 +141,9 @@ def causal_dwconv_reference(x: torch.Tensor, weight: torch.Tensor, cu_seqlens: t
 class CausalDWConv(nn.Module):
     """Depthwise causal conv, kernel ``W``, no bias; parameter ``weight[D, 1, W]`` like nn.Conv1d.
 
-    Default init is nn.Conv1d's (kaiming-uniform a=√5 → U(−1/√W, 1/√W)) drawn by the model builder
-    from the project init stream (``build.py``), never from the global RNG.
+    The constructor uses nn.Conv1d's default (kaiming-uniform a=√5 → U(−1/√W, 1/√W)); the model
+    builder (``build.py``) redraws it N(0, 0.02) from the project init stream, as fla's model-level
+    init does for GDN's ShortConvolution (verification round 3), never from the global RNG.
     """
 
     def __init__(self, dim: int, kernel_size: int = 4) -> None:

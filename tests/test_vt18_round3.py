@@ -155,7 +155,12 @@ def test_tef4000_example_resolves_to_branch_tef4000():
 
     cfg = load_run_config(REPO / "configs/training/examples/S4_D384_C3_s0_TEF4000.yaml")
     assert cfg.branch == "tef4000" and cfg.schedule.start_step == 1000
-    assert cfg.run_id == "S4T-D384-C3-s0-3fbbc785"  # branch is non-semantic: run_id unchanged
+    # branch is non-semantic: relabelling the same config leaves the config hash / run_id unchanged.
+    # (The literal run_id moved from ...-3fbbc785 to a new hash in round 3 because tef.yaml gained the
+    # semantic `answer_norm: block` data kwarg, not because of the branch label.)
+    rid = cfg.run_id
+    cfg.branch = "stageB2x"
+    assert cfg.compute_run_id() == rid and rid.startswith("S4T-D384-C3-s0-")
 
 
 def _write_run(tmp: Path, name: str, **extra) -> Path:
