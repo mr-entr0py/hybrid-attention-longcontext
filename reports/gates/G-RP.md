@@ -102,5 +102,7 @@ Each of these needs a PI decision row (`reports/gates/G0.md` §"Before S2 FEAS")
 | Command | Result |
 |---|---|
 | `python -I <scratchpad>/grp_recompute.py` (raw run JSONs only) | (a): attention 0.99998 / 0.99995, GDN 0.98924 / 0.99377, monotone. (b): Δ −0.00009, −0.00005, −0.00039, −0.00025, all within ±0.03 |
-| `python -m pytest tests/test_vt25_zoology_transplant.py` (inside the full suite, `runs/_logs/g0_full_suite.log`) | see `reports/gates/G0.md` §1 |
-| `python -m pytest scripts/s1_zoology/ -q` | see below |
+| `python -m pytest tests/ ...` full suite (`runs/_logs/g0_full_suite.log`, 12:35–12:53) | `tests/test_vt25_zoology_transplant.py` **passed** (raw `experiments/repro/R3/vt25/vt25_transplant.r4.jsonl`). The audit notes that VT-25's MQAR batch is not pinned (Zoology fills noise positions with the global `torch.randint`), so the gradient margin varies by batch (worst 1.82e-2 against 2e-2); the pre-registered verdict run stands |
+| `python scripts/repro/gpu_lock.py run --label G0-numbers ... python -m pytest scripts/s1_zoology/ -q` (log `runs/_logs/g0_numbers.log`) | **30 passed** in 157 s (`test_s1_analysis`, `test_s1_microbatch`, `test_s1_our_mixers`, `test_s1_r4`, `test_s1_r5`, `test_s1_resume`) |
+
+The independent reproduction audit (`reports/reproduction/audit_R2-R7.md` §0) confirms R4 / G-RP(b): it re-evaluated the saved `our_gdn-d128` weights with Zoology's own `Trainer.test`, giving 0.9888560 and 1024/256 0.9224297, an exact match. It also confirms R5 PASS, conditional on a PI ruling on the deviation the R5 executor declared as D1: R5 ran after the O4 trigger without the O4 soak.
