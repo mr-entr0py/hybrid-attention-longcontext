@@ -63,3 +63,16 @@
   - The first D384 pass was contended by our own tests and has been discarded; see the `_D384` file for the clean run.
 - Launched the reproduction-execution workflow. It runs in parallel with the S0 workflow.
 - **Pending after S0:** R6 (needs the integrated trainer), then gate G-RV, then S2 FEAS.
+
+**2026-11-10 12:20 IST**
+
+- The usage limit (reset 10:30) interrupted the S0 Fixer r3 and gate reporter, and the reproduction auditor. Both workflows have been resumed.
+- **Git hygiene.** The WIP commits had swept GBs of item `.npz` files, checkpoints and the HF cache into git. That local, unpushed history was rewritten: `.git` went from 3.5 GB to 72 MB, and no blob in history is above 5 MB. `.gitignore` now excludes `*.npz`, `*.npy`, `*.pt`, `*.tar`, `*.safetensors`, `hf_cache/` and `ckpt/`. Item files stay on disk; their SHA-256 manifests are in git.
+- **Reproduction results (pre-audit):**
+  - R2: kernel profile PASS (max 25 ms). The single-queue rule and event tagging are not yet enforced project-wide.
+  - R3: VT-25 PASS. VT-21 to VT-24 FAIL against their frozen tolerances. The diagnosis says these are uncalibrated tolerances or oracles, not code defects; a PI decision is needed.
+  - R4: PASS (Δ ≤ 0.0004).
+  - R5: PASS. The d64 phenomenon reproduces (0.296 vs 0.925 vs 0.957), and ours vs Zoology's gives Δ = −0.018.
+  - R7: the Pythia anchors FAIL in fp32 (0.354 / 0.227) but reproduce exactly in fp16 (0.330 / 0.185). lm-eval agrees with our scorer item for item. GDN 340M PASS (0.3435).
+  - An Xid-8 plus RC watchdog fired during an R4 exploratory run, which triggers O4 (soak). The display runs on this GPU, with a 7 s watchdog.
+- **Pending decisions (PI workflow after the audit):** R3 tolerance restatements, the R7 anchor precision, the O4 soak, and enforcing one GPU queue project-wide. Then R6 and gate G-RV.
