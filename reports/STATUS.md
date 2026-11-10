@@ -10,7 +10,7 @@
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
 | S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 2026-11-10 05:34; integrator (partial output committed 2fffe8f) → verify → gate report |
-| Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | launched 2026-11-10 ~06:10 |
+| Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | DONE: audit confirms R4 and R5 PASS; R2, R3 and R7 FAIL as pre-registered, none from a code defect |
 | Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
 ## Detached jobs
@@ -76,3 +76,13 @@
   - R7: the Pythia anchors FAIL in fp32 (0.354 / 0.227) but reproduce exactly in fp16 (0.330 / 0.185). lm-eval agrees with our scorer item for item. GDN 340M PASS (0.3435).
   - An Xid-8 plus RC watchdog fired during an R4 exploratory run, which triggers O4 (soak). The display runs on this GPU, with a 7 s watchdog.
 - **Pending decisions (PI workflow after the audit):** R3 tolerance restatements, the R7 anchor precision, the O4 soak, and enforcing one GPU queue project-wide. Then R6 and gate G-RV.
+
+**2026-11-10 ~13:00 IST**
+
+- The audit confirmed every executor verdict (`reports/reproduction/audit_R2-R7.md`).
+- **Waiting on the S0 workflow** (fixer r3, then the gate report). After that, the PI decision workflow decides:
+  - R3: restate the tolerances, or fix the VT-24 generator collisions;
+  - R7: re-register the Pythia anchors at fp16;
+  - R5/D1: accept R5 even though the O4 soak did not run;
+  - R2: enforce `gpu_lock` and event tags in the runner and trainer.
+- Then R6, then G-RV.
