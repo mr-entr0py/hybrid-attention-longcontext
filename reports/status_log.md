@@ -82,3 +82,8 @@
 - The Claude Code session ended. The PI workflow was resumed from cache.
 - **Cost bench session 1:** the driver reached "session end" at 14:51 (1,896 rows). The agent was resumed only to write the report; no new GPU measurement runs.
 - **CARLA is running again:** two UE4 instances use about 11.2 GB and ~98% utilisation. The GPU is shared again, so timing benchmarks are paused. Training and verification jobs can still run, but with only about 5 GB free, and our cap is 7 GB, so OOM is a risk.
+
+**2026-11-10 20:50 IST**
+
+- After the 17:00 usage limit, `ps` and the transcript mtimes showed no other live Claude session on this repo. Partial implementation was committed as 0c54713.
+- Resumed wf_b92a39ce-f17: Implement, then Run, then Gate. Resumed wf_f382f689-3e6 (the six audits).

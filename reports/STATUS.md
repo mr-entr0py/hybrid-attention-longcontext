@@ -1,6 +1,6 @@
 # STATUS (read first on every fresh session)
 
-_Last updated: 2026-11-10 ~15:50 IST by the orchestrator/PI._
+_Last updated: 2026-11-10 ~20:50 IST by the orchestrator/PI._
 
 ## Current stage
 - **Pre-FEAS.** S0 is done, G-RP PASSED, and the reproductions have run and been audited.
@@ -10,8 +10,8 @@ _Last updated: 2026-11-10 ~15:50 IST by the orchestrator/PI._
 ## Running
 | What | How to resume | State |
 |---|---|---|
-| PI rulings → implement → O4 soak + VT-24r/22b/23b/13r/13p2 + R6 → G-RV auditor (**running in the ORIGINAL Claude Code process pid 10526**; this session's duplicate was stopped, P004) | `Workflow({scriptPath: "~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/pi-decisions-and-grv-wf_b92a39ce-f17.js", resumeFromRunId: "wf_b92a39ce-f17"})` | Decide is cached; Implement is running |
-| Six specialist audits (design, literature, implementation, evaluation, adversarial, schedule), report-only | `Workflow({scriptPath: ".../workflows/scripts/continuation-specialist-audits-wf_f382f689-3e6.js", resumeFromRunId: "wf_f382f689-3e6"})` | running |
+| PI rulings → implement → O4 soak + VT-24r/22b/23b/13r/13p2 + R6 → G-RV auditor (resumed 20:50 in session process pid 2906111 after the 17:00 usage limit; only one instance is live) | `Workflow({scriptPath: "~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/pi-decisions-and-grv-wf_b92a39ce-f17.js", resumeFromRunId: "wf_b92a39ce-f17"})` | Decide is cached; Implement resumed (prompt has a resume note), then soak + R6, then G-RV |
+| Six specialist audits (design, literature, implementation, evaluation, adversarial, schedule), report-only | `Workflow({scriptPath: ".../workflows/scripts/continuation-specialist-audits-wf_f382f689-3e6.js", resumeFromRunId: "wf_f382f689-3e6"})` | resumed 20:50; no agent had finished |
 | Cost-bench session 1 report (agent; no GPU) | resend a message to the cost-bench agent, or re-derive from `experiments/bench/cost_session1/` | writing `reports/cost_benchmarks_session1.md` |
 
 No detached GPU jobs are running. GPU jobs must go through `scripts/repro/gpu_lock.py`.
