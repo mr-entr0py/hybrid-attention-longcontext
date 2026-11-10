@@ -10,7 +10,7 @@ _Last updated: 2026-11-10 ~15:50 IST by the orchestrator/PI._
 ## Running
 | What | How to resume | State |
 |---|---|---|
-| PI rulings → implement → O4 soak + VT-24r/22b/23b/13r/13p2 + R6 → G-RV auditor | `Workflow({scriptPath: "~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/pi-decisions-and-grv-wf_b92a39ce-f17.js", resumeFromRunId: "wf_b92a39ce-f17"})` | Decide is cached; Implement is running |
+| PI rulings → implement → O4 soak + VT-24r/22b/23b/13r/13p2 + R6 → G-RV auditor (**running in the ORIGINAL Claude Code process pid 10526**; this session's duplicate was stopped, P004) | `Workflow({scriptPath: "~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/pi-decisions-and-grv-wf_b92a39ce-f17.js", resumeFromRunId: "wf_b92a39ce-f17"})` | Decide is cached; Implement is running |
 | Six specialist audits (design, literature, implementation, evaluation, adversarial, schedule), report-only | `Workflow({scriptPath: ".../workflows/scripts/continuation-specialist-audits-wf_f382f689-3e6.js", resumeFromRunId: "wf_f382f689-3e6"})` | running |
 | Cost-bench session 1 report (agent; no GPU) | resend a message to the cost-bench agent, or re-derive from `experiments/bench/cost_session1/` | writing `reports/cost_benchmarks_session1.md` |
 
@@ -35,6 +35,7 @@ H1–H6 are untested. The predictions written down in advance are in protocol §
 3. FEAS-SMOKE, then S2 FEAS if G-RV permits and O4 clears.
 
 ## Resume procedure (when the user says "continue")
+0. **First check whether another Claude Code process is still running a workflow** (`ps -eo pid,lstart,cmd | grep 'claude code'`; look for recently modified agent-*.jsonl files under the workflow's transcript dir). Never resume a workflow that is still live elsewhere; that creates duplicate implementers.
 1. `git add -A && git commit -m WIP` (large artefacts are git-ignored).
 2. Resume each workflow above whose notification showed failed or stopped agents, using `resumeFromRunId`.
 3. Check detached jobs and gpu_lock logs; restart any dead job with its launcher.
