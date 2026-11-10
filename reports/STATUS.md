@@ -9,6 +9,7 @@
 ## Active workflows (scripts live in ~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/)
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
+| Cost benchmark session 1 (§10.2), background agent | (Agent, not workflow) | — | launched 2026-11-10 ~13:30; output experiments/bench/cost_session1/, reports/cost_benchmarks_session1.md |
 | S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | DONE: G0 conditional PASS (D045–D057 proposed), G-RP PASS |
 | PI rulings → implement → soak + R6 → G-RV gate | pi-decisions-and-grv-wf_b92a39ce-f17.js | wf_b92a39ce-f17 | launched 2026-11-10 ~13:20 |
 | Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | DONE: audit confirms R4 and R5 PASS; R2, R3 and R7 FAIL as pre-registered, none from a code defect |
