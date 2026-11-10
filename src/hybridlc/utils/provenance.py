@@ -49,7 +49,42 @@ def env_info() -> dict[str, Any]:
     status = _git("status", "--porcelain")
     info["git_dirty"] = None if status is None else bool(status)
     info["env"] = {k: os.environ.get(k) for k in ("CUBLAS_WORKSPACE_CONFIG", "PYTHONHASHSEED", "TRITON_CACHE_DIR", "FLA_CACHE_RESULTS", "FLA_FLASH_QLA")}
+    info["fla_install"] = fla_install_info()
+    info.update(data_provenance())
     return info
+
+
+def fla_install_info() -> dict[str, Any]:
+    """Where ``fla`` is imported from and how it was installed (verification round 1,
+    FLA-INSTALL-NOT-PINNED-CLONE): PyPI wheel vs an editable/direct-URL install of the pinned clone."""
+    out: dict[str, Any] = {}
+    try:
+        import importlib.metadata as md
+
+        import fla
+
+        out["path"] = str(Path(fla.__file__).resolve().parent)
+        dist = md.distribution("flash-linear-attention")
+        out["version"] = dist.version
+        du = dist.read_text("direct_url.json")
+        out["direct_url"] = json.loads(du) if du else None
+        out["source"] = "direct_url" if du else "index (PyPI wheel)"
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
+def data_provenance() -> dict[str, Any]:
+    """Tokenizer SHA-256 (§6.2) and data MANIFEST SHA-256, for the run registry and env.json
+    (verification round 1, DTS-08). Missing files give None (unit tests with fake data)."""
+    data = REPO_ROOT / "data"
+    tok_sha = None
+    try:
+        tok_sha = (data / "tokenizer" / "tokenizer.sha256").read_text().split()[0].strip()
+    except Exception:  # noqa: BLE001
+        pass
+    man = data / "MANIFEST.json"
+    return {"tokenizer_sha256": tok_sha, "data_manifest_sha256": sha256_file(man) if man.is_file() else None}
 
 
 def _to_jsonable(obj: Any) -> Any:

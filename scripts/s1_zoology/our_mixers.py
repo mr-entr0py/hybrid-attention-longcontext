@@ -121,6 +121,39 @@ class OurFgZoology(_ZoologyMixerAdapter):
         self._state_fn = lambda T: 2 * d_model * T
 
 
+class OurFgProdZoology(_ZoologyMixerAdapter):
+    """R4b: our *production* F_g (protocol §3.3 defaults: QK-RMSNorm, RoPE θ = cfg.rope_theta = 5e5,
+    headwise output gate) with 2 heads × 64 (d = 128). Pre-registration: experiments/repro/R4/prereg.yaml
+    reading R4b-1. The o_proj alias is registered exactly as in :class:`OurFgZoology`, so the only
+    differences from ``our_fg-d128`` are QK-norm, RoPE and the gate."""
+
+    autocast_bf16 = False
+
+    def __init__(self, d_model: int, layer_idx: int | None = None, num_heads: int = ZOOLOGY_NUM_HEADS,
+                 head_dim: int = 64, **_: Any) -> None:
+        inner = _build_mixer("A", d_model, layer_idx, n_heads=num_heads, head_dim=head_dim)
+        assert inner.use_qk_norm and inner.use_rope and inner.use_out_gate, "production F_g defaults changed"
+        nn.Module.__init__(self)
+        self.out_proj = inner.o_proj  # alias first (see OurFgZoology)
+        self.inner = inner
+        self.d_model = d_model
+        self._state_fn = lambda T: 2 * num_heads * head_dim * T
+
+    def forward(self, u: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        if not self.autocast_bf16:
+            return self.inner(u, cu_seqlens=None, position_ids=None)
+        # Reading R4b-2: autocast scoped to the mixer; output promoted back to Zoology's fp32 stream.
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            y = self.inner(u, cu_seqlens=None, position_ids=None)
+        return y.float()
+
+
+class OurFgProdBf16Zoology(OurFgProdZoology):
+    """R4b bf16 arm: :class:`OurFgProdZoology` with its forward under bf16 autocast (varlen_attn / FA2)."""
+
+    autocast_bf16 = True
+
+
 class OurGdnZoology(_ZoologyMixerAdapter):
     """Our fla-GDN mixer in Zoology's geometry (2 heads, d_k = d/2, d_v = d, no gate, conv 4)."""
 
@@ -187,5 +220,102 @@ def part_b_runs(best_lr: dict[tuple[str, int], float]) -> list[Any]:
             seq[1] = {"name": mixer_path, "kwargs": {}}
             cfg.model.name = tag
             cfg.run_id = f"{tag}-d{d}-lr{cfg.learning_rate:.1e}"
+            out.append(cfg)
+    return out
+
+
+# R4b (plan §2.4): production F_g at d = 128, lr 1e-3 (= Zoology attention's best LR at d = 128).
+R4B_RUNS = {"our_fg_prod": "our_mixers.OurFgProdZoology", "our_fg_prod_bf16": "our_mixers.OurFgProdBf16Zoology"}
+R4B_D_MODEL = 128
+
+
+def r4b_runs(best_lr: dict[tuple[str, int], float]) -> list[Any]:
+    """The 2 R4b TrainConfigs: Zoology's attention d128 config at its best LR, mixer swapped."""
+    from s1_configs import build_runs
+
+    lr = best_lr[("attention", R4B_D_MODEL)]
+    base = next(r for r in build_runs()
+                if r.family == "attention" and r.d_model == R4B_D_MODEL and abs(r.lr - lr) < 1e-12)
+    out = []
+    for tag, mixer_path in R4B_RUNS.items():
+        cfg = base.config.model_copy(deep=True)
+        seq = cfg.model.sequence_mixer.kwargs["configs"]
+        assert seq[0]["name"].endswith("BaseConv"), seq
+        seq[1] = {"name": mixer_path, "kwargs": {}}
+        cfg.model.name = tag
+        cfg.run_id = f"{tag}-d{R4B_D_MODEL}-lr{cfg.learning_rate:.1e}"
+        out.append(cfg)
+    return out
+
+
+def r4_runs() -> list[Any]:
+    """All 8 R4 runs in queue order: the 4 G-RP(b) cells, the 2 R4b runs, then the 2 config-A runs."""
+    best = best_lr_from_s1a()
+    pb = part_b_runs(best)
+    grp = [c for c in pb if not c.run_id.startswith("our_gdn_configA")]
+    cfa = [c for c in pb if c.run_id.startswith("our_gdn_configA")]
+    return grp + r4b_runs(best) + cfa
+
+
+# ---------------------------------------------------------------------------------------------
+# R5 (plan §2.5; prereg experiments/repro/R5/prereg.yaml): MQAR at d_model = 64, Zoology's GDN vs ours
+# under bf16 autocast, seeds (123,123), (124,124), (125,125) [+ (126,126), (127,127) only if O5 fires].
+# ---------------------------------------------------------------------------------------------
+class OurGdnBf16Zoology(OurGdnZoology):
+    """R5 arm: :class:`OurGdnZoology` with its forward under ``torch.autocast('cuda', bfloat16)`` (production
+    precision: bf16 projections / conv / kernel inputs, fp32 state inside the fla kernel) and the output promoted
+    back to Zoology's fp32 residual stream (prereg reading P1, same scoping as R4b-2)."""
+
+    autocast_bf16 = True
+
+    def forward(self, u: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            y = self.inner(u, cu_seqlens=None, position_ids=None)
+        return y.float()
+
+
+R5_D_MODEL = 64
+R5_LR = 1e-3
+R5_SEEDS = (123, 124, 125)
+O5_SEEDS = (126, 127)  # prereg reading BM1: only if the bimodality rule fires
+R5_ARMS = {"gdn_zoology": None, "our_gdn_bf16": "our_mixers.OurGdnBf16Zoology"}  # None = Zoology's own mixer
+
+
+def _zoology_gdn_d64_base() -> Any:
+    """Zoology's own d64 GDN TrainConfig at lr 1e-3 from original_mqar_configs.py (as R1: cache_dir, logger only)."""
+    from s1_configs import _load_original_module
+    from zoology.config import LoggerConfig
+    from zoology_compat import DATA_CACHE_DIR
+
+    mod = _load_original_module()
+    hits = [c for c in mod.configs if c.model.name == "gated_delta_net" and c.model.d_model == R5_D_MODEL
+            and abs(float(c.learning_rate) - R5_LR) < 1e-12]
+    assert len(hits) == 1, f"expected one Zoology GDN d64 lr1e-3 config, got {len(hits)}"
+    cfg = hits[0].model_copy(deep=True)
+    cfg.data.cache_dir = str(DATA_CACHE_DIR)
+    cfg.logger = LoggerConfig()
+    return cfg
+
+
+def r5_run_id(arm: str, seed: int) -> str:
+    return f"{arm}-d{R5_D_MODEL}-lr{R5_LR:.1e}-s{seed}"
+
+
+def r5_runs(include_o5: bool = False) -> list[Any]:
+    """R5 TrainConfigs in queue order, interleaved by seed (Zoology then ours per seed)."""
+    base = _zoology_gdn_d64_base()
+    seeds = R5_SEEDS + (O5_SEEDS if include_o5 else ())
+    out = []
+    for s in seeds:
+        for arm, mixer_path in R5_ARMS.items():
+            cfg = base.model_copy(deep=True)
+            seq = cfg.model.sequence_mixer.kwargs["configs"]
+            assert seq[0]["name"].endswith("BaseConv") and seq[1]["name"].endswith("GatedDeltaNet"), seq
+            if mixer_path is not None:
+                seq[1] = {"name": mixer_path, "kwargs": {}}
+                cfg.model.name = arm
+            cfg.seed = int(s)
+            cfg.data.seed = int(s)
+            cfg.run_id = r5_run_id(arm, s)
             out.append(cfg)
     return out

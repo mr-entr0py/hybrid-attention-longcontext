@@ -592,10 +592,12 @@ class N50Fit:
     slope: float
     censoring: Literal["none", "left", "right", "undefined"]
     levels: list[float]
+    log2_n50: float = float("nan")
+    """-a/b, finite whenever the slope is negative (n50 may be inf/0 when 2^(-a/b) is not representable)."""
 
     def to_dict(self) -> dict:
         return dict(n50=self.n50, intercept=self.intercept, slope=self.slope, censoring=self.censoring,
-                    levels=self.levels)
+                    levels=self.levels, log2_n50=self.log2_n50)
 
 
 def n50_logistic(N: Sequence[float], successes: Sequence[float], trials: Sequence[float]) -> N50Fit:
@@ -624,13 +626,22 @@ def n50_logistic(N: Sequence[float], successes: Sequence[float], trials: Sequenc
     levels = sorted(N.tolist())
     if not b < 0:
         return N50Fit(float("nan"), a, b, "undefined", levels)
-    n50 = float(2.0 ** (-a / b))
+    # Work in log2 space: a flat high-accuracy curve (tiny negative slope, positive intercept)
+    # puts -a/b far beyond the level range, and 2.0 ** (-a/b) overflowed (verification round 1,
+    # DTS-03). Censoring is decided on log2 N50; n50 saturates to inf / 0 when unrepresentable.
+    log2_n50 = float(-a / b)
     cens: Literal["none", "left", "right", "undefined"] = "none"
-    if n50 < N.min():
+    if log2_n50 < x.min():
         cens = "left"
-    elif n50 > N.max():
+    elif log2_n50 > x.max():
         cens = "right"
-    return N50Fit(n50, a, b, cens, levels)
+    if log2_n50 > 1000:
+        n50 = float("inf")
+    elif log2_n50 < -1000:
+        n50 = 0.0
+    else:
+        n50 = float(2.0 ** log2_n50)
+    return N50Fit(n50, a, b, cens, levels, log2_n50)
 
 
 # =============================================================================================
@@ -640,10 +651,10 @@ def n50_logistic(N: Sequence[float], successes: Sequence[float], trials: Sequenc
 class BootstrapDraws:
     """Bootstrap replicates of per-seed-slot scores.
 
-    ``scores[name]`` has shape ``(B, n_slots, n_configs)``. Slot j of config c holds the score of the
-    seed drawn for that slot (NaN for j >= n_c, the number of seeds config c has). Configs with the
-    same seed list receive identical seed draws, and every config receives the same context draws
-    (common random numbers), as §11.3 requires.
+    ``scores[name]`` has shape ``(B, n_slots, n_configs)``. Every config receives the **same** seed
+    draw in every slot (drawn from ``seeds``, the complete seed blocks of the configs bootstrapped)
+    and the same context draws (common random numbers), as §11.3 requires ("resample seeds (same
+    indices for every config), then contexts within strata (same indices for every config)").
     """
 
     configs: list[str]
@@ -652,6 +663,10 @@ class BootstrapDraws:
     B: int
     entropy: int
     spawn_key: tuple[int, ...] = field(default_factory=tuple)
+    seeds: list[int] = field(default_factory=list)
+    """Seed indices resampled: those present for *every* config in ``configs`` (complete blocks)."""
+    incomplete_seeds: list[int] = field(default_factory=list)
+    """Seeds present for some but not all of ``configs`` (excluded; verification round 2)."""
 
     def get(self, name: str, config: str) -> np.ndarray:
         return self.scores[name][:, :, self.configs.index(config)]
@@ -668,43 +683,59 @@ def hierarchical_bootstrap(table, weights: Mapping[str, np.ndarray], *, configs:
     """Two-stage paired bootstrap: seeds, then contexts within (task, level, T) strata.
 
     ``table`` is a :class:`~hybridlc.analysis.scores.CellTable`; ``weights`` maps names to stratum
-    weight vectors (from ``table.ladder_weights``). For each replicate b and seed slot j:
+    weight vectors (from ``table.ladder_weights``). Only the **complete seed blocks** of ``configs``
+    (seeds present for every one of them; the same blocks the paired t-test uses) are resampled. For
+    each replicate b and seed slot j (n_slots = number of complete blocks):
 
-    1. one uniform U[b, j] picks the seed of slot j for every config c as ``seeds_c[floor(U n_c)]``
-       (identical seed indices for configs with identical seed lists);
+    1. one draw picks a seed from the complete blocks; it is the seed of slot j for *every* config;
     2. per stratum, contexts are drawn with replacement (same indices for every config), and the
        stratum mean of each config is recomputed on the drawn contexts of the drawn seed.
+
+    Verification round 2 (ANA-BOOT-INCOMPLETE-SEED-BLOCKS): the earlier version drew each config's
+    seed by position in its *own* seed list, so with one failed run (§8.1) the slots were unpaired.
+    Missing data are never zero-filled (ANA-MISSING-CELL-SILENT-SEED-DROP): a NaN context mean in a
+    used stratum of a complete block raises ``ValueError``. Callers bootstrap each estimand on the
+    config set it uses, so a failure in an unrelated config never removes a seed.
 
     The RNG is ``SeedSequence(entropy=2026, spawn_key=(crc32(key),))`` (§8.1 bootstrap stream).
     """
     cfgs = list(configs) if configs is not None else list(table.configs)
     ci = [table.configs.index(c) for c in cfgs]
-    seed_lists = [np.nonzero(table.present[i])[0] for i in ci]
-    n_c = np.array([len(s) for s in seed_lists])
+    pres = np.asarray(table.present, bool)[ci]  # (C, S)
+    n_c = pres.sum(axis=1)
     if (n_c == 0).any():
         raise ValueError("a config has no seeds in this table")
-    n_slots = int(n_c.max())
+    common = np.nonzero(pres.all(axis=0))[0]
+    incomplete = np.nonzero(pres.any(axis=0) & ~pres.all(axis=0))[0]
+    if common.size == 0:
+        raise ValueError(f"configs {cfgs} share no complete seed block")
+    n_slots = int(common.size)
     names = list(weights)
     W = np.stack([np.asarray(weights[nm], float) for nm in names])  # (n_w, n_strata)
     used = np.nonzero(np.abs(W).sum(0) > 0)[0]
     rng = np.random.default_rng(_seed_seq(entropy, key))
     out = {nm: np.full((B, n_slots, len(cfgs)), np.nan) for nm in names}
-    S = len(table.seeds)
+    # Data restricted to the configs and complete blocks; refuse missing context means.
+    Xs = {}
+    for s_idx in used:
+        X = table.ctx[s_idx][:, ci, :][:, :, common]  # (n_ctx, C, S_common)
+        if X.shape[0] == 0 or np.isnan(X).any():
+            st = table.strata[s_idx]
+            raise ValueError(f"stratum {st}: missing results for a complete seed block of {cfgs} "
+                             f"(the bootstrap never zero-fills; re-score the cell)")
+        Xs[s_idx] = X
+    S = n_slots
     for b0 in range(0, B, chunk):
         bc = min(chunk, B - b0)
         U = rng.random((bc, n_slots))
-        # pick[b, j, c] = column (seed position in table.seeds) for config c, slot j
-        pick = np.zeros((bc, n_slots, len(cfgs)), int)
-        valid = np.zeros((n_slots, len(cfgs)), bool)
-        for c, sl in enumerate(seed_lists):
-            nn = len(sl)
-            pick[:, :nn, c] = sl[np.minimum((U[:, :nn] * nn).astype(int), nn - 1)]
-            valid[:nn, c] = True
+        # pick[b, j] = column (position in ``common``) of the seed drawn for slot j, same for all configs
+        pick1 = np.minimum((U * S).astype(int), S - 1)
+        pick = np.repeat(pick1[:, :, None], len(cfgs), axis=2)
         acc = np.zeros((len(names), bc, n_slots, len(cfgs)))
         for s_idx in used:
-            X = table.ctx[s_idx][:, ci, :]  # (n_ctx, C, S)
+            X = Xs[s_idx]
             n_ctx = X.shape[0]
-            Xf = np.nan_to_num(X).reshape(n_ctx, len(cfgs) * S)
+            Xf = X.reshape(n_ctx, len(cfgs) * S)
             draws = rng.integers(0, n_ctx, size=(bc * n_slots, n_ctx))
             flat = draws + (np.arange(bc * n_slots)[:, None] * n_ctx)
             counts = np.bincount(flat.ravel(), minlength=bc * n_slots * n_ctx).reshape(bc * n_slots, n_ctx)
@@ -712,16 +743,24 @@ def hierarchical_bootstrap(table, weights: Mapping[str, np.ndarray], *, configs:
             vals = np.take_along_axis(M, pick[..., None], axis=-1)[..., 0]  # (bc, n_slots, C)
             acc += W[:, s_idx][:, None, None, None] * vals[None]
         for w_i, nm in enumerate(names):
-            out[nm][b0:b0 + bc] = np.where(valid[None], acc[w_i], np.nan)
-    return BootstrapDraws(cfgs, out, {c: int(n) for c, n in zip(cfgs, n_c)}, B, entropy,
-                          (key if isinstance(key, int) else zlib.crc32(key.encode()),))
+            out[nm][b0:b0 + bc] = acc[w_i]
+    seeds_all = list(getattr(table, "seeds", range(pres.shape[1])))
+    return BootstrapDraws(cfgs, out, {c: int(n_slots) for c in cfgs}, B, entropy,
+                          (key if isinstance(key, int) else zlib.crc32(key.encode()),),
+                          seeds=[int(seeds_all[j]) for j in common],
+                          incomplete_seeds=[int(seeds_all[j]) for j in incomplete])
 
 
 def percentile_ci(values: np.ndarray, level: float = CI_LEVEL, direction: Direction = "two-sided"
                   ) -> tuple[float, float]:
-    """Percentile CI of bootstrap replicates. One-sided: (q_alpha, inf) or (-inf, q_{1-alpha})."""
+    """Percentile CI of bootstrap replicates. One-sided: (q_alpha, inf) or (-inf, q_{1-alpha}).
+
+    Returns (nan, nan) when no replicate is finite (e.g. a family at floor for both reference
+    models, so every recovery is 0/0; verification round 1, DTS-04). NaN bounds never "agree"."""
     v = np.asarray(values, float)
     v = v[np.isfinite(v)]
+    if v.size == 0:
+        return float("nan"), float("nan")
     a = 1 - level
     if direction == "greater":
         return float(np.quantile(v, a)), float("inf")

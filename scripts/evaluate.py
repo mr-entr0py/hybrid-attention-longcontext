@@ -6,8 +6,9 @@
 
 Writes ``<results-root>/<run_id>/<label>/<suite>/<task>_<level>_<T>.jsonl`` + ``_meta.json`` per item
 cell (never overwriting: re-runs get a ``.rN`` suffix) and appends one line per cell to
-``<results-root>/_eval_log.jsonl``. ``--n-contexts`` scores only the first N contexts of each cell
-(smoke tests / quick dev checks; recorded as ``subset`` in the header).
+``<results-root>/_eval_log.jsonl``. ``--n-contexts N`` scores only the first N contexts of each cell
+(smoke tests / quick dev checks; recorded as ``subset`` in the header) and writes under the label
+``<label>-nN``, which the analysis never reads.
 """
 from __future__ import annotations
 
@@ -33,7 +34,13 @@ def main() -> int:
     ap.add_argument("--n-contexts", type=int, default=None)
     ap.add_argument("--only", default=None, help="only item files whose name contains this substring")
     ap.add_argument("--no-candidates", action="store_true", help="skip candidate (rank) scoring")
-    ap.add_argument("--rescore", action="store_true", help="also run the 5%% single-pass re-score check")
+    rs = ap.add_mutually_exclusive_group()
+    rs.add_argument("--rescore", dest="rescore", action="store_true", default=None,
+                    help="run the 5%% single-pass re-score check on every suite (default: CS/DG/DC/FD/MS; never Tier0)")
+    rs.add_argument("--no-rescore", dest="rescore", action="store_false",
+                    help="skip the re-score check (the analysis then flags these cells)")
+    ap.add_argument("--fp32-weights", action="store_true",
+                    help="score a full checkpoint's fp32 weights (non-canonical; default rounds to bf16 like milestones)")
     ap.add_argument("--mem-fraction", type=float, default=0.44)
     args = ap.parse_args()
 
@@ -45,8 +52,9 @@ def main() -> int:
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     if dev == "cuda":
         claim(args.mem_fraction)
-    ck = load_checkpoint(args.ckpt, dev, runs_root=args.runs_root)
-    print(f"[eval] loaded {ck.run_id} step {ck.step} ({ck.dtype}) from {ck.path}", flush=True)
+    ck = load_checkpoint(args.ckpt, dev, runs_root=args.runs_root, canonical_bf16=not args.fp32_weights)
+    print(f"[eval] loaded {ck.run_id} step {ck.step} ({ck.dtype}; scored as {ck.eval_weights}) from {ck.path}",
+          flush=True)
     recs = evaluate_checkpoint(ck, args.suite, label=args.label, items_root=args.items_root,
                                results_root=args.results_root, n_contexts=args.n_contexts, only=args.only,
                                score_candidates=not args.no_candidates, rescore=args.rescore)

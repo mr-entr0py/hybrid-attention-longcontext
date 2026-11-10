@@ -209,26 +209,61 @@ def eval_code_sha256() -> str:
     return h.hexdigest()
 
 
+#: Cell-meta keys that describe the *code version* that wrote a file, not its content. They are
+#: excluded from :func:`item_content_sha256` (verification round 2, ITEM-EVAL-CODE-SHA-STAMPS).
+PROVENANCE_META_KEYS: tuple[str, ...] = ("eval_code_sha256",)
+
+
+def item_content_sha256(path: str | Path) -> str:
+    """SHA-256 of an item file's *content*: every zip member (sorted by name), with the cell meta's
+    code-version stamp (``PROVENANCE_META_KEYS``) removed from ``meta.json``.
+
+    Regenerating an unchanged cell with any later eval-code version gives the same content SHA (the
+    file SHA differs only through the embedded stamp). This is the identity G5 checks.
+    """
+    h = hashlib.sha256()
+    with zipfile.ZipFile(path) as zf:
+        for name in sorted(zf.namelist()):
+            b = zf.read(name)
+            if name == "meta.json":
+                meta = json.loads(b)
+                for k in PROVENANCE_META_KEYS:
+                    meta.get("cell", {}).pop(k, None)
+                b = canonical_json(meta)
+            h.update(name.encode() + b"\0" + hashlib.sha256(b).digest())
+    return h.hexdigest()
+
+
 def write_manifest(ns_root: str | Path, extra: dict | None = None) -> Path:
-    """(Re)write ``<ns_root>/MANIFEST.json`` listing every item file with its SHA-256 and counts."""
+    """(Re)write ``<ns_root>/MANIFEST.json`` listing every item file with its SHA-256 and counts.
+
+    Per file: ``sha256`` (bytes), ``content_sha256`` (:func:`item_content_sha256`) and the cell meta
+    (which carries the generating code's ``eval_code_sha256``). Top level: ``eval_code_sha256`` is the
+    code at manifest-write time and ``item_eval_code_sha256`` counts the stamps embedded in the files
+    (which code version generated the frozen items).
+    """
     ns_root = Path(ns_root)
     files = {}
+    stamps: dict[str, int] = {}
     for p in sorted(ns_root.rglob("*.npz")):
         with zipfile.ZipFile(p) as zf:
             meta = json.loads(zf.read("meta.json"))
-        files[str(p.relative_to(ns_root))] = dict(sha256=sha256_file(p), bytes=p.stat().st_size,
-                                                  n_items=meta["n_items"], n_queries=meta["n_queries"],
-                                                  cell=meta["cell"])
+        files[str(p.relative_to(ns_root))] = dict(sha256=sha256_file(p), content_sha256=item_content_sha256(p),
+                                                  bytes=p.stat().st_size, n_items=meta["n_items"],
+                                                  n_queries=meta["n_queries"], cell=meta["cell"])
+        st = str(meta["cell"].get("eval_code_sha256"))
+        stamps[st] = stamps.get(st, 0) + 1
     for p in sorted(ns_root.rglob("*.npy")):  # auxiliary arrays (e.g. LM-3 banned 4-grams)
         files[str(p.relative_to(ns_root))] = dict(sha256=sha256_file(p), bytes=p.stat().st_size)
-    man = dict(format=FORMAT, namespace=ns_root.name, files=files, **(extra or {}))
+    man = dict(format=FORMAT, namespace=ns_root.name, files=files, item_eval_code_sha256=stamps, **(extra or {}))
     out = ns_root / "MANIFEST.json"
     out.write_text(json.dumps(_jsonable(man), indent=1, sort_keys=True) + "\n")
     return out
 
 
-def verify_manifest(ns_root: str | Path) -> list[str]:
-    """Paths whose SHA-256 no longer matches the manifest (empty = all good)."""
+def verify_manifest(ns_root: str | Path, content: bool = False) -> list[str]:
+    """Paths whose SHA-256 no longer matches the manifest (empty = all good). ``content=True`` also
+    checks ``content_sha256`` where the manifest records it."""
     ns_root = Path(ns_root)
     man = json.loads((ns_root / "MANIFEST.json").read_text())
     bad = []
@@ -236,4 +271,20 @@ def verify_manifest(ns_root: str | Path) -> list[str]:
         p = ns_root / rel
         if not p.is_file() or sha256_file(p) != info["sha256"]:
             bad.append(rel)
+        elif content and "content_sha256" in info and item_content_sha256(p) != info["content_sha256"]:
+            bad.append(rel)
     return bad
+
+
+def refresh_manifest(ns_root: str | Path) -> Path:
+    """Rewrite an existing manifest without touching any item file: keeps its extra fields
+    (tokenizer, word lists, filler, cap), stamps the current ``eval_code_sha256`` and adds
+    ``content_sha256`` / ``item_eval_code_sha256``. Refuses if a file no longer matches."""
+    ns_root = Path(ns_root)
+    bad = verify_manifest(ns_root)
+    if bad:
+        raise ValueError(f"{ns_root}: files differ from the manifest: {bad[:5]}")
+    old = json.loads((ns_root / "MANIFEST.json").read_text())
+    extra = {k: v for k, v in old.items() if k not in ("format", "namespace", "files", "item_eval_code_sha256")}
+    extra["eval_code_sha256"] = eval_code_sha256()
+    return write_manifest(ns_root, extra=extra)

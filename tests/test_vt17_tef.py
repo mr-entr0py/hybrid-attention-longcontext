@@ -2,8 +2,9 @@
 
 Pass thresholds: equal counts per bucket and family (+-1 per 1,000 steps); answer-token mask
 correct; no eval tuples. Plus the trainer's requirements on ``TEFStream`` (INTERFACES.md):
-pure function of (seed, step, micro), prefix-stable in ``steps``, step-normalised D014
-weights, ``synthetic_share`` / ``answer_only`` fallbacks.
+pure function of (seed, step, micro), prefix-stable in ``steps``, D014 weights (block-normalised
+by default since verification round 3; the per-step rule via ``answer_norm="step"``),
+``synthetic_share`` / ``answer_only`` fallbacks.
 
 Counts are checked on the exact protocol configuration (32K x 1 x 2, 1,000-step blocks,
 7 buckets); sequences are materialised for a sample of steps (a whole block is the slow test).
@@ -148,18 +149,62 @@ def test_answer_mask_correct(batches, env):
         assert (am == expect).all()
 
 
-def test_loss_weights_d014(batches):
+def test_loss_weights_d014(batches, env):
+    """Block normalisation (default): every answer label of the block has weight 0.5/(A_block/1000),
+    every other valid label 0.5/(O_block/1000); batches carry loss_norm = 1."""
     s, bs = batches
+    assert s.answer_norm == "block"
+    A, O = s.block_counts(0)
     for st in {k[0] for k in bs}:
         w = [bs[(st, m)]["loss_weights"][0] for m in range(s.accum)]
         am = [bs[(st, m)]["answer_mask"][0] for m in range(s.accum)]
-        tot = sum(float(x.sum(dtype=np.float64)) for x in w)
-        ans = sum(float(x[a].sum(dtype=np.float64)) for x, a in zip(w, am))
-        assert abs(tot - 1.0) < 1e-5 and abs(ans - 0.5) < 1e-5
         na, no = s.step_counts(st)
         assert na == sum(int(a.sum()) for a in am)
-        valid = sum(int((bs[(st, m)]["labels"][0] != IGNORE_INDEX).sum()) for m in range(s.accum))
-        assert no == valid - na
+        valid = [bs[(st, m)]["labels"][0] != IGNORE_INDEX for m in range(s.accum)]
+        assert no == sum(int(v.sum()) for v in valid) - na
+        for x, a, v in zip(w, am, valid):
+            assert np.allclose(x[a], 0.5 * 1000 / A, rtol=1e-6)
+            assert np.allclose(x[v & ~a], 0.5 * 1000 / O, rtol=1e-6)
+        assert all(bs[(st, m)]["loss_norm"] == 1.0 for m in range(s.accum))
+    # the per-step rule (answer_norm="step"): answers of the step share 1/2, the rest 1/2
+    ss = stream(env, answer_norm="step")
+    st = 7
+    b = [ss.get_numpy(st, m) for m in range(ss.accum)]
+    tot = sum(float(x["loss_weights"][0].sum(dtype=np.float64)) for x in b)
+    ans = sum(float(x["loss_weights"][0][x["answer_mask"][0]].sum(dtype=np.float64)) for x in b)
+    assert abs(tot - 1.0) < 1e-5 and abs(ans - 0.5) < 1e-5 and all("loss_norm" not in x for x in b)
+    with pytest.raises(ValueError):
+        stream(env, answer_norm="item")
+
+
+def test_block_weights_length_balanced(env):
+    """TEF-STEP-NORMALISED-ANSWER-WEIGHT-LENGTH-SKEW (verification round 3): with block normalisation
+    each length bucket gets 1/7 of the block's answer-loss weight (equal answer-token counts, within
+    the +-12-token count rounding); the per-step rule gives the 32K bucket ~0.29-0.30. Weights are
+    the ones get_numpy uses (step_weight_scale), applied to the block plan."""
+    import collections
+
+    for norm, check in (("block", lambda sh: max(abs(v - 1 / 7) for v in sh.values()) < 0.002),
+                        ("step", lambda sh: sh[32768] > 0.25 and sh[512] < 0.12)):
+        s = stream(env, answer_norm=norm)
+        plan = s.block_plan(0)
+        w_len: collections.Counter = collections.Counter()
+        tot_w = 0.0
+        for st in range(s.block_steps):
+            wa, wo = s.step_weight_scale(st)
+            na, no = s.step_counts(st)
+            tot_w += na * wa + no * wo
+            for m in range(s.accum):
+                for j in range(s.micro_batch):
+                    _, g = s._seq_index(st, m, j)
+                    for sg in plan[g]:
+                        if sg.kind == "item":
+                            w_len[sg.spec.length] += sg.spec.n_answer_tokens * wa
+        tot = sum(w_len.values())
+        share = {L: v / tot for L, v in w_len.items()}
+        assert abs(tot - 0.5 * s.block_steps) < 1e-6 * s.block_steps  # answers: 1/2 of the objective
+        assert abs(tot_w - s.block_steps) < 1e-6 * s.block_steps       # 1 per step on average
+        assert check(share), (norm, share)
 
 
 def test_pure_and_prefix_stable(batches, env):
@@ -178,10 +223,13 @@ def test_fallback_kwargs(env):
     assert s.items_per_bucket() == int(0.5 * 65536 * 1000 // sum(TEF_BUCKETS))
     a = stream(env, answer_only=True)
     w = [a.get_numpy(3, m) for m in range(2)]
-    tot = sum(float(b["loss_weights"][0].sum(dtype=np.float64)) for b in w)
-    assert abs(tot - 1.0) < 1e-5
+    A, _ = a.block_counts(0)
     for b in w:
         assert (b["loss_weights"][0][~b["answer_mask"][0]] == 0).all()
+        assert np.allclose(b["loss_weights"][0][b["answer_mask"][0]], 1000 / A, rtol=1e-6)
+    a_step = stream(env, answer_only=True, answer_norm="step")
+    wa, wo = a_step.step_weight_scale(3)
+    assert wo == 0.0 and abs(wa * a_step.step_counts(3)[0] - 1.0) < 1e-9
 
 
 # ----------------------------------------------------------------------------- leakage
@@ -245,10 +293,27 @@ def test_every_subtype_feasible_at_512(env):
 
 @pytest.mark.slow
 def test_full_block_materialises(env):
-    """Every sequence of block 0 builds (all 2,000 x 32K), with exact per-step weights."""
+    """Every sequence of block 0 builds (all 2,000 x 32K), with exact block-normalised weights (the
+    block's answer labels carry 1/2 x 1,000, all weights 1,000; verification round 3), and
+    <|endoftext|> occurs only at cu_seqlens starts (verification round 1, DTS-01)."""
     s = stream(env)
+    eot = env["ts"].eot_id
+    n_eot = 0
+    blk_tot = blk_ans = 0.0
     for st in range(1000):
         tot = 0.0
         for m in range(2):
-            tot += float(s.get_numpy(st, m)["loss_weights"][0].sum(dtype=np.float64))
-        assert abs(tot - 1.0) < 1e-5
+            b = s.get_numpy(st, m)
+            tot += float(b["loss_weights"][0].sum(dtype=np.float64))
+            blk_ans += float(b["loss_weights"][0][b["answer_mask"][0]].sum(dtype=np.float64))
+            x, cu = b["input_ids"][0], b["cu_seqlens"]
+            e = np.flatnonzero(x == eot)
+            n_eot += len(e)
+            assert np.isin(e, cu[:-1]).all(), (st, m, e[~np.isin(e, cu[:-1])][:5])
+            assert (b["position_ids"][0][e] == 0).all()
+        na, no = s.step_counts(st)
+        wa, wo = s.step_weight_scale(st)
+        assert abs(tot - (na * wa + no * wo)) < 1e-4
+        blk_tot += tot
+    assert abs(blk_tot - 1000.0) < 1e-2 and abs(blk_ans - 500.0) < 1e-2, (blk_tot, blk_ans)
+    print(f"block 0: {n_eot} separators, all at segment starts; weight mass {blk_tot:.4f}, answers {blk_ans:.4f}")

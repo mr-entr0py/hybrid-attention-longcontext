@@ -85,6 +85,8 @@ class LoadedCheckpoint:
     dtype: str
     config_hash: str | None = None
     git_commit: str | None = None
+    eval_weights: str | None = None
+    """Precision of the weights actually scored ("bf16-rounded" canonical, or "float32")."""
 
 
 def _resolved_config(payload: dict[str, Any], path: Path, runs_root: Path | None) -> dict[str, Any]:
@@ -108,12 +110,22 @@ def _resolved_config(payload: dict[str, Any], path: Path, runs_root: Path | None
     raise FileNotFoundError(f"cannot find the resolved run config for {path} (run_id={rid}); pass runs_root")
 
 
+EVAL_WEIGHTS_CANONICAL = "bf16-rounded"
+"""Every evaluated checkpoint is scored with bf16-rounded weights (verification round 1,
+BF16-MILESTONE-ARTIFACT-MIXING): TEF 250/500/2,000 exist only as bf16 milestones (§18), so a full
+fp32 checkpoint (final.pt / step_*.pt) is rounded to bf16 on load. Scores are then identical whether
+a checkpoint is read from its milestone or its full checkpoint, and comparisons across TEF steps
+(dose guard, still-closing flag) never mix artefact precisions. Recorded as ``eval_weights``."""
+
+
 def load_checkpoint(path: str | Path, device: str | torch.device = "cuda",
-                    runs_root: str | Path | None = None) -> LoadedCheckpoint:
+                    runs_root: str | Path | None = None, canonical_bf16: bool = True) -> LoadedCheckpoint:
     """Rebuild the ``HybridLM`` of a training checkpoint (full fp32 or bf16 milestone) in fp32.
 
     The model is built with ``build_model(ModelConfig(**config['model']), seed_index)`` and the saved
     tensors are loaded with ``strict=True`` (a bf16 milestone is cast up to the fp32 master dtype).
+    With ``canonical_bf16`` (default) floating tensors of a full fp32 checkpoint are first rounded
+    to bf16 exactly as ``training.checkpoint.save_milestone`` does (see ``EVAL_WEIGHTS_CANONICAL``).
     """
     from hybridlc.models.build import build_model
     from hybridlc.models.config import ModelConfig
@@ -122,13 +134,18 @@ def load_checkpoint(path: str | Path, device: str | torch.device = "cuda",
     payload = torch.load(path, map_location="cpu", weights_only=False)
     cfg = _resolved_config(payload, path, Path(runs_root) if runs_root else None)
     model = build_model(ModelConfig.from_dict(dict(cfg["model"])), int(cfg["seed_index"]))
-    sd = {k: (v.float() if v.is_floating_point() else v) for k, v in payload["model"].items()}
+    if canonical_bf16:
+        sd = {k: (v.to(torch.bfloat16).float() if v.is_floating_point() else v) for k, v in payload["model"].items()}
+    else:
+        sd = {k: (v.float() if v.is_floating_point() else v) for k, v in payload["model"].items()}
     model.load_state_dict(sd, strict=True)
     model.to(device).eval()
     return LoadedCheckpoint(model=model, run_id=str(payload.get("run_id") or cfg.get("run_id")),
                             stage=str(cfg["stage"]), step=int(payload["step"]), config=cfg, path=path,
                             sha256=sha256_file(path), dtype=str(payload.get("dtype", "float32")),
-                            config_hash=payload.get("config_hash"), git_commit=payload.get("git_commit"))
+                            config_hash=payload.get("config_hash"), git_commit=payload.get("git_commit"),
+                            eval_weights=(EVAL_WEIGHTS_CANONICAL if canonical_bf16
+                                          or str(payload.get("dtype", "float32")) == "bfloat16" else "float32"))
 
 
 # ------------------------------------------------------------------------------------- scoring
@@ -203,15 +220,34 @@ def rescore_subset_check(model: torch.nn.Module, item_path: Path, rows_jsonl: Pa
     return dict(n=len(ref), flips=flips, flip_rate=flips / len(ref), max_abs_dlogp=dmax, contexts=sub, subset=True)
 
 
+RESCORE_SUITES: tuple[str, ...] = ("CS", "DG", "DC", "FD", "MS")
+"""Suites re-scored by default (§9.2 / I-29: "5% of items"; every cloze suite, Tier0 excluded). FD
+was added in verification round 2 (RESCORE-SCOPE-EXCLUDES-FD-MS) because the S2 gate decisions
+(U-01, FEAS-3/5, U-15, I-08) read FD long before any CS scoring; MS for completeness. The analysis
+audits CS/DG/DC cells for a passing record (pooled per checkpoint)."""
+
+
 def evaluate_checkpoint(ck: LoadedCheckpoint, suites: Iterable[str], *, label: str | None = None,
                         items_root: str | Path = ITEMS_ROOT, results_root: str | Path = RESULTS_ROOT,
                         n_contexts: int | None = None, only: str | None = None,
-                        score_candidates: bool = True, rescore: bool = False,
+                        score_candidates: bool = True, rescore: bool | None = None,
                         log: Any = print) -> list[dict[str, Any]]:
-    """Score every cell of ``suites`` for one checkpoint; returns one record per cell written."""
+    """Score every cell of ``suites`` for one checkpoint; returns one record per cell written.
+
+    ``rescore``: the §9.2 / I-29 single-pass re-score of 5% of items (EM flip rate < 1%). ``None``
+    (default) = on for the suites in ``RESCORE_SUITES`` (CS, DG, DC, FD, MS), ``True`` = every suite
+    but Tier0, ``False`` = off (verification round 1, RESCORE-CHECK-OPT-IN). The result goes into the
+    cell's ``_eval_log.jsonl`` line, which ``analysis.results.rescore_audit`` checks.
+
+    ``n_contexts`` (a subset of each cell) writes under the checkpoint label ``<label>-n<N>`` so a
+    subset can never occupy the path of the full cell; the analysis skips such outputs
+    (verification round 2, EVAL-SUBSET-SHADOWS-FULL).
+    """
     from hybridlc.eval import scorer
 
     label = label or ckpt_label(ck.stage, ck.step)
+    if n_contexts is not None:
+        label = f"{label}-n{int(n_contexts)}"
     results_root = Path(results_root)
     recs = []
     for suite in suites:
@@ -219,13 +255,15 @@ def evaluate_checkpoint(ck: LoadedCheckpoint, suites: Iterable[str], *, label: s
             out = results_root / ck.run_id / label / suite / f"{result_name(f.stem)}.jsonl"
             t0 = time.time()
             extra = dict(run_id=ck.run_id, ckpt=label, ckpt_path=str(ck.path), ckpt_sha256=ck.sha256,
-                         ckpt_step=ck.step, ckpt_dtype=ck.dtype, config_hash=ck.config_hash,
+                         ckpt_step=ck.step, ckpt_dtype=ck.dtype, eval_weights=getattr(ck, "eval_weights", None),
+                         config_hash=ck.config_hash,
                          train_git_commit=ck.git_commit)
             written = score_cell(ck.model, f, out, n_contexts=n_contexts, score_candidates=score_candidates,
                                  extra_meta=extra)
             rec = dict(ts=time.time(), kind="eval", run_id=ck.run_id, ckpt=label, suite=suite, item_file=str(f),
                        out=str(written), rerun=written != out, n_contexts=n_contexts, wall_s=time.time() - t0)
-            if rescore and suite != "Tier0":
+            do_rescore = (suite in RESCORE_SUITES) if rescore is None else bool(rescore)
+            if do_rescore and suite != "Tier0":
                 rec["rescore"] = (scorer.rescore_check(ck.model, f, written) if n_contexts is None
                                   else rescore_subset_check(ck.model, f, written, n_contexts))
             recs.append(rec)

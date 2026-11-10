@@ -1,0 +1,122 @@
+# R3 reference-reproduction battery (VT-21 … VT-25): pre-registration copy (plan §1 rule 6).
+# Written 2026-11-10T05:45+05:30, BEFORE any VT-21…25 test was written or run.
+# Source of every criterion: reports/reproduction/reproduction_plan.md §2.3 (v1.0,
+#   SHA-256 6bc14af62d7ac5151b5906e7596fbc6b3d0e261f114f65286292a958e8adcebc = DEV-01 row) and
+#   reports/reproduction/protocol_amendment.md §17.4 (SHA-256 bf19a536…e338e6).
+# Criteria below are copied, never changed. The "readings" blocks resolve ambiguities in the
+# frozen text; they were fixed here before any result was seen. Where a reading is a deviation
+# from the literal plan text it is labelled DEVIATION.
+repo_commit_at_prereg: 110fd9e357edae461a84ddeb0ddc18228235e1da
+rng: "repro stream, entropy 31337 (np.random.SeedSequence(31337, spawn_key=(<item id>, ...))) for every random tensor"
+gpu_policy: "claim(0.44) per process; jobs > 10 min detached (setsid nohup); concurrent S0 jobs recorded"
+outcomes: "PASS / FAIL per item; BLOCKED if the code under test is not importable/stable; INCONCLUSIVE only on a pre-declared regime condition"
+
+VT-21:
+  title: "fla 0.6.0 causal_conv1d vs independent reference"
+  under_test: "fla.modules.causal_conv1d.ops.causal_conv1d (public entry point, backend='triton' as called by models/linear.py and models/attention.py)"
+  reference: "independent pure-PyTorch reference written in the test (per-document F.conv1d, groups=D, K-1 left padding taken from initial_state[..., 1:] or zeros), computed in float64; hybridlc causal_dwconv_reference is cross-checked against it where it applies (no initial_state with cu_seqlens, no SiLU)"
+  configuration:
+    channels: {D384: [192, 384, 1152], D512: [256, 512, 1536]}   # GDN-A q/k (H*64), v (H*128), F_gc 3d
+    T: [37, 300, 4096, 32768]
+    layouts: ["dense B=2", "packed B=1 with cu_seqlens, offsets not multiples of 64"]
+    initial_state: [off, on]
+    activation: [none, silu]
+    dtype: [fp32, bf16]
+    passes: [forward, backward]
+  pass:
+    - "fp32: max abs diff <= 1e-5 forward; <= 1e-4 for input and weight gradients"
+    - "bf16: relative RMS <= 1e-2"
+    - "cross-document leakage exactly zero"
+    - "final conv state matches the reference to the same tolerances"
+  readings:
+    - "Inputs x ~ N(0,1); weight ~ U(-1/sqrt(4), 1/sqrt(4)) (fla/Conv1d init range); initial_state ~ N(0,1); upstream gradient dy ~ N(0,1). The reference is evaluated in float64 on the exact (fp32 or bf16-rounded) inputs, so the measured error is that of the kernel."
+    - "fp32 thresholds are applied LITERALLY as max absolute differences, on y, final_state, dx and dw (dw is a reduction over B*T terms; this is the plan's criterion and is not rescaled). As report-only diagnostics I also record max|diff|/max|ref| for each tensor."
+    - "bf16: rel RMS = ||a-ref||_2/||ref||_2 per tensor (y, final_state, dx, dw)."
+    - "initial_state gradient (dh0) is recorded report-only (not in the criterion)."
+    - "Leakage: packed layout, perturb all inputs of document 0 (and its initial_state) and check outputs/final states of every other document are bitwise unchanged; backward with dy nonzero only on document j: dx on every other document is exactly 0. Run for every packed case."
+    - "Packed offsets: T=37: [0,13,37]; T=300: [0,77,190,300]; T=4096: [0,1000,2731,4096]; T=32768: [0,5003,16411,32768]."
+    - "Supplementary (beyond pre-registration, reported separately, not part of the verdict): one packed case with a document shorter than W (lengths 2 and 3)."
+  failure_tree: "plan §2.3 R3b"
+
+VT-22:
+  title: "full-model transplant at evaluated lengths"
+  reference: ["transformers 5.22.2 Qwen3ForCausalLM with the VT-09(1) mapping (gate bypassed, gains tied, theta 5e5)", "fla 0.6.0 GatedDeltaNetForCausalLM with the VT-09(2) mapping"]
+  configuration:
+    - "D384 C12 vs Qwen3, D384 C0 vs fla LM, at T=4096 fp32 and T in {16384, 32768} bf16"
+    - "ours on the production varlen path (forward(ids[1,T], cu_seqlens=[0,T], position_ids, max_seqlen)); references: Qwen3 SDPA (flash pinned) and fla chunk path, both bf16"
+    - "logits compared at every 16th position and the last 512 positions"
+    - "C3 packed (16K+16K) vs each document alone, 32K, bf16"
+  pass:
+    - "4K fp32: relative max <= 1e-3"
+    - "16K/32K bf16: relative RMS <= 2e-2 AND RMS error over the last 1K positions <= 2x that over the first 1K"
+    - "no argmax criterion"
+    - "C3 packed vs alone: relative RMS <= 1e-2"
+  readings:
+    - "Weights: random init exactly as VT-09 (torch.manual_seed(0) reference init, norm gains randomised U(0.6,1.4)), then copied into ours. Input ids uniform in [8, V) from the repro stream."
+    - "bf16: both sides run under torch.autocast('cuda', bfloat16) with fp32 master weights. 4K fp32: no autocast; Qwen3 with eager attention (as VT-09), fla LM in fp32."
+    - "rel max = max|a-ref|/max|ref|; rel RMS = ||a-ref||/||ref|| over all sampled positions x vocab."
+    - "Bands use the sampled position set P (every 16th + last 512): first band = P ∩ [0,1024), last band = P ∩ [T-1024,T); band RMS error = absolute RMS of (a-ref) over the band; criterion ratio last/first <= 2."
+    - "C3 packed vs alone: our model only (no external reference), packed row [doc0 16384 | doc1 16384] with cu_seqlens [0,16384,32768] and position ids reset, vs each doc alone with cu_seqlens [0,16384]; positions sampled every 16th + last 512 within each doc; rel RMS pooled over both docs."
+    - "Reported but not in the criterion: band ratio at 4K, per-doc rel RMS for C3, rel max at 16K/32K."
+
+VT-23:
+  title: "trainer vs independent reference loop"
+  reference: "~60-line loop written in the test from protocol §7.1-§7.2 text only; imports neither hybridlc.training.optim nor hybridlc.training.schedules (nor the trainer); uses build_model, StageStream (same batches) and its own loss (no chunked_ce)"
+  configuration: "D384 C3, fp32, audit mode (use_deterministic_algorithms(True), CUBLAS_WORKSPACE_CONFIG=:4096:8, no cuDNN SDPA), StageStream('A', data_seed=900), 2 x 4K micro-batches, 2 accumulation steps, 50 steps, 10 warm-up steps then constant, peak LR 2.0e-3 (provisional eta of §7.2)"
+  pass:
+    - "step-1 loss relative difference <= 1e-6"
+    - "steps 2-10: per-step loss and pre-clip grad norm within 1e-5 relative; steps 11-50 within 1e-3"
+    - "at least one step with pre-clip norm > 1.0"
+    - "final parameters relative L2 difference <= 1e-3"
+    - "identical weight-decay group membership by name"
+  readings:
+    - "seed_index = data_seed = 900 (the run YAML ties data_seed to seed_index); same initial weights via build_model(cfg, 900) on both sides, checked by parameter SHA before step 1."
+    - "'per-step loss' = the step's mean CE over all loss tokens of the step (the trainer's trace 'loss' field); the z-loss term is compared too, report-only. Step numbering in the criterion is 1-based (step 1 = first optimiser step, trainer step index 0)."
+    - "Warm-up from the text '10 warm-up steps, then constant' / '500-step linear warm-up to eta*': lr(step index s, 0-based) = eta * min(1, (s+1)/10). The text does not fix the indexing convention; if the trainer uses another one, the resulting mismatch is reported as found, with this note."
+    - "Clipping: global L2 norm over all parameters (fp32), coefficient min(1, 1.0/(norm+1e-6)) applied after accumulation; 'pre-clip grad norm' = that norm."
+    - "Loss: logits = hidden @ embed^T in fp32; CE mean over labels not equal to pad id 1 and >= 0, pooled over the whole optimiser step; z-loss = 1e-4 * mean(logsumexp^2) over the same tokens."
+    - "WD groups: decay iff ndim >= 2 and not flagged _no_weight_decay and name not matching ssmax; compared by name to the trainer's optimiser groups (read from its final checkpoint / start record)."
+    - "Final parameters: rel L2 = ||theta_trainer - theta_ref||_2 / ||theta_ref||_2 over all parameters concatenated; per-tensor values report-only."
+    - "Trainer run via scripts/train.py with a run YAML under experiments/repro/R3/vt23/, separate runs-root, ckpt-root and registry (never experiments/registry.jsonl)."
+    - "BLOCKED if the trainer cannot be imported or refuses to run for a reason other than a defect it reports."
+
+VT-24:
+  title: "oracle answerability at confirmatory lengths"
+  reference: "hybridlc.eval.devtools.InductionLM(vocab_size=16384, order=6, p_hit=0.9)"
+  configuration: "every R1, R-load, R3, R-dist item file at 16K and 32K in experiments/items/test/CS, test/MS, dev/DG, dev/FD, scored through eval.scorer.score_file on CPU; M-hop files as negative control"
+  pass:
+    - "every retrieval query: EM_tf = 1 and logp_gold = 4 ln 0.9"
+    - "M-hop: EM_tf < 0.5"
+  readings:
+    - "File set = files in those four directories whose cell_meta task is R1, R-load, R3 or R-dist (variants such as -C2, -T4, -natural, -repetitive included) and whose T is 16384 or 32768. Negative control = every M-hop file (variants included) at 16K/32K in the same directories."
+    - "logp_gold equality checked to |logp_gold - 4 ln 0.9| <= 1e-4 (the VT-12 tolerance; the scorer stores float32)."
+    - "M-hop criterion applied per file (mean EM_tf over the file's queries < 0.5)."
+    - "score_file is called with score_candidates=False (the criteria use only EM_tf and logp_gold; candidate scoring would multiply CPU time ~10-40x). DEVIATION-free reading: still score_file on CPU; candidates are not part of the criterion."
+    - "Supplementary, report-only (asked for in the workflow task text): a metadata oracle that checks, for every retrieval query, that len(context)+len(prompt)+len(answer)=T and that the gold answer tokens appear in the context inside [needle_start, needle_end] of the (latest) needle together with the key tokens."
+  failure_tree: "plan §2.3 R3e: inspect each miss (collision / snapping damage / boundary)"
+
+VT-25:
+  title: "Zoology <-> our mixers by weight copy (R3a)"
+  reference: "Zoology @1ad20d1 LanguageModel (BaseConv + mixer, 2 layers) from zoology/experiments/mqar_example_configs/original_mqar_configs.py"
+  ours: "scripts/s1_zoology/our_mixers.py OurGdnZoology / OurFgZoology swapped into the same LanguageModel config"
+  configuration:
+    - "GDN d in {64,128,256}; attention d in {64,128}"
+    - "explicit name map; inputs: one MQAR batch (B=8, T=256) and one random batch"
+    - "attention: Zoology MHA biases zeroed, dropout off"
+  pass:
+    - "GDN at matched precision (ours reproducing Zoology's bf16 casts via a test-only flag): logits rel RMS <= 1e-2; parameter gradients rel RMS <= 2e-2"
+    - "GDN ours fp32 vs Zoology: reported only"
+    - "attention fp32: logits rel RMS <= 1e-5; gradients <= 1e-4"
+  readings:
+    - "There is no bf16-cast flag in src/hybridlc (and src/ is not ours to edit). The 'test-only flag' is implemented in the test: the module-level hook hybridlc.models.linear.chunk_gated_delta_rule (documented as the test indirection) is wrapped to cast q, k, v, beta-logit and gate-input a to bf16 (Zoology casts q, k, v, sigmoid(b), g), and a forward hook casts the o_norm output to fp32 before o_proj (Zoology: o_norm on bf16, .to(float32), o_proj). Gate and beta nonlinearities stay in-kernel on our side, which is the difference the plan's tolerance basis names."
+    - "Gradients: per parameter tensor rel RMS over every mapped parameter (embedding, BaseConv layer, norms, mixer); verdict on the worst tensor (precedent: VT-04/VT-05 compare per tensor). The global (concatenated) rel RMS is reported too."
+    - "Loss for gradients: mean CE over labels != -100 (MQAR labels; random batch: random targets everywhere). Both models in eval() mode (dropout off) for forward and backward."
+    - "MQAR batch: zoology MQARConfig(vocab_size=8192, input_seq_len=256, num_examples=8, num_kv_pairs=64, seed=31337). Random batch: uniform ids in [0, 8192), labels uniform, repro stream."
+    - "Zoology init: torch.manual_seed(31337) before LanguageModel(); Zoology's unused GDN parameter D is not mapped."
+    - "Both families run on CUDA (fla kernels)."
+
+# ---- Addendum 2026-11-10T06:26:15+05:30, written BEFORE any VT-23 comparison result existed ----
+deviations_before_verdict:
+  VT-23:
+    - "DEVIATION: runtime.activation_checkpointing=true on the trainer side and model.set_activation_checkpointing(True) on the reference side. Reason: VT-23 attempts 1-4 never reached a comparison; attempts 1-3 OOMed (physical contention + fragmentation), and attempt 4 (expandable_segments) hit the 0.44 cap with 6.58 GiB allocated at a 256 MiB request, so the pre-registered fp32 2x4K configuration does not fit the mandated 0.44 memory cap. Per-block non-reentrant recompute in deterministic fp32 replays the same kernels and does not change what the test targets (loss assembly, WD groups, schedule, clipping, accumulation). Criteria unchanged."
+    - "Allocator setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for both subprocesses (no numerical effect)."

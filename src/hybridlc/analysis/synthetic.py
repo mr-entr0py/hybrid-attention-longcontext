@@ -53,11 +53,22 @@ CS_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {
     "M-hop": {T: (("h1", "h2") if T <= 4096 else ("h1", "h2", "h3", "h4")) for T in ALL_LENGTHS},
     "A-freq": {T: (("rho4", "rho2") if T <= 4096 else ("rho4", "rho2", "rho1.5", "rho1.25")) for T in ALL_LENGTHS},
 }
-# DG cells (protocol §9.5): retrieval at 16K/32K (+C0), M-hop at 16K/32K (scored on C12 only in reality)
-DG_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {
+# DG cells (protocol §9.5): retrieval at 16K/32K (+C0 controls), scored on C0/C12 (all core configs
+# for the reference-inversion check); M-hop at 16K/32K (no controls), scored on C12 only.
+DG_RET_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {
     "R1": {T: ("D3", "D15") for T in (16384, 32768)},
     "R-load": {T: ("N8", "N32", "N128", "N512", "N1024") for T in (16384, 32768)},
+}
+DG_MHOP_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {
     "M-hop": {T: ("h1", "h2", "h3", "h4") for T in (16384, 32768)},
+}
+DG_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {**DG_RET_LEVELS, **DG_MHOP_LEVELS}
+# Tasks that have C0 (no-filler) control cells in each frozen suite (CS §9.3; DG §9.5 retrieval only;
+# DC and the rest have none). Suites not listed get controls for every primary task (legacy default).
+SUITE_CONTROL_TASKS: dict[str, tuple[str, ...]] = {
+    "CS": ("R1", "R-load", "M-hop", "A-freq"),
+    "DG": ("R1", "R-load"),
+    "DC": (),
 }
 # DC cells (protocol §9.5)
 DC_LEVELS: dict[str, dict[int, tuple[str, ...]]] = {
@@ -165,7 +176,8 @@ class World:
             for T, lvs in byT.items():
                 strata += [(task, lv, T) for lv in lvs]
         if with_controls:
-            ctrl = {(t, lv, CONTROL_T) for (t, lv, _T) in strata if t in ("R1", "R-load", "M-hop", "A-freq")
+            ctl_tasks = SUITE_CONTROL_TASKS.get(suite, ("R1", "R-load", "M-hop", "A-freq"))
+            ctrl = {(t, lv, CONTROL_T) for (t, lv, _T) in strata if t in ctl_tasks
                     and (t, lv) != ("R-load", "N2048")}
             strata += sorted(ctrl)
         out = {}
@@ -210,25 +222,47 @@ class RunPlan:
 
 
 def default_plan(world: World, *, dose: bool = True, saturation: bool = True, dg_all_configs: bool = True,
-                 dose_shift: float = 0.0, saturation_shift: float = 0.0) -> list[RunPlan]:
-    """CS + DG on every run at TEF 1000; DC for the dose ladder; seed-0 branches for the I-22 guards."""
+                 dose_shift: float | Mapping[str, float] = 0.0, saturation_shift: float = 0.0,
+                 dc_main: bool = False, dg_mhop_configs: Sequence[str] | None = ("C12",)) -> list[RunPlan]:
+    """CS + DG at TEF 1000; DC for the dose ladder; seed-0 branches for the I-22 guards.
+
+    DG follows §9.5: retrieval cells (+ C0 controls) on C0/C12, or on every config with
+    ``dg_all_configs`` (the reference-inversion check); M-hop cells on ``dg_mhop_configs`` only
+    (default C12, as pre-registered; ``None`` = every config scored on DG, a non-protocol plan kept
+    for tests). Verification round 3 (ANA-DG-PROTOCOL-DESIGN-REFUSED): M-hop used to be scored on
+    every DG config, with M-hop C0 controls that the frozen DG items do not have.
+
+    ``dose_shift``: shift of the TEF-4000 checkpoint (a float for every anchor, or per config, which
+    plants a still-closing gap, §7.3). ``dc_main``: also score DC at TEF 1000 on the seed-0 main
+    anchors (the still-closing DC fallback)."""
     plans = []
     for c in world.spec.configs:
         for s in world.spec.seeds:
             suites = {"CS": ("tef1000", CS_LEVELS)}
+            dg: dict[str, dict[int, tuple[str, ...]]] = {}
             if dg_all_configs or c in ("C0", "C12"):
-                suites["DG"] = ("tef1000", DG_LEVELS)
+                dg.update(DG_RET_LEVELS)
+            if dg_mhop_configs is None:
+                if dg:
+                    dg.update(DG_MHOP_LEVELS)
+            elif c in dg_mhop_configs:
+                dg.update(DG_MHOP_LEVELS)
+            if dg:
+                suites["DG"] = ("tef1000", dg)
             plans.append(RunPlan(c, s, suites))
     anchors = [c for c in ("C0", "C1", "C3", "C12") if c in world.spec.configs]
     s0 = world.spec.seeds[0]
     if dose:
         for c in anchors:
+            shift = float(dose_shift.get(c, 0.0)) if isinstance(dose_shift, Mapping) else float(dose_shift)
             plans.append(RunPlan(c, s0, {"DC": ("tef2000", DC_LEVELS)}, branch="tef4000", stage="S5bT"))
             plans.append(RunPlan(c, s0, {"DC": ("tef4000", DC_LEVELS), "CS": ("tef4000", CS_LEVELS)},
-                                 branch="tef4000", stage="S5bT", branch_shift=dose_shift))
+                                 branch="tef4000", stage="S5bT", branch_shift=shift))
+            if dc_main:
+                plans.append(RunPlan(c, s0, {"DC": ("tef1000", DC_LEVELS)}, stage="S4T"))
     if saturation:
         for c in [c for c in ("C0", "C3", "C12") if c in world.spec.configs]:
-            plans.append(RunPlan(c, s0, {"CS": ("tef1000", CS_LEVELS), "DG": ("tef1000", DG_LEVELS)},
+            plans.append(RunPlan(c, s0, {"CS": ("tef1000", CS_LEVELS), "DG": ("tef1000", DG_RET_LEVELS)},
                                  branch="stageB2x", stage="S5bBT", branch_shift=saturation_shift))
     return plans
 

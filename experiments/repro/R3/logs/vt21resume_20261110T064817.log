@@ -1,0 +1,99 @@
+CMD: python -m pytest -q -s -p no:cacheprovider tests/test_vt21_conv_reference.py
+START 2026-11-10T06:48:17+05:30 gpu_free_MiB=13747
+VT-21 summary: {'n_main': 384, 'n_main_fail': 12, 'n_supp': 8, 'n_supp_fail': 0, 'fla_backend_log': ['Blackwell detected: registering default global_scratch allocator.'], 'worst': {'fp32_y_max_abs': 7.226187497266778e-07, 'bf16_y_rel_rms': 0.0017069227746332363, 'fp32_fin_max_abs': 0.0, 'bf16_fin_rel_rms': 0.0, 'fp32_dx_max_abs': 5.483530571837036e-07, 'bf16_dx_rel_rms': 0.0018001761391839744, 'fp32_dw_max_abs': 0.00014025674659023935, 'bf16_dw_rel_rms': 0.0018775062653722625}, 'n_main_rows_union': 384, 'leak_all_zero': True, 'verdict': 'FAIL'}
+F
+=================================== FAILURES ===================================
+_______________________ test_vt21_fla_conv_vs_reference ________________________
+
+    @pytest.mark.gpu
+    @pytest.mark.slow
+    def test_vt21_fla_conv_vs_reference() -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        from hybridlc.utils.gpu import claim
+    
+        dev = claim(0.44)
+        records: list[str] = []
+    
+        class _H(logging.Handler):
+            def emit(self, rec):  # fla backend dispatch decisions
+                records.append(rec.getMessage())
+    
+        lg = logging.getLogger("fla")
+        lg.setLevel(logging.INFO)
+        lg.addHandler(_H())
+        import fla
+    
+        meta = RC.run_meta("VT-21", {"fla_version": fla.__version__, "criteria": {
+            "fp32_fwd_max_abs": TOL_FP32_FWD, "fp32_grad_max_abs": TOL_FP32_GRAD, "bf16_rel_rms": TOL_BF16}})
+        # Resumable: R3_VT21_RESUME_FROM=<partial raw jsonl> keeps its completed main-grid rows (same case ids,
+        # same seeds) and runs only the missing cases; the summary covers the union.
+        import json as _json
+        import os as _os
+    
+        prev = {}
+        rp = _os.environ.get("R3_VT21_RESUME_FROM")
+        if rp:
+            for line in open(rp):
+                r = _json.loads(line)
+                if r.get("grid") == "main":
+                    prev[r["case"]] = r
+            meta["resumed_from"] = {"path": rp, "n_rows_kept": len(prev)}
+        wr = RC.RawWriter("vt21", "vt21_conv", meta)
+        fails = [r for r in prev.values() if not r["pass"]]
+        i = 0
+        for scale, chans in CHANNELS.items():
+            for (path, D), T, packed, use_h0, act, dtype in itertools.product(
+                    chans.items(), TS, (False, True), (False, True), (None, "silu"), (torch.float32, torch.bfloat16)):
+                cu_dtype = torch.int32 if path == "fgc_3d" else torch.int64   # F_gc passes int32, linear.py .long()
+                if i in prev:
+                    i += 1
+                    continue
+                row = _run_case(dev, D, T, packed, use_h0, act, dtype, key=(i,), cu_dtype=cu_dtype)
+                row.update(scale=scale, path=path, case=i, grid="main")
+                wr.write(row)
+                if not row["pass"]:
+                    fails.append(row)
+                i += 1
+                torch.cuda.empty_cache()
+        # supplementary (beyond pre-registration; reported separately, not in the verdict)
+        supp = []
+        for use_h0, act, dtype in itertools.product((False, True), (None, "silu"), (torch.float32, torch.bfloat16)):
+            row = _run_case(dev, 384, 300, True, use_h0, act, dtype, key=(10_000 + len(supp),), cu_dtype=torch.int64,
+                            cu_list=[0, 2, 5, 150, 300])
+            row.update(scale="D384", path="gdn_v", case=10_000 + len(supp), grid="supplementary_short_docs")
+            wr.write(row)
+            supp.append(row)
+        summary = {"n_main": i, "n_main_fail": len(fails), "n_supp": len(supp),
+                   "n_supp_fail": sum(not r["pass"] for r in supp), "fla_backend_log": sorted(set(records)),
+                   "worst": {}}
+        main_rows = list(prev.values()) + [r for r in wr.rows if r["grid"] == "main"]
+        summary["n_main_rows_union"] = len(main_rows)
+        for k in ("y", "fin", "dx", "dw"):
+            f32 = [r for r in main_rows if r["dtype"] == "float32"]
+            b16 = [r for r in main_rows if r["dtype"] == "bfloat16"]
+            summary["worst"][f"fp32_{k}_max_abs"] = max(r[f"{k}_max_abs"] for r in f32)
+            summary["worst"][f"bf16_{k}_rel_rms"] = max(r[f"{k}_rel_rms"] for r in b16)
+        summary["leak_all_zero"] = all(r.get("leak_fwd_zero", True) and r.get("leak_bwd_zero", True)
+                                       for r in main_rows)
+        summary["verdict"] = "PASS" if not fails else "FAIL"
+        wr.close(summary)
+        print("VT-21 summary:", summary)
+>       assert not fails, f"{len(fails)} of {i} VT-21 cases failed; first: {fails[0]}"
+E       AssertionError: 12 of 384 VT-21 cases failed; first: {'D': 192, 'T': 32768, 'packed': True, 'cu': [0, 5003, 16411, 32768], 'h0': False, 'act': 'none', 'dtype': 'float32', 'cu_dtype': 'int64', 'y_max_abs': 3.530270777929445e-07, 'y_rel_max': 9.297549078403262e-08, 'y_rel_rms': 4.00812998705131e-08, 'y_ref_maxabs': 3.796990742570756, 'y_pass': True, 'fin_max_abs': 0.0, 'fin_rel_max': 0.0, 'fin_rel_rms': 0.0, 'fin_ref_maxabs': 3.782050848007202, 'fin_pass': True, 'dx_max_abs': 3.33160370402652e-07, 'dx_rel_max': 8.618413864516558e-08, 'dx_rel_rms': 3.998881353330007e-08, 'dx_ref_maxabs': 3.8656808043801263, 'dx_pass': True, 'dw_max_abs': 0.00012722502015094506, 'dw_rel_max': 2.339213375373903e-07, 'dw_rel_rms': 1.464951915775197e-07, 'dw_ref_maxabs': 543.8795002213478, 'dw_pass': False, 'hybridlc_ref_y_max_abs': 4.440892098500626e-16, 'hybridlc_ref_fin_max_abs': 0.0, 'leak_fwd_zero': True, 'leak_bwd_zero': True, 'pass': False, 'scale': 'D384', 'path': 'gdn_qk', 'case': 56, 'grid': 'main'}
+E       assert not [{'D': 192, 'T': 32768, 'packed': True, 'cu': [0, 5003, 16411, 32768], ...}, {'D': 384, 'T': 32768, 'packed': False, '...8, 'packed': False, 'cu': None, ...}, {'D': 1152, 'T': 32768, 'packed': True, 'cu': [0, 5003, 16411, 32768], ...}, ...]
+
+tests/test_vt21_conv_reference.py:257: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     fla.utils.hardware:hardware.py:146 Blackwell detected: registering default global_scratch allocator.
+=============================== warnings summary ===============================
+tests/test_vt21_conv_reference.py: 14 warnings
+  /home/sedrica-lynx/Downloads/outeropt/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_vt21_conv_reference.py::test_vt21_fla_conv_vs_reference - A...
+1 failed, 14 warnings in 627.58s (0:10:27)
+EXIT=1
+2026-11-10T06:58:46+05:30

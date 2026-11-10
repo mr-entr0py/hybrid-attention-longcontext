@@ -93,3 +93,11 @@ TEF_RANGES = dict(D=(0, 20), N=(4, 2048), h=(1, 6), rho=(1.1, 5.0), U=(1, 5))
 TEF_REPETITIVE_SHARE = 0.10
 TEF_TEMPLATES = ("T1", "T2", "T3")
 TEF_ANSWER_WEIGHT = 0.5  # L = 1/2 mean CE(answer tokens) + 1/2 mean CE(other tokens) (D014)
+#: Normalisation of the D014 means [IMPL, verification round 3, TEF-STEP-NORMALISED-ANSWER-WEIGHT-
+#: LENGTH-SKEW; needs PI confirmation]. "block": every answer token of a 1,000-step block carries the
+#: same weight (the 1/2 is spread over the block's answer tokens, likewise for the other tokens), so
+#: the equal-count length buckets also get equal answer-loss weight (1/7 each). "step": the literal
+#: per-step reading (answer tokens of each step share 1/2), which gives the 32K bucket ~0.29-0.30 of
+#: the answer-loss weight because a step holding 32K items has few answer tokens.
+TEF_ANSWER_NORM = "block"
+TEF_ANSWER_NORMS = ("block", "step")

@@ -208,9 +208,55 @@ def _score_items(model: Any, items: list[dict], batch_size: int, cell_name: str,
                         EM_tf=bool(em[r]), logp_gold=float(lp_a[r].sum()), logp_gold_tokens=lp_a[r].tolist(),
                         cand_logp=[float(v) for v in clp] if score_candidates else None, cand_types=ctypes,
                         rank=rank, rank_correct=None if rank is None else bool(rank == 1), n_cand=ncr,
-                        chance=1.0 / ncr, error_type=err, scoring_path=path))
+                        chance=1.0 / ncr, error_type=err, scoring_path=path,
+                        absent_in_context=_absent_in_context(it, qq, ctypes),
+                        **_afreq_heuristics(it, qq, im.get("task"))))
             del cache
     return rows
+
+
+def _contains(ctx: np.ndarray, sub: np.ndarray) -> bool:
+    L = len(sub)
+    if L == 0 or L > len(ctx):
+        return False
+    pos = np.flatnonzero(ctx[:len(ctx) - L + 1] == sub[0])
+    return any(np.array_equal(ctx[p:p + L], sub) for p in pos)
+
+
+def _absent_in_context(item: dict, q: dict, ctypes: list[str]) -> list[int] | None:
+    """Indices of 'absent'-typed candidates whose token sequence nevertheless occurs in the context
+    (e.g. a 4-digit year in the natural filler; 0.03-0.44% of absent candidates in the frozen cells).
+
+    The frozen items draw absent values excluding only the fact values (verification round 2,
+    ABSENT-CANDIDATES-PRESENT-IN-FILLER); this field lets the analysis treat such candidates as
+    in-context when it reports error types. ``None`` when the query has no absent candidates.
+    """
+    idx = [c for c, t in enumerate(ctypes) if t == "absent" and c < len(q["candidates"])]
+    if not idx:
+        return None
+    ctx = np.asarray(item["context_ids"])
+    return [c for c in idx if _contains(ctx, np.asarray(q["candidates"][c]))]
+
+
+def _afreq_heuristics(item: dict, q: dict, task: str | None) -> dict:
+    """A-freq counting-free heuristic floors (verification round 1, AFREQ-RECENCY-FLOOR).
+
+    In a uniformly shuffled list frequency and recency are confounded: "answer the probe that occurs
+    last" (or first) scores ~rho/(1+rho), not ``chance`` = 1/2. Each A-freq row records whether these
+    two heuristics would be correct on this query, so the per-cell heuristic floor can be reported
+    next to the score (empty dict for other tasks; None when not computable).
+    """
+    if task != "A-freq":
+        return {}
+    ctx = np.asarray(item["context_ids"])
+    x = int(q["answer_ids"][0])
+    others = [int(c[0]) for c in q["candidates"] if int(c[0]) != x]
+    px = np.flatnonzero(ctx == x)
+    py = np.flatnonzero(ctx == others[0]) if len(others) == 1 else np.zeros(0, int)
+    if not len(px) or not len(py):
+        return dict(recency_heuristic_correct=None, primacy_heuristic_correct=None)
+    return dict(recency_heuristic_correct=bool(px.max() > py.max()),
+                primacy_heuristic_correct=bool(px.min() < py.min()))
 
 
 # =========================================================================== LM scoring
@@ -233,9 +279,14 @@ def _nll(model: Any, ids: np.ndarray, seg_starts: np.ndarray | None, labels: np.
         valid = labels != IGNORE_INDEX
     lab = torch.from_numpy(np.where(valid, labels, 0).astype(np.int64)).to(dev)
     out = torch.empty(N, dtype=torch.float32, device=dev)
-    for a in range(0, N, chunk):
-        lg = h[a:a + chunk].float() @ w.float().T
-        out[a:a + chunk] = torch.nn.functional.cross_entropy(lg, lab[a:a + chunk], reduction="none")
+    # fp32 logits: the GEMM runs with autocast disabled, otherwise it is executed in bf16 inside
+    # ``score_lm_items``' autocast region and returns rounded bf16 logits (verification round 2,
+    # TIER0-LM-LOGITS-BF16). The hidden states h come from the bf16-autocast forward as before.
+    with torch.autocast(device_type=dev.type, enabled=False):
+        wf = w.float()
+        for a in range(0, N, chunk):
+            lg = h[a:a + chunk].float() @ wf.T
+            out[a:a + chunk] = torch.nn.functional.cross_entropy(lg, lab[a:a + chunk], reduction="none")
     o = out.cpu().numpy().astype(np.float64)
     o[~valid] = np.nan
     return o

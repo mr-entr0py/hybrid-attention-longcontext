@@ -70,12 +70,23 @@ def solve_distance_offsets(F: int, lens: np.ndarray, target: np.ndarray, dist: n
 
 
 def assemble(ts: TokenSpace, filler: np.ndarray, needles: list[np.ndarray], target: np.ndarray,
-             window: int = SNAP_WINDOW, do_snap: bool = True) -> Placed:
-    """Insert ``needles`` into ``filler`` at (snapped) offsets ``target`` (floats in [0, F])."""
+             window: int = SNAP_WINDOW, do_snap: bool = True, tie_rank: np.ndarray | None = None) -> Placed:
+    """Insert ``needles`` into ``filler`` at (snapped) offsets ``target`` (floats in [0, F]).
+
+    ``tie_rank`` (optional, one sortable value per needle) breaks ties between equal targets
+    (after clipping to [0, F]) and between equal snapped offsets; without it ties fall back to
+    input order. Generators whose needle order matters when every target coincides (the
+    no-filler C0 control has F = 0; the oracle C2 control puts every needle at F) must pass
+    an explicit rank, otherwise the realised order is the generator's input order
+    (verification round 1, MHOP-C0-C2-UNSHUFFLED).
+    """
     F = len(filler)
     n = len(needles)
     target = np.clip(np.asarray(target, dtype=np.float64), 0, F)
-    pre = np.lexsort((np.arange(n), target))  # pre-snap order (ties: input order)
+    tie = np.arange(n) if tie_rank is None else np.asarray(tie_rank)
+    if len(tie) != n:
+        raise ValueError(f"tie_rank has {len(tie)} entries for {n} needles")
+    pre = np.lexsort((np.arange(n), tie, target))  # pre-snap order (ties: tie_rank, then input order)
     raw = np.rint(target).astype(np.int64)
     offs = np.empty(n, dtype=np.int64)
     ok = np.zeros(n, dtype=bool)

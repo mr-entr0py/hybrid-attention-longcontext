@@ -214,14 +214,19 @@ def _ctx_len(ctx: _Ctx, needles_tot: int, qtot: int) -> int:
 
 
 def _place(ctx: _Ctx, irng: np.random.Generator, needles: list[np.ndarray], T_ctx: int,
-           target_fn: Callable[[int], np.ndarray], dist: np.ndarray | None = None) -> tuple[Placed, dict]:
+           target_fn: Callable[[int], np.ndarray | tuple[np.ndarray, np.ndarray]],
+           dist: np.ndarray | None = None) -> tuple[Placed, dict]:
+    """Draw the filler and assemble. ``target_fn(F)`` returns the target offsets, or
+    ``(targets, tie_rank)`` when the needle order must be fixed independently of the target
+    values (see ``context.assemble``)."""
     tot = sum(len(x) for x in needles)
     F = T_ctx - 1 - tot
     filler, src = ctx.filler(F, irng)
-    target = target_fn(F)
+    res = target_fn(F)
+    target, tie_rank = res if isinstance(res, tuple) else (res, None)
     if dist is not None:
         target = solve_distance_offsets(F, np.asarray([len(x) for x in needles], float), target, dist)
-    placed = assemble(ctx.ts, filler, needles, target, do_snap=ctx.placement != "nofill")
+    placed = assemble(ctx.ts, filler, needles, target, do_snap=ctx.placement != "nofill", tie_rank=tie_rank)
     assert len(placed.context) == T_ctx
     return placed, src
 
@@ -464,18 +469,31 @@ def gen_mhop(task_level: dict, T: int | None, n: int, rng: np.random.Generator, 
         T_ctx = _ctx_len(ctx, tot, _query_total(queries, ctx.sequential))
         chain_of_a, step_of_a = np.asarray(chain_of), np.asarray(step_of)
 
-        def target(F: int) -> np.ndarray:
-            t = np.full(len(needles), float(F)) if ctx.placement == "oracle" else irng.random(len(needles)) * F
-            if order == "shuffled":
-                return t if ctx.placement != "oracle" else t + irng.random(len(needles)) * 1e-3
-            if ctx.placement == "oracle":  # all at the end; encode the order by tiny increments
-                t = t + irng.random(len(needles)) * 1e-3
+        def chain_order(t: np.ndarray) -> np.ndarray:
+            """Reassign the values of ``t`` within each chain so the chain obeys ``order``."""
+            t = t.copy()
             for c in range(nc):
                 idx = np.flatnonzero(chain_of_a == c)
                 ts_sorted = np.sort(t[idx])
                 rank = step_of_a[idx] if order == "forward" else h - step_of_a[idx]
                 t[idx] = ts_sorted[rank]
             return t
+
+        def target(F: int) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+            if ctx.placement == "spread":
+                # Distinct random offsets carry the order (unchanged since the S0 freeze).
+                t = irng.random(len(needles)) * F
+                return t if order == "shuffled" else chain_order(t)
+            # 'oracle' (all needles at F, right before the query) and 'nofill' (F = 0): every
+            # target coincides, so the order is carried by an explicit tie-break rank drawn
+            # from the item RNG: a uniform random permutation for 'shuffled', or a random
+            # interleaving of the chains with each chain in 'forward'/'reversed' order.
+            # (Verification round 1, MHOP-C0-C2-UNSHUFFLED: the previous code relied on
+            # F + 1e-3 * U, which assemble() clipped back to F, and on F = 0, so the realised
+            # order was the generator's input order: every chain contiguous and forward.)
+            t = np.full(len(needles), float(F))
+            u = irng.random(len(needles))
+            return t, (u if order == "shuffled" else chain_order(u))
 
         placed, src = _place(ctx, irng, needles, T_ctx, target)
         for c in range(nc):

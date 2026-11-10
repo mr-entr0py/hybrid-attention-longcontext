@@ -27,6 +27,7 @@ from typing import Any
 from . import protocol as P
 
 SUPPORTED, FALSIFIED, INCONCLUSIVE, SUGGESTIVE = "supported", "falsified", "inconclusive", "suggestive (supported)"
+NOT_EVALUABLE = "not evaluable"
 
 _STATEMENT = {
     "H1": "{k} F_g layers of 12 (the rest GDN-A as built) recover >= 80% of the k = 0 -> 12 retrieval gap",
@@ -81,9 +82,23 @@ def confirmatory_verdict(name: str, res: Mapping[str, Any]) -> dict[str, Any]:
         sat = g.get("saturation", {})
         if sat.get("label"):
             labels.append(sat["label"])
+        # §7.3 still-closing flag (seed 0, TEF 1,000 vs 4,000)
+        sc = res.get("still_closing", {}).get(name)
+        if sc is not None:
+            if sc.get("flag"):
+                labels.append(sc.get("label") or P.STILL_CLOSING_LABEL)
+                notes.append(f"still closing: S12 - S_k changed by {_fmt(sc.get('delta'))} between TEF 1,000 and "
+                             f"4,000 (seed {sc.get('seed')}, {sc.get('source')})")
+            elif not sc.get("evaluable", False):
+                notes.append(f"still-closing flag (§7.3) not evaluable: {sc.get('reason')}")
     if verdict == INCONCLUSIVE:
         tost = t.get("tost")
-        if name == "H3" and tost and tost.get("equivalent"):
+        # The named negative outcome needs an evaluable H3 (§2 H3, §11.7: recovery is ill-conditioned
+        # when G < 15 pp); otherwise the verdict is "not evaluable" (verification round 2,
+        # VERDICT-H3-NONEVALUABLE-NEGATIVE).
+        if name == "H3" and not t.get("evaluable", False):
+            verdict = NOT_EVALUABLE
+        elif name == "H3" and tost and tost.get("equivalent"):
             verdict = "no task dependence"
         if name == "H5a" and tost and tost.get("equivalent"):
             verdict = "no length effect"

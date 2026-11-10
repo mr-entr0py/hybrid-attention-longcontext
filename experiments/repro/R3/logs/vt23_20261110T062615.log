@@ -1,0 +1,60 @@
+gpu ready free=10206 2026-11-10T06:26:45+05:30
+START 2026-11-10T06:26:45+05:30
+VT-23 summary: {"final_param_rel_l2": 0.19446573881912482, "state_dict_key_mismatch": [], "groups_trainer": {"n_decay_tensors": 142, "n_no_decay_tensors": 58, "n_decay_params": 27580416, "n_no_decay_params": 13110, "no_decay_names": ["layers.0.norm1.weight", "layers.0.mixer.A_log", "layers.0.mixer.dt_bias", "layers.0.mixer.o_norm.weight", "layers.0.norm2.weight", "layers.1.norm1.weight", "layers.1.mixer.A_log", "layers.1.mixer.dt_bias", "layers.1.mixer.o_norm.weight", "layers.1.norm2.weight", "layers.2.norm1.weight", "layers.2.mixer.q_norm", "layers.2.mixer.k_norm", "layers.2.norm2.weight", "layers.3.norm1.weight", "layers.3.mixer.A_log", "layers.3.mixer.dt_bias", "layers.3.mixer.o_norm.weight", "layers.3.norm2.weight", "layers.4.norm1.weight", "layers.4.mixer.A_log", "layers.4.mixer.dt_bias", "layers.4.mixer.o_norm.weight", "layers.4.norm2.weight", "layers.5.norm1.weight", "layers.5.mixer.A_log", "layers.5.mixer.dt_bias", "layers.5.mixer.o_norm.weight", "layers.5.norm2.weight", "layers.6.norm1.weight", "layers.6.mixer.q_norm", "layers.6.mixer.k_norm", "layers.6.norm2.weight", "layers.7.norm1.weight", "layers.7.mixer.A_log", "layers.7.mixer.dt_bias", "layers.7.mixer.o_norm.weight", "layers.7.norm2.weight", "layers.8.norm1.weight", "layers.8.mixer.A_log", "layers.8.mixer.dt_bias", "layers.8.mixer.o_norm.weight", "layers.8.norm2.weight", "layers.9.norm1.weight", "layers.9.mixer.A_log", "layers.9.mixer.dt_bias", "layers.9.mixer.o_norm.weight", "layers.9.norm2.weight", "layers.10.norm1.weight", "layers.10.mixer.q_norm", "layers.10.mixer.k_norm", "layers.10.norm2.weight", "layers.11.norm1.weight", "layers.11.mixer.A_log", "layers.11.mixer.dt_bias", "layers.11.mixer.o_norm.weight", "layers.11.norm2.weight", "norm_f.weight"], "fused": true}, "groups_ref": {"decay": ["embed.weight", "layers.0.mixer.q_proj.weight", "layers.0.mixer.k_proj.weight", "layers.0.mixer.v_proj.weight", "layers.0.mixer.a_proj.weight", "layers.0.mixer.b_proj.weight", "layers.0.mixer.q_conv1d.weight", "layers.0.mixer.k_conv1d.weight", "layers.0.mixer.v_conv1d.weight", "layers.0.mixer.g_proj.weight", "layers.0.mixer.o_proj.weight", "layers.0.mlp.gate_proj.weight", "layers.0.mlp.up_proj.weight", "layers.0.mlp.down_proj.weight", "layers.1.mixer.q_proj.weight", "layers.1.mixer.k_proj.weight", "layers.1.mixer.v_proj.weight", "layers.1.mixer.a_proj.weight", "layers.1.mixer.b_proj.weight", "layers.1.mixer.q_conv1d.weight", "layers.1.mixer.k_conv1d.weight", "layers.1.mixer.v_conv1d.weight", "layers.1.mixer.g_proj.weight", "layers.1.mixer.o_proj.weight", "layers.1.mlp.gate_proj.weight", "layers.1.mlp.up_proj.weight", "layers.1.mlp.down_proj.weight", "layers.2.mixer.q_proj.weight", "layers.2.mixer.k_proj.weight", "layers.2.mixer.v_proj.weight", "layers.2.mixer.o_proj.weight", "layers.2.mixer.g_proj.weight", "layers.2.mlp.gate_proj.weight", "layers.2.mlp.up_proj.weight", "layers.2.mlp.down_proj.weight", "layers.3.mixer.q_proj.weight", "layers.3.mixer.k_proj.weight", "layers.3.mixer.v_proj.weight", "layers.3.
+F
+=================================== FAILURES ===================================
+_____________________ test_vt23_trainer_vs_reference_loop ______________________
+
+    @pytest.mark.gpu
+    @pytest.mark.slow
+    def test_vt23_trainer_vs_reference_loop() -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        try:
+            import hybridlc.training.trainer  # noqa: F401
+        except Exception as e:  # pragma: no cover
+            pytest.skip(f"BLOCKED: trainer not importable ({e!r})")
+        ts = time.strftime("%Y%m%dT%H%M%S")
+        att = D / f"attempt_{ts}"
+        att.mkdir(parents=True, exist_ok=False)
+        meta = RC.run_meta("VT-23", {"criteria": TOL, "attempt_dir": str(att.relative_to(REPO))})
+        from hybridlc.models.build import build_model
+        from hybridlc.models.config import ModelConfig
+        from hybridlc.utils.provenance import sha256_tensor
+    
+        init_sha = {n: sha256_tensor(p.detach()) for n, p in build_model(ModelConfig.for_scale("D384", "C3"), 900).named_parameters()}
+        rc_t, run_dir, ckpt_dir, rid = run_trainer(att, f"vt23x{ts}")
+        meta.update(trainer_exit=rc_t, trainer_run_id=rid)
+        assert rc_t == 0, f"trainer exit {rc_t}; see {att / 'trainer.log'}"
+        rc_r = run_reference(att)
+        meta["reference_exit"] = rc_r
+        assert rc_r == 0, f"reference exit {rc_r}; see {att / 'reference.log'}"
+        ref_meta = json.loads((att / "ref" / "ref_meta.json").read_text())
+        meta["init_params_identical_ref_vs_build"] = ref_meta["init_param_sha256"] == init_sha
+        res = compare(run_dir, ckpt_dir, att / "ref")
+        res["init_params_identical"] = meta["init_params_identical_ref_vs_build"]
+        wr = RC.RawWriter("vt23", "vt23_compare", meta)
+        for s in res["steps"]:
+            wr.write(s)
+        summary = {k: v for k, v in res.items() if k not in ("steps", "final_param_per_tensor_rel_rms")}
+        summary["worst_param_tensors"] = sorted(res["final_param_per_tensor_rel_rms"].items(), key=lambda kv: -kv[1])[:5]
+        summary["verdict"] = "PASS" if res["pass"] else "FAIL"
+        wr.close(summary)
+        print("VT-23 summary:", json.dumps(summary, default=str)[:3000])
+        assert res["init_params_identical"], "initial parameters differ between the reference process and build_model"
+>       assert res["pass"], res["checks"]
+E       AssertionError: {'all_50_steps': True, 'step1_loss': True, 'steps2_10': False, 'steps11_50': False, ...}
+E       assert False
+
+tests/test_vt23_reference_loop.py:166: AssertionError
+=============================== warnings summary ===============================
+tests/test_vt23_reference_loop.py: 14 warnings
+  /home/sedrica-lynx/Downloads/outeropt/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_vt23_reference_loop.py::test_vt23_trainer_vs_reference_loop
+1 failed, 14 warnings in 97.21s (0:01:37)
+EXIT=1
+2026-11-10T06:28:23+05:30

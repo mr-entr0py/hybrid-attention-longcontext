@@ -77,6 +77,14 @@ def build_parser() -> argparse.ArgumentParser:
 def resolve(a: argparse.Namespace):
     if not a.config and not (a.model and a.training):
         raise SystemExit("give --config, or --model and --training")
+    if a.config:
+        # composition-only flags would be silently ignored with --config (verification round 2)
+        ignored = [f for f, v in (("--lr", a.lr), ("--model", a.model), ("--training", a.training),
+                                  ("--steps-option", a.steps_option), ("--parent", a.parent),
+                                  ("--config-name", a.config_name)) if v is not None]
+        if ignored:
+            raise SystemExit(f"{ignored} only apply in composition mode (--model/--training); with --config "
+                             "edit the run YAML or use -o schedule.peak_lr=<value>")
     path = Path(a.config) if a.config else compose_run_yaml(a)
     paths = None
     if a.runs_root or a.ckpt_root or a.registry:

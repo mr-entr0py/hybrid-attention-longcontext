@@ -191,7 +191,8 @@ def test_h3_not_evaluable_enters_holm_with_p1():
     res = run_analysis(df, AnalysisSpec(bootstrap=False))
     assert not res["tests"]["H3"]["evaluable"]
     assert res["holm_support"]["H3"]["p"] == 1.0
-    assert compute_verdicts(res)["confirmatory"]["H3"]["verdict"] in ("inconclusive", "no task dependence")
+    # verification round 2 (VERDICT-H3-NONEVALUABLE-NEGATIVE): a non-evaluable H3 is never "no task dependence"
+    assert compute_verdicts(res)["confirmatory"]["H3"]["verdict"] == "not evaluable"
 
 
 def test_seed_trigger_fires_on_noisy_and_bimodal_worlds():

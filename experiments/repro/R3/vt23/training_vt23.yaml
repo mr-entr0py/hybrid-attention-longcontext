@@ -1,0 +1,25 @@
+# VT-23 (R3d) trainer side: Stage-A recipe, fp32, audit mode, 2 x 4K micro-batches, accum 2,
+# 50 steps, 10 warm-up steps then constant (reproduction_plan.md §2.3 R3d; prereg experiments/repro/R3/prereg.yaml).
+inherits: configs/training/stage_A.yaml
+schedule:
+  warmup_steps: 10
+  steps: 50
+data:
+  accum: 2
+runtime:
+  precision: fp32
+  audit: true
+  # DEVIATION (logged in results_R3.md): per-block activation checkpointing, also on the reference side.
+  # Attempts 1-4 showed the pre-registered fp32 2x4K config needs > 6.80 GiB (0.44 cap): 6.58 GiB allocated
+  # at the failing 256 MiB request. Recompute in deterministic fp32 does not change the arithmetic.
+  activation_checkpointing: true
+checkpoint:
+  every: 0
+  save_final: true
+  milestone_tokens: []
+  milestone_steps: []
+validation:
+  every: 0
+  final_n_batches: 0
+logging:
+  attn_stats: false

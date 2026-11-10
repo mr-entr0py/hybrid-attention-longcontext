@@ -63,8 +63,18 @@ class CellTable:
     @classmethod
     def from_rows(cls, df: pd.DataFrame, suite: str, metric: str = "em_tf", *,
                   configs: Sequence[str] | None = None, branch: str = "main",
-                  ckpt: str | None = None) -> "CellTable":
+                  ckpt: str | None = None, require_complete: bool = True,
+                  tasks: Sequence[str] | None = None) -> "CellTable":
+        """Build the table; ``require_complete`` (default) raises ``ValueError`` when a (config, seed)
+        with rows in this suite lacks a whole stratum that another run has.
+
+        ``tasks`` restricts the table to those tasks (including their C0-control strata). The DG
+        suite is split this way (verification round 3, ANA-DG-PROTOCOL-DESIGN-REFUSED): its retrieval
+        cells are scored on C0/C12 (and hybrids for the inversion check) but its M-hop cells on C12
+        only (§9.5), so completeness is checked within each part, never across them."""
         d = df[(df["suite"] == suite) & (df["branch"] == branch)]
+        if tasks is not None:
+            d = d[d["task"].isin(list(tasks))]
         if ckpt is not None:
             d = d[d["ckpt"] == ckpt]
         else:
@@ -109,6 +119,18 @@ class CellTable:
             strata.append((str(task), str(level), int(T)))
             ctx.append(arr)
             ids.append(wide.index.to_numpy())
+        # Completeness: a run present in this suite must have every stratum some run has. Otherwise
+        # its family score would be NaN and it would silently drop out of the paired tests (and was
+        # zero-filled by the bootstrap) -- verification round 2, ANA-MISSING-CELL-SILENT-SEED-DROP.
+        gaps: list[str] = []
+        for st, arr in zip(strata, ctx):
+            miss = np.isnan(arr).all(axis=0) & present
+            for c_i, s_j in zip(*np.nonzero(miss)):
+                gaps.append(f"{cfgs[c_i]} seed {seeds[s_j]}: {st}")
+        if gaps and require_complete:
+            raise ValueError(f"suite {suite!r} (branch {branch!r}, ckpt {ckpt!r}): {len(gaps)} result cell(s) missing "
+                             f"for runs that have other cells of this suite (no seed is ever dropped, §8.1; "
+                             f"re-score them): {gaps[:10]}{' ...' if len(gaps) > 10 else ''}")
         return cls(suite=suite, metric=metric, strata=strata, configs=cfgs, seeds=seeds, ctx=ctx,
                    context_ids=ids, present=present, inputs=list(df.attrs.get("inputs", [])))
 

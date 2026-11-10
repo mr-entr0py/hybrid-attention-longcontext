@@ -449,6 +449,7 @@ class Trainer:
             st = ckpt.load(p)
             if st.get("model_config_hash") not in (None, c.model_config_hash()):
                 raise RefusedError(f"parent {p} was trained with a different model config")
+            _check_parent_lr(st, peak_lr, p)
             model.load_state_dict(st["model"])
             opt.load_state_dict(st["optimizer"])  # AdamW moments and step counts carried (§6.3, §7.3)
             resumed_from = f"parent:{p}"
@@ -474,7 +475,10 @@ class Trainer:
                              # run identity for the analysis registry reader (hybridlc.analysis.results)
                              config_name=c.config_name, scale=c.scale, seed_index=c.seed_index,
                              k=c.model_meta.get("k"), stage=c.stage, exp_stage=c.exp_stage, branch=c.branch,
-                             parent_run_id=c.parent_run_id)
+                             parent_run_id=c.parent_run_id,
+                             # §6.2 tokenizer hash + data MANIFEST hash per run (verification round 1, DTS-08)
+                             tokenizer_sha256=env.get("tokenizer_sha256"),
+                             data_manifest_sha256=env.get("data_manifest_sha256"))
         metrics.write({"kind": "start", "step": start_step, "attempt": attempt, "resumed_from": resumed_from,
                        "ts": time.time(), "optimizer": opt_summary, "activation_checkpointing": ac_mode,
                        "n_params": sum(p.numel() for p in model.parameters()), "peak_lr": peak_lr})
@@ -507,6 +511,7 @@ class Trainer:
                 self.faults.maybe_oom(step)
                 batches = [stream.get(step, m) for m in range(c.data.accum)]
                 W, N = _step_weights(batches, c.optim.ignore_index)
+                W_obj = _objective_norm(batches, W)
                 log_step = (step + 1) % c.logging.every == 0 or step == sched.steps - 1
                 ce_acc = torch.zeros((), dtype=torch.float32, device=device)
                 z_acc = torch.zeros((), dtype=torch.float32, device=device)
@@ -523,10 +528,12 @@ class Trainer:
                                                   ignore_index=c.optim.ignore_index, **kw)
                     if log_step and m == 0:
                         attn.arm(False)
-                    a_m, b_m = b["_w"] / W, b["_n"] / N
+                    a_m, b_m = b["_w"] / W_obj, b["_n"] / N
                     obj = loss.float() * a_m + z.float() * b_m
                     obj.backward()
-                    ce_acc += loss.detach().float() * a_m
+                    # logged / G-div loss: the step's weighted mean CE (sum w*CE / sum w), whatever the
+                    # objective's normaliser (verification round 3: TEF block-normalised weights)
+                    ce_acc += loss.detach().float() * (b["_w"] / W)
                     z_acc += z.detach().float() * b_m
                     n_seg += int(b["cu_seqlens"].numel()) - 1
                     del hidden, loss, z, obj
@@ -686,6 +693,31 @@ class _Window:
         return self.tokens / self.secs if self.secs > 0 else 0.0
 
 
+def _check_parent_lr(parent_state: dict[str, Any], child_peak_lr: float, path: Path) -> None:
+    """Refuse a branch whose peak LR silently ignores an LR restart of its parent (DTS-06).
+
+    After a D034 restart a parent (e.g. a FEAS Stage A) trained at ``lr_override`` (1.4e-3) while
+    its config still says the original ``lr`` (2.0e-3). A child that takes its peak LR from the run
+    YAML (``peak_lr: run``) would then decay from the stale value, a 43% LR jump at the branch point
+    with an unchanged run_id. Detected as: the parent's actual peak (trainer_state) differs from its
+    configured peak, and the child's peak equals that stale configured peak. Stages with their own
+    fixed peak (TEF 3e-4) differ from the parent's configured peak and pass. The fix is explicit:
+    relaunch the child with ``-o schedule.peak_lr=<parent's actual peak>`` (or set the run YAML's
+    ``lr``); either gives a new config hash and run_id. (``-o lr=`` is rejected: verification round 2,
+    TRAIN-DTS06-REMEDY-NOOP.)
+    """
+    actual = (parent_state.get("trainer_state") or {}).get("peak_lr")
+    configured = ((parent_state.get("config") or {}).get("schedule") or {}).get("peak_lr")
+    if actual is None or configured is None:
+        return
+    if not math.isclose(float(actual), float(configured), rel_tol=1e-9) and \
+            math.isclose(float(child_peak_lr), float(configured), rel_tol=1e-9):
+        raise RefusedError(
+            f"parent {path} trained at peak LR {actual:g} (LR restart) but its config says {configured:g}, "
+            f"and this run's peak LR is the stale {child_peak_lr:g}; relaunch with -o schedule.peak_lr={actual:g} "
+            f"(or set lr: {actual:g} in the run YAML)")
+
+
 def _step_weights(batches: list[dict[str, Any]], ignore_index: int) -> tuple[float, int]:
     """Per-micro-batch loss weight mass W_m and loss-token count n_m (stored in the batch dicts)."""
     W, N = 0.0, 0
@@ -699,6 +731,24 @@ def _step_weights(batches: list[dict[str, Any]], ignore_index: int) -> tuple[flo
     if N == 0 or W <= 0:
         raise ValueError("a training step has no loss tokens")
     return W, N
+
+
+def _objective_norm(batches: list[dict[str, Any]], W: float) -> float:
+    """Divisor of the step objective sum(w * CE): the step's weight mass ``W`` (default: exact step
+    mean), or the stream's constant ``loss_norm`` when every micro-batch carries one (TEF with
+    block-normalised D014 weights, verification round 3: dividing those by the step's own W would
+    turn them back into per-step normalised weights)."""
+    have = ["loss_norm" in b for b in batches]
+    if not any(have):
+        return W
+    norms = {float(b["loss_norm"]) for b in batches if "loss_norm" in b}
+    if not all(have) or len(norms) != 1:
+        raise ValueError(f"inconsistent loss_norm across the micro-batches of a step: {sorted(norms)}, "
+                         f"present in {sum(have)} of {len(have)}")
+    (v,) = norms
+    if not v > 0:
+        raise ValueError(f"loss_norm must be > 0, got {v}")
+    return v
 
 
 def _step_hash(batches: list[dict[str, Any]]) -> str:

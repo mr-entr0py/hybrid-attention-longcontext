@@ -28,7 +28,8 @@ from pathlib import Path
 from hybridlc.analysis import verdicts as V
 from hybridlc.analysis.pipeline import AnalysisSpec, dumps, run_analysis
 from hybridlc.analysis.protocol import BOOTSTRAP_B
-from hybridlc.analysis.results import load_item_results, load_registry
+from hybridlc.analysis.results import (eval_weights_audit, load_item_results, load_registry, rescore_audit,
+                                      suite_completeness_audit)
 from hybridlc.utils.provenance import sha256_file
 
 
@@ -48,6 +49,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--B", type=int, default=BOOTSTRAP_B)
     ap.add_argument("--no-bootstrap", action="store_true")
     ap.add_argument("--synthetic", action="store_true", help="generate a planted-effect world into --out first")
+    ap.add_argument("--require-rescore", action="store_true",
+                    help="refuse (exit 3) if a CS/DG/DC cell lacks a re-score record or a checkpoint's pooled "
+                         "re-score EM flip rate is >= 1%% (§9.2)")
+    ap.add_argument("--items-root", default="experiments/items",
+                    help="frozen item files (MANIFEST.json per namespace) for the suite-completeness audit")
+    ap.add_argument("--allow-incomplete", action="store_true",
+                    help="run even if a CS/DG run/checkpoint lacks frozen cells or contexts (recorded as a warning)")
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -69,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         bm = json.loads(Path(a.branch_map).read_text())
         reg = {rid: (dataclasses.replace(info, branch=bm[rid]) if rid in bm else info) for rid, info in reg.items()}
     t0 = time.time()
-    df = load_item_results(a.results, reg)
+    df = load_item_results(a.results, reg, extra_fields=("recency_heuristic_correct",))
     if df.empty:
         print(f"no item-level results under {a.results}", file=sys.stderr)
         return 2
@@ -77,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
     # checkpoint monitoring -- DC at TEF 250/500, FD, DG -- reads). Added by the S0 integrator.
     cells = (df.groupby(["run_id", "config", "seed", "branch", "ckpt", "suite", "task", "level", "T"], dropna=False)
                .agg(n_queries=("em_tf", "size"), n_contexts=("context_id", "nunique"), em_tf=("em_tf", "mean"),
-                    logp_gold=("logp_gold", "mean")).reset_index())
+                    logp_gold=("logp_gold", "mean"),
+                    # A-freq counting-free floor ("the probe that occurs last"), ~rho/(1+rho) (AFREQ-RECENCY-FLOOR)
+                    recency_floor=("recency_heuristic_correct",
+                                   lambda v: float(v.dropna().astype(float).mean()) if v.notna().any() else None))
+               .reset_index())
     cells.to_csv(out / "cell_summary.csv", index=False)
     files = list(df.attrs.get("inputs", [])) + ([a.registry] if Path(a.registry).is_file() else [])
     (out / "inputs.json").write_text(json.dumps({f: sha256_file(f) for f in files}, indent=1))
@@ -90,7 +102,50 @@ def main(argv: list[str] | None = None) -> int:
     spec = AnalysisSpec(main_ckpt=a.ckpt, scale=a.scale, n0=a.n0, gates=gates, B=a.B, bootstrap=not a.no_bootstrap,
                         kstar=a.kstar, lm4_slope=a.lm4_slope,
                         failed_runs=json.loads(Path(a.failed_runs).read_text()) if a.failed_runs else {})
-    res = run_analysis(df, spec)
+    # Suite completeness against the frozen manifests (verification round 2): a missing cell or a
+    # short cell must never silently change a family score or drop a seed.
+    if a.synthetic:
+        comp = dict(status="skipped (synthetic world has no frozen manifest)", problems=[], complete=True)
+    else:
+        comp = suite_completeness_audit(df, a.items_root)
+    blocking = [x for x in comp["problems"] if x["suite"] in ("CS", "DG")]
+    comp_msg = None
+    if comp["problems"]:
+        comp_msg = (f"suite completeness: {len(comp['problems'])} missing/short cells vs the frozen manifest "
+                    f"({len(blocking)} in CS/DG), e.g. {comp['problems'][:3]}")
+        if blocking and not a.allow_incomplete:
+            print(comp_msg + " -> refused (pass --allow-incomplete to override)", file=sys.stderr)
+            (out / "completeness_audit.json").write_text(json.dumps(comp, indent=1))
+            return 4
+    # §9.2 / I-29: 5% single-pass re-score; EM flips pooled per checkpoint must stay < 1%
+    # (verification round 2: pooled, not per cell)
+    audit = rescore_audit(a.results, df.attrs.get("inputs", []))
+    if not audit["passes"]:
+        msg = (f"re-score audit (§9.2): {len(audit['missing']) + len(audit['unusable'])} CS/DG/DC cells without a "
+               f"usable re-score record, {len(audit['failing'])} checkpoint(s) with pooled flip rate >= 1%")
+        if a.require_rescore and not a.synthetic:
+            print(msg + " -> refused (--require-rescore)", file=sys.stderr)
+            (out / "rescore_audit.json").write_text(json.dumps(audit, indent=1))
+            return 3
+    try:
+        res = run_analysis(df, spec)
+    except ValueError as e:  # incomplete seed cells, several scales, misaligned items: refuse loudly
+        print(f"analysis refused: {e}", file=sys.stderr)
+        return 5
+    res["rescore_audit"] = audit
+    res["completeness_audit"] = comp
+    if comp_msg:
+        res.setdefault("warnings", []).append(comp_msg)
+    if df.attrs.get("skipped_subsets"):
+        res.setdefault("warnings", []).append(f"{len(df.attrs['skipped_subsets'])} subset (--n-contexts) result files "
+                                              "were not read (never confirmatory)")
+    if not audit["passes"]:
+        res.setdefault("warnings", []).append(msg)
+    wa = eval_weights_audit(df.attrs.get("inputs", []))
+    res["eval_weights_audit"] = wa
+    if not wa["consistent"]:
+        res.setdefault("warnings", []).append(f"CS/DG/DC cells were scored from mixed weight precisions {wa['values']} "
+                                              "(BF16-MILESTONE-ARTIFACT-MIXING); re-score with one artefact type")
     ver = V.compute_verdicts(res)
     (out / "results.json").write_text(dumps(res))
     (out / "verdicts.json").write_text(V.dumps(ver))

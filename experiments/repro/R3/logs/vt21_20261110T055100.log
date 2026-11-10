@@ -1,0 +1,120 @@
+CMD: python -m pytest -q -s -p no:cacheprovider tests/test_vt21_conv_reference.py
+2026-11-10T05:51:00+05:30
+F
+=================================== FAILURES ===================================
+_______________________ test_vt21_fla_conv_vs_reference ________________________
+
+    @pytest.mark.gpu
+    @pytest.mark.slow
+    def test_vt21_fla_conv_vs_reference() -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        from hybridlc.utils.gpu import claim
+    
+        dev = claim(0.44)
+        records: list[str] = []
+    
+        class _H(logging.Handler):
+            def emit(self, rec):  # fla backend dispatch decisions
+                records.append(rec.getMessage())
+    
+        lg = logging.getLogger("fla")
+        lg.setLevel(logging.INFO)
+        lg.addHandler(_H())
+        import fla
+    
+        meta = RC.run_meta("VT-21", {"fla_version": fla.__version__, "criteria": {
+            "fp32_fwd_max_abs": TOL_FP32_FWD, "fp32_grad_max_abs": TOL_FP32_GRAD, "bf16_rel_rms": TOL_BF16}})
+        wr = RC.RawWriter("vt21", "vt21_conv", meta)
+        fails = []
+        i = 0
+        for scale, chans in CHANNELS.items():
+            for (path, D), T, packed, use_h0, act, dtype in itertools.product(
+                    chans.items(), TS, (False, True), (False, True), (None, "silu"), (torch.float32, torch.bfloat16)):
+                cu_dtype = torch.int32 if path == "fgc_3d" else torch.int64   # F_gc passes int32, linear.py .long()
+>               row = _run_case(dev, D, T, packed, use_h0, act, dtype, key=(i,), cu_dtype=cu_dtype)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_vt21_conv_reference.py:192: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_vt21_conv_reference.py:88: in _run_case
+    y, fin = conv(x=xg, weight=wg, bias=None, initial_state=h0g, output_final_state=True, activation=act,
+.venv/lib/python3.12/site-packages/fla/utils/decorators.py:152: in wrapper
+    return fn(*processed_args, **processed_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/modules/causal_conv1d/ops.py:1073: in causal_conv1d
+    y, final_state = CausalConv1dFunction.apply(
+.venv/lib/python3.12/site-packages/torch/autograd/function.py:596: in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/utils/decorators.py:152: in wrapper
+    return fn(*processed_args, **processed_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/modules/causal_conv1d/ops.py:958: in forward
+    y, final_state = causal_conv1d_fwd(
+.venv/lib/python3.12/site-packages/fla/utils/decorators.py:325: in wrapped_func
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/torch/_dynamo/eval_frame.py:1263: in _fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/backends.py:200: in wrapper
+    return default_function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/utils/decorators.py:152: in wrapper
+    return fn(*processed_args, **processed_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/modules/causal_conv1d/ops.py:639: in causal_conv1d_fwd
+    causal_conv1d_fwd_kernel[grid](
+.venv/lib/python3.12/site-packages/triton/runtime/jit.py:370: in <lambda>
+    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:459: in run
+    return self.fn.run(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/fla/ops/utils/cache.py:378: in run
+    return super().run(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:238: in run
+    used_cached_result = self.check_disk_cache(key, pruned_configs, benchmark)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:202: in check_disk_cache
+    bench_fn()
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:229: in benchmark
+    timings = {config: self._bench(*args, config=config, **kwargs) for config in pruned_configs}
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/runtime/autotuner.py:164: in _bench
+    return self.do_bench(kernel_call, quantiles=(0.5, 0.2, 0.8))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.12/site-packages/triton/testing.py:152: in do_bench
+    cache = runtime.driver.active.get_empty_cache_for_benchmark()
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <triton.backends.nvidia.driver.CudaDriver object at 0x775601fc4230>
+
+    def get_empty_cache_for_benchmark(self):
+        import torch
+    
+        # We maintain a buffer of 256 MB that we clear
+        # before each kernel call to make sure that the L2 cache
+        # doesn't contain any input data before the run
+        cache_size = 256 * 1024 * 1024
+>       return torch.empty(int(cache_size // 4), dtype=torch.int, device='cuda')
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 256.00 MiB. GPU 0 has a total capacity of 15.46 GiB of which 321.56 MiB is free. Process 124395 has 454.00 MiB memory in use. Process 293356 has 305.62 MiB memory in use. Process 1603959 has 5.06 GiB memory in use. Process 1603960 has 5.06 GiB memory in use. Including non-PyTorch memory, this process has 410.00 MiB memory in use. Process 1615698 has 2.33 GiB memory in use. Process 1616571 has 1.04 GiB memory in use. 6.80 GiB allowed; Of the allocated memory 38.50 KiB is allocated by PyTorch, and 1.96 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+
+.venv/lib/python3.12/site-packages/triton/backends/nvidia/driver.py:761: OutOfMemoryError
+------------------------------ Captured log call -------------------------------
+INFO     fla.utils.hardware:hardware.py:146 Blackwell detected: registering default global_scratch allocator.
+=============================== warnings summary ===============================
+tests/test_vt21_conv_reference.py: 14 warnings
+  /home/sedrica-lynx/Downloads/outeropt/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_vt21_conv_reference.py::test_vt21_fla_conv_vs_reference - t...
+1 failed, 14 warnings in 221.09s (0:03:41)
+EXIT=1
+2026-11-10T05:54:42+05:30

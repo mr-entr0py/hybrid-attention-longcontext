@@ -1,0 +1,42 @@
+gpu ready free=11699 2026-11-10T06:23:36+05:30
+START 2026-11-10T06:23:36+05:30
+F
+=================================== FAILURES ===================================
+_____________________ test_vt23_trainer_vs_reference_loop ______________________
+
+    @pytest.mark.gpu
+    @pytest.mark.slow
+    def test_vt23_trainer_vs_reference_loop() -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        try:
+            import hybridlc.training.trainer  # noqa: F401
+        except Exception as e:  # pragma: no cover
+            pytest.skip(f"BLOCKED: trainer not importable ({e!r})")
+        ts = time.strftime("%Y%m%dT%H%M%S")
+        att = D / f"attempt_{ts}"
+        att.mkdir(parents=True, exist_ok=False)
+        meta = RC.run_meta("VT-23", {"criteria": TOL, "attempt_dir": str(att.relative_to(REPO))})
+        from hybridlc.models.build import build_model
+        from hybridlc.models.config import ModelConfig
+        from hybridlc.utils.provenance import sha256_tensor
+    
+        init_sha = {n: sha256_tensor(p.detach()) for n, p in build_model(ModelConfig.for_scale("D384", "C3"), 900).named_parameters()}
+        rc_t, run_dir, ckpt_dir, rid = run_trainer(att, f"vt23x{ts}")
+        meta.update(trainer_exit=rc_t, trainer_run_id=rid)
+>       assert rc_t == 0, f"trainer exit {rc_t}; see {att / 'trainer.log'}"
+E       AssertionError: trainer exit 75; see /home/sedrica-lynx/Downloads/outeropt/experiments/repro/R3/vt23/attempt_20261110T062337/trainer.log
+E       assert 75 == 0
+
+tests/test_vt23_reference_loop.py:146: AssertionError
+=============================== warnings summary ===============================
+tests/test_vt23_reference_loop.py: 14 warnings
+  /home/sedrica-lynx/Downloads/outeropt/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_vt23_reference_loop.py::test_vt23_trainer_vs_reference_loop
+1 failed, 14 warnings in 50.51s
+EXIT=1
+2026-11-10T06:24:27+05:30

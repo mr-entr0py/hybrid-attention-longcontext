@@ -86,6 +86,14 @@ GREF_ADEQUACY: Final[float] = 0.80  # (a) S12(T) >= 0.80 * S12(C0)
 GREF_DISCRIMINABILITY: Final[float] = 15 * PP  # (b) S12(T) - S0(T) >= 15 pp
 REF_INVERSION_MARGIN: Final[float] = 5 * PP  # hybrid exceeds S12 by >= 5 pp on DG
 
+# DG scoring plan (§9.5). Retrieval cells (R1, R-load, plus their C0 controls) are scored on C0 and
+# C12 (all core configurations only when the reference-inversion check is needed); the M-hop cells
+# (h1-4 at 16K/32K, no C0 controls) on C12 only, for the U-11 difficulty-equating check.
+DG_RETRIEVAL_TASKS: Final[tuple[str, ...]] = ("R1", "R-load")
+DG_MHOP_TASKS: Final[tuple[str, ...]] = ("M-hop",)
+DG_MHOP_CONFIGS: Final[tuple[str, ...]] = ("C12",)
+DG_REFERENCE_CONFIGS: Final[tuple[str, ...]] = ("C0", "C12")
+
 # --------------------------------------------------------------------------------------------
 # Seed trigger U-05 (§11.4)
 # --------------------------------------------------------------------------------------------
@@ -98,6 +106,8 @@ TRIGGER_EXTRA_SEEDS: Final[int] = 2
 # --------------------------------------------------------------------------------------------
 DOSE_PLATEAU: Final[float] = 3 * PP  # |S3(4000) - S3(2000)| < 3 pp
 SATURATION_MAX: Final[float] = 5 * PP  # 2x Stage-B changes S12 by <= 5 pp
+STILL_CLOSING: Final[float] = 3 * PP  # §7.3: |Δ(S12 - S_k)| between TEF 1,000 and 4,000 > 3 pp -> "budget-conditional"
+STILL_CLOSING_LABEL: Final[str] = "budget-conditional"
 REQUIRED_GATES: Final[tuple[str, ...]] = ("G0", "G-RP", "FEAS-1", "FEAS-2", "G-FULL")
 
 # --------------------------------------------------------------------------------------------
@@ -145,3 +155,13 @@ SCOPE_STATEMENT: Final[str] = (
     "Scope: the chosen scale, GDN-A, this recipe; capability elicited after identical exposure "
     "(TEF). Prior work is described as 'consistent with'."
 )
+
+# --------------------------------------------------------------------------------------------
+# LR selection (§7.2; minimax regret). Verification round 2, LR-RULE-NOT-IMPLEMENTED.
+# --------------------------------------------------------------------------------------------
+LR_GRID_K: Final[tuple[int, ...]] = (0, 3, 12)
+LR_GRID: Final[tuple[float, ...]] = (1.0e-3, 1.4e-3, 2.0e-3, 2.8e-3)
+LR_EDGE_LOW: Final[float] = 0.7e-3   # added for all three k if an optimum lies at the low edge
+LR_EDGE_HIGH: Final[float] = 4.0e-3  # ... or at the high edge
+LR_SHARED_MAX_REGRET: Final[float] = 0.02  # nats: shared eta* iff max_k regret_k(eta*) <= 0.02
+LR_DIVERGENCE_MARGIN: Final[float] = 0.5   # NaN or final loss > min + 0.5 -> infinite regret

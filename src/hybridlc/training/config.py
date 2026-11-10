@@ -343,6 +343,21 @@ def set_dotted(d: dict, key: str, value: Any) -> None:
     cur[parts[-1]] = value
 
 
+RECIPE_SECTIONS: frozenset[str] = frozenset({"stage", "schedule", "data", "checkpoint", "optim", "validation",
+                                             "logging", "gdiv", "oom", "runtime", "impl"})
+"""Top-level keys of a training recipe that are read. Overrides go into the recipe, so any other
+top-level key would be silently ignored (verification round 2, TRAIN-DTS06-REMEDY-NOOP: ``-o lr=...``
+changed nothing)."""
+
+
+def _check_override_key(key: str) -> None:
+    head = key.split(".", 1)[0]
+    if head not in RECIPE_SECTIONS:
+        raise ValueError(f"override key {key!r}: {head!r} is not a training-recipe section "
+                         f"{sorted(RECIPE_SECTIONS)} and would be ignored; the peak LR is "
+                         "`-o schedule.peak_lr=<value>` (or the run YAML's `lr`)")
+
+
 def parse_override(s: str) -> tuple[str, Any]:
     """``key.sub=value`` with a YAML-parsed value (so 1e-3, true, [1,2] work)."""
     key, _, raw = s.partition("=")
@@ -404,9 +419,11 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
     mdoc = load_yaml(resolve_path(run["model"], path.parent))
     tdoc = load_with_inherits(resolve_path(run["training"], path.parent))
     for key, val in (run.get("overrides") or {}).items():
+        _check_override_key(key)
         set_dotted(tdoc, key, val)
     for ov in cli_overrides or []:
         k, v = parse_override(ov)
+        _check_override_key(k)
         set_dotted(tdoc, k, v)
 
     scale = mdoc["scale"]
@@ -455,10 +472,12 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
 
     # parent (branch point)
     parent = run.get("parent")
+    parent_branch: str | None = None
     if parent:
         if isinstance(parent, str):
             pcfg = load_run_config(resolve_path(parent, path.parent), paths=cfg.paths, tag=cfg.tag,
                                    _depth=_depth + 1)
+            parent_branch = pcfg.branch
             if pcfg.model != cfg.model:
                 raise ValueError(f"parent {pcfg.run_id} has a different model config")
             cfg.parent_run_id = pcfg.run_id
@@ -473,8 +492,43 @@ def load_run_config(path: str | Path, cli_overrides: list[str] | None = None,
                 cfg.schedule.start_step = int(parent["step"])
     if cfg.schedule.start_step >= cfg.schedule.steps:
         raise ValueError("start_step >= steps")
+    cfg.branch = _resolve_branch(path, run, parent_branch)
     cfg.run_id = cfg.compute_run_id()
     return cfg
+
+
+ANALYSIS_BRANCHES = ("main", "tef4000", "stageB2x")
+"""Analysis branch labels the §11 pipeline reads (``analysis.pipeline.AnalysisSpec``)."""
+
+
+def _resolve_branch(path: Path, run: dict[str, Any], parent_branch: str | None) -> str:
+    """The run's analysis branch label (non-semantic: not in the config hash).
+
+    Verification round 3 (S5B-BRANCH-LABEL-NOT-SET): the label used to default to ``main`` for every
+    run, so a TEF-4000 continuation or a 2x Stage-B lineage launched without ``branch:`` was read by
+    the analysis as a main-branch run (the dose guard and the §7.3 still-closing flag silently became
+    not evaluable, or the analysis refused on duplicate (config, seed)). Now:
+
+    * an explicit ``branch:`` must be one of :data:`ANALYSIS_BRANCHES`;
+    * without one, a run inherits its YAML parent's non-main branch (a TEF after the 2x Stage-B
+      branch is on ``stageB2x``), otherwise ``main``;
+    * ``continue_parent_step: true`` (the TEF-4000 continuation) or ``steps_multiplier > 1`` (the
+      2x Stage-B branch) with a resolved ``main`` branch is refused.
+    """
+    if run.get("branch") is not None:
+        branch = str(run["branch"])
+        if branch not in ANALYSIS_BRANCHES:
+            raise ValueError(f"{path}: branch {branch!r} not in {ANALYSIS_BRANCHES}")
+    else:
+        branch = parent_branch if parent_branch and parent_branch != "main" else "main"
+    if branch == "main":
+        if run.get("continue_parent_step"):
+            raise ValueError(f"{path}: continue_parent_step (the TEF-4000 continuation) needs an explicit "
+                             "non-main analysis branch, e.g. `branch: tef4000`")
+        if int(run.get("steps_multiplier", 1)) > 1:
+            raise ValueError(f"{path}: steps_multiplier > 1 (the 2x Stage-B branch) needs an explicit "
+                             "non-main analysis branch, e.g. `branch: stageB2x`")
+    return branch
 
 
 def run_config_from_dict(d: dict[str, Any]) -> RunConfig:

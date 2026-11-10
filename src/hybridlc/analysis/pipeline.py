@@ -46,6 +46,9 @@ from .stats import (BootstrapDraws, fieller, fieller_paired, hierarchical_bootst
 
 RET, HOP, AGG = "retrieval", "multihop", "aggregation"
 DEFAULT_N0 = {"D384": 5, "D512": 4}  # §8.2 / debate §6.2 resolution
+MAX_STUDY_SEED = 99
+"""§8.1 seed indices: core + trigger seeds are 0, 1, ...; 100 (LR sweep), 101-102 (FEAS) and 900+ (S0)
+are never confirmatory, so rows with seed > 99 are excluded from the §11 analysis (verification round 2)."""
 
 
 @dataclass
@@ -64,6 +67,8 @@ class AnalysisSpec:
     """Checkpoint directory of the confirmatory evaluation (None: the unique one per run)."""
     dose_branch: str = "tef4000"
     dose_ckpts: tuple[str, str] = ("tef2000", "tef4000")
+    closing_ckpts: tuple[str, str] = ("tef1000", "tef4000")
+    """§7.3 still-closing flag: (main-run TEF-1000 checkpoint for the DC fallback, TEF-4000 branch checkpoint)."""
     saturation_branch: str = "stageB2x"
     scale: str | None = None
     n0: int | None = None
@@ -133,6 +138,59 @@ def table_hash(df: pd.DataFrame) -> str:
     return h.hexdigest()
 
 
+def resolve_scale(df: pd.DataFrame, spec: AnalysisSpec) -> str | None:
+    """The study scale: ``spec.scale`` if given, else the unique scale of the CS main-branch study runs.
+
+    Raises ``ValueError`` if those runs span several scales (pass ``--scale``). Verification round 2,
+    ANA-SCALE-AUTODETECT-N0: the scale used to be read from the first DataFrame row, which is a FEAS
+    run (``S2B-D384-...`` sorts first) whenever FEAS-384 was evaluated into the same results tree.
+    """
+    if spec.scale:
+        return str(spec.scale)
+    if "scale" not in df.columns:
+        return None
+    d = df[(df["suite"] == spec.cs_suite) & (df["branch"] == spec.main_branch) & (df["seed"] <= MAX_STUDY_SEED)]
+    scales = sorted({str(x) for x in d["scale"].dropna().unique()})
+    if len(scales) > 1:
+        raise ValueError(f"CS main-branch runs span several scales {scales}; pass the study scale explicitly "
+                         "(AnalysisSpec.scale / --scale)")
+    return scales[0] if scales else None
+
+
+def restrict_to_study(df: pd.DataFrame, scale: str | None, warn: Any) -> pd.DataFrame:
+    """Keep only rows of the study scale and study seed indices (<= ``MAX_STUDY_SEED``), with warnings."""
+    attrs = dict(df.attrs)
+    keep = np.ones(len(df), bool)
+    if scale is not None and "scale" in df.columns:
+        other = (df["scale"].astype(object) != scale).to_numpy()
+        if other.any():
+            dropped = df.loc[other].groupby(df.loc[other, "scale"].astype(str))["run_id"].nunique().to_dict()
+            warn(f"excluded rows of other scales from the §11 analysis (runs per scale: {dropped}); study scale {scale}")
+        keep &= ~other
+    hi = (df["seed"] > MAX_STUDY_SEED).to_numpy()
+    if (hi & keep).any():
+        seeds = sorted(int(x) for x in df.loc[hi & keep, "seed"].unique())
+        warn(f"excluded non-study seed indices {seeds} (§8.1: LR sweep / FEAS / S0) from the §11 analysis")
+    keep &= ~hi
+    out = df.loc[keep].copy() if not keep.all() else df
+    out.attrs.update(attrs)
+    return out
+
+
+def seed_block_report(cs: CellTable, configs: Sequence[str] = P.ANCHOR_CONFIGS) -> dict[str, Any]:
+    """Anchor seed blocks present in CS; ``incomplete`` maps config -> seeds other anchors have but it lacks."""
+    cfgs = [c for c in configs if c in cs.configs]
+    if not cfgs:
+        return dict(seeds=[], complete=[], incomplete={})
+    idx = [cs.configs.index(c) for c in cfgs]
+    pres = cs.present[idx]
+    any_ = pres.any(axis=0)
+    inc = {c: [int(s) for s, p, a in zip(cs.seeds, pres[i], any_) if a and not p] for i, c in enumerate(cfgs)}
+    return dict(seeds=[int(s) for s, a in zip(cs.seeds, any_) if a],
+                complete=[int(s) for s, a in zip(cs.seeds, pres.all(axis=0)) if a],
+                incomplete={c: v for c, v in inc.items() if v})
+
+
 # =============================================================================================
 # G-REF and primary cell (§11.2)
 # =============================================================================================
@@ -152,27 +210,102 @@ def gref_at(table: CellTable, T: int, *, low: str = "C0", high: str = "C12") -> 
     per_seed = {int(s): bool(s12[s] >= P.GREF_ADEQUACY * s12c[s]) for s in seeds}
     n_ad = sum(per_seed.values())
     passes = bool(a_pooled and b_pooled and n_ad >= n - 1 and n >= 1)
+    # [IMPL] "reference adequacy" alone = criterion (a) pooled + the per-seed (a) rule; used for the
+    # H5(a) label at T < 16K, where §11.2 does not define G-REF (verification round 1, DTS-05).
+    adequate = bool(a_pooled and n_ad >= n - 1 and n >= 1)
     return dict(T=T, suite=table.suite, S12=m12, S12_C0=m12c, S0=m0, ratio=m12 / m12c if m12c else float("nan"),
                 gap=m12 - m0, a_pooled=bool(a_pooled), b_pooled=bool(b_pooled), per_seed_adequate=per_seed,
-                n_adequate=n_ad, n=n, passes=passes, status="pass" if passes else "reference-unstable",
+                n_adequate=n_ad, n=n, passes=passes, adequate=adequate,
+                status="pass" if passes else "reference-unstable",
                 per_seed_ratio={int(s): float(s12[s] / s12c[s]) for s in seeds})
 
 
 def reference_inversion(table: CellTable, T: int, gref: Mapping[str, Any]) -> dict[str, Any]:
-    """§11.2: C12 fails (a) while a hybrid passes its own (a) and beats S12 by >= 5 pp on DG."""
+    """§11.2: C12 fails (a) while a hybrid passes its own (a) and beats S12 by >= 5 pp on DG.
+
+    When C12 fails (a) but no hybrid was scored on DG (the §9.5 default plan scores DG on C0/C12 only),
+    the check cannot be made: the result is ``evaluable=False`` with a status saying that DG must be
+    scored on all core configurations, never ``triggered=False`` (verification round 3,
+    ANA-REF-INVERSION-SILENT-NOT-PERFORMED)."""
     if gref["a_pooled"]:
-        return dict(triggered=False, reason="C12 adequate")
+        return dict(triggered=False, evaluable=True, reason="C12 adequate")
+    hybrids = [c for c in table.configs if c not in P.DG_REFERENCE_CONFIGS]
+    if not hybrids:
+        return dict(triggered=None, evaluable=False, hybrids={}, best=None,
+                    status="not evaluable: C12 fails G-REF (a) but no hybrid is scored on DG; the check is "
+                           "needed: score DG on all core configurations (§9.5, §11.2)")
     spec = family_spec(RET)
     sT = table.scores(table.ladder_weights(spec, [T]))
     sC = table.scores(table.ladder_weights(spec, [T], control_for=T))
     cands = {}
-    for c in table.configs:
-        if c in ("C12", "C0"):
-            continue
+    for c in hybrids:
         mt, mc = float(_row(sT, c).mean()), float(_row(sC, c).mean())
         if np.isfinite(mt) and mt >= P.GREF_ADEQUACY * mc and mt - gref["S12"] >= P.REF_INVERSION_MARGIN:
             cands[c] = mt
-    return dict(triggered=bool(cands), hybrids=cands, best=max(cands, key=cands.get) if cands else None)
+    return dict(triggered=bool(cands), evaluable=True, hybrids=cands, examined=hybrids,
+                best=max(cands, key=cands.get) if cands else None)
+
+
+def build_dg_tables(df: pd.DataFrame, spec: AnalysisSpec, warn: Any) -> tuple[CellTable | None, CellTable | None]:
+    """The two DG tables of the §9.5 scoring plan (verification round 3, ANA-DG-PROTOCOL-DESIGN-REFUSED).
+
+    * ``dg``: retrieval tasks (R1, R-load) and their C0 controls, on every config scored on DG
+      (C0/C12 by default; hybrids too when the reference-inversion check was run). Feeds G-REF, the
+      reference inversion, the informative levels (§9.7) and R_best. Completeness is required
+      within it (round 2): a DG run lacking a retrieval stratum another run has is an error.
+    * ``dg_hop``: the M-hop cells on C12 only (U-11 difficulty equating). M-hop DG rows of other
+      configs are ignored with a warning (§9.5 scores M-hop DG on C12 only).
+
+    Either is None when its rows are absent. The M-hop part is never required of C0 or hybrid runs,
+    which used to make the analysis refuse the pre-registered plan (missing M-hop strata).
+    """
+    d = df[(df["suite"] == spec.dg_suite) & (df["branch"] == spec.main_branch)]
+    if spec.main_ckpt is not None:
+        d = d[d["ckpt"] == spec.main_ckpt]
+    if d.empty:
+        return None, None
+    known = set(P.DG_RETRIEVAL_TASKS) | set(P.DG_MHOP_TASKS)
+    other = sorted(set(d["task"]) - known)
+    if other:
+        warn(f"DG rows of tasks {other} are not part of the §9.5 DG suite and are ignored")
+    dg = None
+    if d["task"].isin(P.DG_RETRIEVAL_TASKS).any():
+        dg = CellTable.from_rows(df, spec.dg_suite, "em_tf", branch=spec.main_branch, ckpt=spec.main_ckpt,
+                                 tasks=P.DG_RETRIEVAL_TASKS)
+    hop = d[d["task"].isin(P.DG_MHOP_TASKS)]
+    extra = sorted(set(hop["config"]) - set(P.DG_MHOP_CONFIGS))
+    if extra:
+        warn(f"DG M-hop rows of configs {extra} ignored: §9.5 scores DG M-hop on {list(P.DG_MHOP_CONFIGS)} only")
+    dg_hop = None
+    if hop["config"].isin(P.DG_MHOP_CONFIGS).any():
+        dg_hop = CellTable.from_rows(df, spec.dg_suite, "em_tf", branch=spec.main_branch, ckpt=spec.main_ckpt,
+                                     tasks=P.DG_MHOP_TASKS, configs=P.DG_MHOP_CONFIGS)
+    return dg, dg_hop
+
+
+def decision_time_primary(df: pd.DataFrame, spec: AnalysisSpec, n0: int, Tp_final: Sequence[int]) -> dict[str, Any]:
+    """Primary cell as fixed at the U-05 decision: G-REF (§11.2) on the first ``n0`` seed indices only.
+
+    Equals the final primary cell when no seed index >= n0 is present. If the restricted tables
+    cannot be built, the final cell is returned with a ``note``."""
+    if not (df["seed"] >= n0).any():
+        return dict(lengths=list(Tp_final), n0=n0, same_as_final=True)
+    d = df[df["seed"] < n0]
+    try:
+        dg0, _ = build_dg_tables(d, spec, lambda _m: None)
+        cs0 = CellTable.from_rows(d, spec.cs_suite, "em_tf", branch=spec.main_branch, ckpt=spec.main_ckpt)
+        g: dict[int, dict] = {}
+        for T in P.LONG_LENGTHS:
+            use = dg0 if (dg0 is not None and T in dg0.lengths()) else cs0
+            if T in use.lengths():
+                g[T] = gref_at(use, T)
+        sel = select_primary(g)
+    except ValueError as e:
+        return dict(lengths=list(Tp_final), n0=n0, same_as_final=True,
+                    note=f"decision-time primary cell not computable ({e}); U-05 uses the final primary cell")
+    return dict(sel, n0=n0, same_as_final=list(sel["lengths"]) == list(Tp_final),
+                gref={T: dict(passes=v["passes"], a_pooled=v["a_pooled"], b_pooled=v["b_pooled"],
+                              n_adequate=v["n_adequate"], n=v["n"]) for T, v in g.items()})
 
 
 def select_primary(gref_long: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
@@ -191,31 +324,48 @@ def run_analysis(df: pd.DataFrame, spec: AnalysisSpec | None = None) -> dict[str
     out: dict[str, Any] = {"protocol": "v1.0 §11", "spec": spec.to_dict(), "warnings": []}
     warn = out["warnings"].append
 
+    # Scale and study seeds (verification round 2, ANA-SCALE-AUTODETECT-N0): the scale is the one of
+    # the CS main-branch runs (never "the first row", which is a FEAS run whenever FEAS was evaluated
+    # into the same tree); every suite is restricted to it, and non-study seed indices are dropped.
+    scale = resolve_scale(df, spec)
+    df = restrict_to_study(df, scale, warn)
     cs = CellTable.from_rows(df, spec.cs_suite, "em_tf", branch=spec.main_branch, ckpt=spec.main_ckpt)
     cs_lp = CellTable.from_rows(df, spec.cs_suite, "logp_gold", branch=spec.main_branch, ckpt=spec.main_ckpt)
-    try:
-        dg: CellTable | None = CellTable.from_rows(df, spec.dg_suite, "em_tf", branch=spec.main_branch,
-                                                   ckpt=spec.main_ckpt)
-    except ValueError:
-        dg = None
-        warn("no DG suite: G-REF at 16K/32K evaluated on CS items instead")
+    dg, dg_hop = build_dg_tables(df, spec, warn)
+    if dg is None:
+        warn("no DG retrieval cells: G-REF at 16K/32K evaluated on CS items instead; 'falsified' is blocked")
     out["inputs"] = dict(n_rows=int(len(df)), table_sha256=table_hash(df), files=list(df.attrs.get("inputs", [])),
                          skipped_reruns=list(df.attrs.get("skipped_reruns", [])))
-    scale = spec.scale or (str(df["scale"].dropna().iloc[0]) if "scale" in df and df["scale"].notna().any() else None)
     n0 = spec.n0 or DEFAULT_N0.get(scale or "", None)
+    out["scale"] = dict(value=scale, n0=n0, from_spec=spec.scale is not None)
+    out["seed_blocks"] = seed_block_report(cs)
+    if out["seed_blocks"]["incomplete"]:
+        warn(f"incomplete seed blocks in CS (§8.1): {out['seed_blocks']['incomplete']}; every paired test and the "
+             "bootstrap use the complete blocks of the configs they involve")
 
     # ---------------------------------------------------------------- 1. G-REF
     gref: dict[int, dict] = {}
     inversion: dict[int, dict] = {}
+    gref_cs_fallback: list[int] = []
     for T in cs.lengths():
         use = dg if (dg is not None and T in dg.lengths() and T in P.LONG_LENGTHS) else cs
+        if use is cs and T in P.LONG_LENGTHS:
+            # §11.2 requires DG items at 16K/32K (the primary cell must not be selected on test data);
+            # a CS fallback is flagged and blocks "falsified" (verification round 2, GREF-SILENT-CS-FALLBACK)
+            gref_cs_fallback.append(T)
+            warn(f"G-REF at T={T} evaluated on CS items: DG lacks T={T} (§11.2 requires DG); "
+                 "'falsified' is blocked")
         try:
             gref[T] = gref_at(use, T)
             if use is dg:
                 inversion[T] = reference_inversion(dg, T, gref[T])
+                if inversion[T].get("evaluable") is False:
+                    # verification round 3, ANA-REF-INVERSION-SILENT-NOT-PERFORMED
+                    warn(f"reference inversion at T={T}: {inversion[T]['status']}")
         except ValueError as e:
             warn(f"G-REF at T={T} not evaluable: {e}")
     out["gref"] = gref
+    out["gref_cs_fallback"] = gref_cs_fallback
     out["reference_inversion"] = inversion
 
     # ---------------------------------------------------------------- 2. primary cell
@@ -236,31 +386,64 @@ def run_analysis(df: pd.DataFrame, spec: AnalysisSpec | None = None) -> dict[str
     ret = S[RET]
 
     # ---------------------------------------------------------------- 3. U-05 trigger
+    # §11.2 order: the primary cell is fixed with the first n0 seeds, U-05 is evaluated there, and
+    # only then are seeds added and G-REF re-applied ("the trigger is not revisited"). So the trigger
+    # is computed at the decision-time primary cell, which can differ from the final one when the
+    # added seeds change G-REF (verification round 3, U05-TRIGGER-RECOMPUTED-AT-FINAL-PRIMARY).
     anchors = [c for c in P.ANCHOR_CONFIGS if c in ret.index]
     trig: dict[str, Any] = {}
+    Tp_dec = list(Tp)
+    if n0:
+        dec = decision_time_primary(df, spec, n0, Tp)
+        out["primary"]["at_decision"] = dec
+        Tp_dec = list(dec["lengths"])
+        if dec.get("note"):
+            warn(dec["note"])
+        if Tp_dec != list(Tp):
+            warn(f"primary cell at the U-05 decision (first n0={n0} seeds) was {Tp_dec}; after adding seeds G-REF "
+                 f"gives {list(Tp)} (§11.2 step 5); the trigger is reported at the decision-time cell")
+    ret_dec = ret if Tp_dec == list(Tp) else cs.scores(cs.ladder_weights(family_spec(RET), Tp_dec))
     if len(anchors) == 4 and n0:
-        first = [s for s in ret.columns if s < n0]
-        tab = ret.loc[anchors, first]
-        if tab.notna().all().all() and len(first) == n0:
-            tr = seed_trigger(tab)
+        first = [s for s in ret_dec.columns if s < n0]
+        tab = ret_dec.loc[anchors, first]
+        # [IMPL] (verification round 2): with a permanently failed run (§8.1) the trigger is evaluated
+        # on the complete anchor blocks among the first n0 seed indices (>= 2 needed), and flagged.
+        complete = [s for s in first if tab[s].notna().all()]
+        # seed indices < n0 that no anchor has yet: the anchors have not reached n0 (§11.2 step 1)
+        missing_idx = [s for s in range(n0) if s not in first or not tab[s].notna().any()]
+        if missing_idx:
+            trig = dict(status=f"not evaluable: anchors have not reached n0 (seed indices {missing_idx} absent)",
+                        n0=n0, seeds_present=[int(s) for s in first])
+        elif len(complete) >= 2:
+            tr = seed_trigger(tab[complete])
             all_seeds = sorted(ret.loc[anchors].dropna(axis=1, how="any").columns)
-            trig = dict(tr.to_dict(), n0=n0, seeds_used=[int(s) for s in first],
-                        seeds_present=[int(s) for s in all_seeds])
-            if tr.fires and len(all_seeds) < n0 + P.TRIGGER_EXTRA_SEEDS:
+            trig = dict(tr.to_dict(), n0=n0, primary_lengths=Tp_dec, seeds_used=[int(s) for s in complete],
+                        seeds_present=[int(s) for s in all_seeds],
+                        incomplete_blocks=[int(s) for s in first if s not in complete])
+            if trig["incomplete_blocks"]:
+                trig["rule"] = "complete first-n0 anchor blocks only [IMPL]"
+                warn(f"U-05 evaluated on complete anchor blocks {trig['seeds_used']} only; incomplete or missing "
+                     f"blocks among the first n0={n0}: {trig['incomplete_blocks']}")
+            n_extra = len(all_seeds) - len(complete)
+            if tr.fires and n_extra < P.TRIGGER_EXTRA_SEEDS:
                 warn("U-05 fired but the trigger seeds are not (yet) in the results")
-            if not tr.fires and len(all_seeds) > n0:
-                warn("U-05 did not fire but extra anchor seeds are present (protocol violation?)")
+            if not tr.fires and len([s for s in all_seeds if s >= n0]) > len(trig["incomplete_blocks"]):
+                warn("U-05 did not fire but more extra anchor seeds are present than §8.1 replacements explain "
+                     "(protocol violation?)")
         else:
-            trig = dict(status="not evaluable: incomplete first-n0 anchor table", n0=n0)
+            trig = dict(status="not evaluable: fewer than 2 complete first-n0 anchor blocks", n0=n0,
+                        seeds_present=[int(s) for s in first])
     else:
         trig = dict(status="not evaluable: anchors or n0 missing", n0=n0)
+    if "status" in trig:
+        warn(f"U-05 seed trigger {trig['status']} (scale {scale}, n0 {n0}); the pre-registered trigger did not run")
     out["seed_trigger"] = trig
 
     # ---------------------------------------------------------------- 4-5. confirmatory tests
     tests: dict[str, dict] = {}
     for name, k in (("H1", P.H1_K), ("H1-min", P.H1MIN_K)):
         tests[name] = h1_test(ret, f"C{k}", S_lp.get(RET))
-    tests["H3"] = h3_test(S, cs, Tp, dg)
+    tests["H3"] = h3_test(S, cs, Tp, dg, dg_hop)
     tests["H5a"] = h5a_test(cs, gref, spec)
     out["tests"] = tests
 
@@ -272,13 +455,29 @@ def run_analysis(df: pd.DataFrame, spec: AnalysisSpec | None = None) -> dict[str
     out["holm_falsification"] = holm(fals_p)
 
     # ---------------------------------------------------------------- 6. sensitivity
-    draws = None
+    draws: dict[str, BootstrapDraws] = {}
     if spec.bootstrap:
-        draws = _bootstrap(cs, Tp, spec)
+        draws = _bootstrap(cs, Tp, spec, warn)
+        out["bootstrap_seeds"] = {k: dict(seeds=d.seeds, excluded_incomplete=d.incomplete_seeds)
+                                  for k, d in draws.items()}
     out["sensitivity"] = sensitivity(ret, tests, draws, cs, Tp)
 
     # ---------------------------------------------------------------- 7. I-22 guards
     out["guards"] = falsification_guards(df, spec, gref, primary, out, cs)
+    # §7.3 "still closing" flag (labels H1 / H1-min "budget-conditional"; verification round 1, DTS-02)
+    out["still_closing"] = {name: still_closing(df, spec, Tp, k) for name, k in (("H1", P.H1_K), ("H1-min", P.H1MIN_K))}
+    # Verification round 3 (S5B-BRANCH-LABEL-NOT-SET): a guard or flag that cannot be evaluated is a
+    # top-level warning, not only a per-verdict note (e.g. branch runs written with branch 'main').
+    for name in ("H1", "H1-min"):
+        sc = out["still_closing"][name]
+        if not sc.get("evaluable"):
+            warn(f"§7.3 still-closing flag for {name} not evaluable ({sc.get('reason')}): the 'budget-conditional' "
+                 f"label cannot be applied; TEF-4000 runs must carry branch {spec.dose_branch!r}")
+        g = out["guards"].get(name, {})
+        for guard, branch in (("dose", spec.dose_branch), ("saturation", spec.saturation_branch)):
+            if guard in g and g[guard].get("reason"):
+                warn(f"I-22 {guard} guard for {name} not evaluable ({g[guard]['reason']}; branch {branch!r}): "
+                     "'falsified' is blocked")
 
     # ---------------------------------------------------------------- 8. success counts
     out["success_counts"] = success_counts(ret.loc[anchors] if anchors else ret, failed=spec.failed_runs) \
@@ -287,12 +486,17 @@ def run_analysis(df: pd.DataFrame, spec: AnalysisSpec | None = None) -> dict[str
     # ---------------------------------------------------------------- 9. secondary & descriptive
     kstar = spec.kstar if spec.kstar is not None else select_kstar(ret)
     out["kstar"] = dict(value=kstar, fixed_by_spec=spec.kstar is not None)
-    out["secondary"] = secondary(S, cs, dg, Tp, kstar, tests, draws)
-    out["descriptive"] = descriptive(S, cs, Tp, draws)
-
-    # ---------------------------------------------------------------- 10. Tier-A triggers
-    out["triggers"] = tier_a_triggers(ret)
-    out["fgc_family"] = fgc_family(ret)
+    # Secondary / descriptive estimands must never block the confirmatory output (DTS-03): a
+    # failure there is recorded as a warning and the block's entry carries the error.
+    for key, fn in (("secondary", lambda: secondary(S, cs, dg, Tp, kstar, tests, draws.get("H1"))),
+                    ("descriptive", lambda: descriptive(S, cs, Tp, draws.get("curve"))),
+                    ("triggers", lambda: tier_a_triggers(ret)),
+                    ("fgc_family", lambda: fgc_family(ret))):
+        try:
+            out[key] = fn()
+        except Exception as e:  # noqa: BLE001 - reported, not swallowed
+            warn(f"{key} block failed: {type(e).__name__}: {e}")
+            out[key] = dict(error=f"{type(e).__name__}: {e}")
     return _f(out)
 
 
@@ -324,7 +528,7 @@ def h1_test(ret: pd.DataFrame, cfg_k: str, ret_logp: pd.DataFrame | None = None,
 
 
 def h3_test(S: Mapping[str, pd.DataFrame], cs: CellTable, Tp: Sequence[int], dg: CellTable | None,
-            k: int = P.H1_K) -> dict[str, Any]:
+            dg_hop: CellTable | None = None, k: int = P.H1_K) -> dict[str, Any]:
     """D3 = R_ret(3) - R_hop(3) per seed (§2, §11.7); evaluable iff every seed has G >= 15 pp in both."""
     if HOP not in S:
         return dict(evaluable=False, reason="multi-hop family missing", p_support=None)
@@ -346,7 +550,7 @@ def h3_test(S: Mapping[str, pd.DataFrame], cs: CellTable, Tp: Sequence[int], dg:
     # Fieller CIs of the seed-pooled recoveries (sensitivity, §11.7)
     f_ret = fieller_paired(np.asarray(tr.loc[f"C{k}"] - tr.loc["C0"]), np.asarray(G_ret))
     f_hop = fieller_paired(np.asarray(th.loc[f"C{k}"] - th.loc["C0"]), np.asarray(G_hop))
-    equated = equated_check(cs, dg, Tp, k)
+    equated = equated_check(cs, dg, Tp, k, dg_hop)
     sign_ok = equated["consistent"]
     # Logit-scale sensitivity (DEVIATION: stands in for the binomial GLMM; see report)
     logit_d3 = _logit_d3(cs, Tp, k)
@@ -382,18 +586,25 @@ def _logit_d3(cs: CellTable, Tp: Sequence[int], k: int) -> dict[str, Any]:
     return res
 
 
-def equated_check(cs: CellTable, dg: CellTable | None, Tp: Sequence[int], k: int) -> dict[str, Any]:
+def equated_check(cs: CellTable, dg: CellTable | None, Tp: Sequence[int], k: int,
+                  dg_hop: CellTable | None = None) -> dict[str, Any]:
     """U-11: (retrieval level, multi-hop level) pairs with |dS12| <= 10 pp on DG at the primary length(s);
-    D3 at those levels must have the same sign as the overall D3. No pairs -> condition vacuous."""
-    if dg is None or "C12" not in dg.configs:
-        return dict(pairs=[], consistent=True, note="no DG: vacuous")
+    D3 at those levels must have the same sign as the overall D3. No pairs -> condition vacuous.
+
+    ``dg`` is the DG retrieval table and ``dg_hop`` the C12-only DG M-hop table (§9.5; verification
+    round 3). For backward compatibility, ``dg_hop=None`` reads M-hop from ``dg`` if it has it."""
+    hop_tab = dg_hop if dg_hop is not None else dg
+    if dg is None or "C12" not in dg.configs or hop_tab is None or "C12" not in hop_tab.configs:
+        return dict(pairs=[], consistent=True, note="no DG retrieval or C12 M-hop cells: vacuous")
     pairs, d3s = [], []
     try:
         ret_lv = [(t, lv) for t in ("R1", "R-load") for lv in sorted(set(dg.levels_at(t, Tp[0])))
                   if (t, lv) not in P.N50_ONLY_LEVELS]
-        hop_lv = sorted(set(dg.levels_at("M-hop", Tp[0])))
+        hop_lv = sorted(set(hop_tab.levels_at("M-hop", Tp[0])))
     except (IndexError, ValueError):
         return dict(pairs=[], consistent=True, note="levels unavailable: vacuous")
+    if not hop_lv:
+        return dict(pairs=[], consistent=True, note="DG M-hop lacks the primary length: vacuous")
 
     def s12(table: CellTable, task: str, lv: str) -> float:
         return float(_row(table.scores(table.level_weights(task, lv, Tp)), "C12").mean())
@@ -406,7 +617,7 @@ def equated_check(cs: CellTable, dg: CellTable | None, Tp: Sequence[int], k: int
     for (t, lv) in ret_lv:
         for h in hop_lv:
             try:
-                if abs(s12(dg, t, lv) - s12(dg, "M-hop", h)) <= P.EQUATED_PAIR_MAX:
+                if abs(s12(dg, t, lv) - s12(hop_tab, "M-hop", h)) <= P.EQUATED_PAIR_MAX:
                     d = float((per_seed_R(t, lv) - per_seed_R("M-hop", h)).mean())
                     pairs.append(dict(retrieval=f"{t}:{lv}", multihop=h, D3=d))
                     d3s.append(d)
@@ -437,10 +648,21 @@ def h5a_test(cs: CellTable, gref: Mapping[int, Mapping[str, Any]], spec: Analysi
     b = h5_slopes(cs, RET, Ts)
     tg = one_sample_t(b.to_numpy(), "greater")
     tost = tost_one_sample(b.to_numpy(), P.TOST_SLOPE)
-    failing = [T for T in Ts if not gref.get(T, {}).get("passes", False)]
+    # "Conditional on reference adequacy" (§11.3): any length failing G-REF. §11.2 defines G-REF only
+    # at T in {16K, 32K} (full rule: (a) + (b) + per-seed (a)); at shorter T only the adequacy part
+    # ((a) pooled + per-seed (a)) is applied, because discriminability (b) >= 15 pp is expected to
+    # fail at short T under a true H5(a) [IMPL; verification round 1, DTS-05].
+    def _fails(T: int) -> bool:
+        g = gref.get(T, {})
+        if T in P.LONG_LENGTHS:
+            return not g.get("passes", False)
+        return not g.get("adequate", g.get("passes", False))
+
+    failing = [T for T in Ts if _fails(T)]
     res: dict[str, Any] = dict(evaluable=True, lengths=Ts, per_seed=dict(zip(map(int, b.index), b.tolist())),
                                estimate=float(b.mean()), se=float(tg.se), df=float(tg.df), p_support=float(tg.p),
                                lower95=float(tg.lower), tost=tost.to_dict(), failing_gref=failing,
+                               gref_rule_short_T="adequacy (a) only [IMPL]",
                                conditional_on_reference_adequacy=bool(failing))
     passing = [T for T in Ts if T not in failing]
     if failing and len(passing) >= 2:
@@ -460,31 +682,55 @@ def h5a_test(cs: CellTable, gref: Mapping[int, Mapping[str, Any]], spec: Analysi
 # =============================================================================================
 # sensitivity (§11.3)
 # =============================================================================================
-def _bootstrap(cs: CellTable, Tp: Sequence[int], spec: AnalysisSpec) -> BootstrapDraws | None:
-    weights: dict[str, np.ndarray] = {}
+BOOT_SETS: dict[str, tuple[str, ...]] = {
+    "H1": ("C0", f"C{P.H1_K}", "C12"),      # also H3 (same configs; retrieval + multi-hop weights)
+    "H1-min": ("C0", f"C{P.H1MIN_K}", "C12"),
+    "H5a": ("C0", "C12"),
+    "curve": P.CURVE_CONFIGS,                # H2 k80 CI (configs present)
+}
+"""Config set of each bootstrap. Each estimand is bootstrapped on the complete seed blocks of exactly
+the configs it uses (§11.3; verification round 2, ANA-BOOT-INCOMPLETE-SEED-BLOCKS)."""
+
+
+def _bootstrap(cs: CellTable, Tp: Sequence[int], spec: AnalysisSpec,
+               warn: Any = None) -> dict[str, BootstrapDraws]:
+    prim: dict[str, np.ndarray] = {}
     for fam in (RET, HOP):
         try:
-            weights[f"{fam}@primary"] = cs.ladder_weights(family_spec(fam), Tp)
+            prim[f"{fam}@primary"] = cs.ladder_weights(family_spec(fam), Tp)
         except ValueError:
             pass
+    fixed: dict[str, np.ndarray] = {}
     Ts = [T for T in P.ALL_LENGTHS if T in cs.lengths()]
-    for fam in (RET, HOP):
-        for T in Ts:
-            try:
-                weights[f"{fam}@fixed@{T}"] = cs.ladder_weights(family_spec(fam, P.H5_FIXED_LEVELS[fam]), [T])
-            except ValueError:
-                pass
-    cfgs = [c for c in cs.configs if c in P.CONFIG_K]
-    if not cfgs:
-        return None
-    return hierarchical_bootstrap(cs, weights, configs=cfgs, B=spec.B, key="confirmatory")
+    for T in Ts:
+        try:
+            fixed[f"{RET}@fixed@{T}"] = cs.ladder_weights(family_spec(RET, P.H5_FIXED_LEVELS[RET]), [T])
+        except ValueError:
+            pass
+    want = {"H1": prim, "H1-min": {k: v for k, v in prim.items() if k.startswith(RET)}, "H5a": fixed,
+            "curve": {k: v for k, v in prim.items() if k.startswith(RET)}}
+    out: dict[str, BootstrapDraws] = {}
+    for name, cfgs in BOOT_SETS.items():
+        cfgs = [c for c in cfgs if c in cs.configs]
+        if name != "curve" and len(cfgs) < len(BOOT_SETS[name]):
+            continue
+        if not cfgs or not want[name]:
+            continue
+        try:
+            out[name] = hierarchical_bootstrap(cs, want[name], configs=cfgs, B=spec.B, key=f"confirmatory:{name}")
+        except ValueError as e:
+            if warn is not None:
+                warn(f"bootstrap {name} not run: {e}")
+    return out
 
 
 def _boot_ci(vals: np.ndarray) -> dict[str, float]:
     lo90, hi90 = percentile_ci(vals, 0.90)
     lo95, hi95 = percentile_ci(vals, 0.95)
-    return dict(mean=float(np.nanmean(vals)), lower95_one_sided=lo90, upper95_one_sided=hi90,
-                ci95=[lo95, hi95])
+    v = np.asarray(vals, float)
+    n_fin = int(np.isfinite(v).sum())
+    return dict(mean=float(np.mean(v[np.isfinite(v)])) if n_fin else float("nan"), lower95_one_sided=lo90,
+                upper95_one_sided=hi90, ci95=[lo95, hi95], n_finite=n_fin)
 
 
 def boot_L(draws: BootstrapDraws, k_cfg: str, name: str = f"{RET}@primary") -> np.ndarray:
@@ -506,8 +752,11 @@ def boot_slope(draws: BootstrapDraws, family: str, Ts: Sequence[int]) -> np.ndar
     return np.nanmean(slope_log2(Ts, D), axis=1)
 
 
-def sensitivity(ret: pd.DataFrame, tests: Mapping[str, dict], draws: BootstrapDraws | None, cs: CellTable,
-                Tp: Sequence[int]) -> dict[str, Any]:
+def sensitivity(ret: pd.DataFrame, tests: Mapping[str, dict], draws: Mapping[str, BootstrapDraws] | None,
+                cs: CellTable, Tp: Sequence[int]) -> dict[str, Any]:
+    """Pooled-variance model and bootstrap per confirmatory test. ``draws`` maps a :data:`BOOT_SETS`
+    name to its replicates (each on the complete seed blocks of its own configs)."""
+    draws = dict(draws or {})
     out: dict[str, Any] = {}
     anchors = [c for c in P.ANCHOR_CONFIGS if c in ret.index]
     core = _paired(ret, anchors) if len(anchors) == 4 else None
@@ -521,13 +770,16 @@ def sensitivity(ret: pd.DataFrame, tests: Mapping[str, dict], draws: BootstrapDr
             rec["pooled"] = dict(estimate=float(pg.estimate), se=float(pg.se), df=int(pg.df),
                                  lower95=float(pg.lower), upper95=float(pl.upper), p_greater=float(pg.p),
                                  p_less=float(pl.p), resid_sd=float(pg.resid_sd))
-        if draws is not None:
-            rec["bootstrap"] = _boot_ci(boot_L(draws, f"C{k}"))
+        if name in draws:
+            rec["bootstrap"] = dict(_boot_ci(boot_L(draws[name], f"C{k}")), seeds=draws[name].seeds)
         out[name] = rec
-    if draws is not None and tests["H3"].get("per_seed") and f"{HOP}@primary" in draws.scores:
-        out["H3"] = dict(bootstrap=_boot_ci(boot_D3(draws)))
-    if draws is not None and tests["H5a"].get("evaluable"):
-        out["H5a"] = dict(bootstrap=_boot_ci(boot_slope(draws, RET, tests["H5a"]["lengths"])))
+    # H3 bootstrap only when H3 is evaluable (a floor family makes every recovery 0/0; DTS-04)
+    if "H1" in draws and tests["H3"].get("evaluable") and tests["H3"].get("per_seed") \
+            and f"{HOP}@primary" in draws["H1"].scores:
+        out["H3"] = dict(bootstrap=dict(_boot_ci(boot_D3(draws["H1"])), seeds=draws["H1"].seeds))
+    if "H5a" in draws and tests["H5a"].get("evaluable"):
+        out["H5a"] = dict(bootstrap=dict(_boot_ci(boot_slope(draws["H5a"], RET, tests["H5a"]["lengths"])),
+                                         seeds=draws["H5a"].seeds))
     # agreement flags for both directions
     for name, rec in out.items():
         for meth, r in list(rec.items()):
@@ -548,8 +800,10 @@ def falsification_guards(df: pd.DataFrame, spec: AnalysisSpec, gref: Mapping[int
     res: dict[str, Any] = {}
     gates_ok = all(bool(spec.gates.get(g, False)) for g in P.REQUIRED_GATES)
     gref_ok = (not primary["fallback"]) and all(gref[T]["passes"] for T in primary["lengths"])
+    cs_fb = [T for T in primary["lengths"] if T in out.get("gref_cs_fallback", [])]
     res["gates"] = dict(required={g: bool(spec.gates.get(g, False)) for g in P.REQUIRED_GATES},
-                        gref_at_primary=gref_ok, holds=bool(gates_ok and gref_ok))
+                        gref_at_primary=gref_ok, gref_on_cs_items=cs_fb,
+                        holds=bool(gates_ok and gref_ok and not cs_fb))
     for name, k in (("H1", P.H1_K), ("H1-min", P.H1MIN_K)):
         t = out["tests"][name]
         if not t.get("evaluable"):
@@ -602,6 +856,39 @@ def dose_guard(df: pd.DataFrame, spec: AnalysisSpec, Tp: Sequence[int], k: int) 
         return dict(holds=False, reason=f"missing {e}")
     return dict(seed=int(seed), L_at_4000=L4, L_source=("CS" if src is s4cs else "DC"), plateau_diff=plateau,
                 holds=bool(L4 < 0 and plateau < P.DOSE_PLATEAU))
+
+
+def still_closing(df: pd.DataFrame, spec: AnalysisSpec, Tp: Sequence[int], k: int) -> dict[str, Any]:
+    """§7.3 "still closing" flag: seed 0, gap S12 - S_k at the primary cell at TEF 1,000 vs 4,000.
+
+    |gap(4000) - gap(1000)| > 3 pp -> k's verdict is labelled "budget-conditional".
+    Source: CS of the main run (``spec.main_ckpt``, i.e. TEF 1,000) vs CS of the TEF-4000 branch at
+    ``closing_ckpts[1]``. [IMPL] If the branch's CS was not scored, the DC suite is used at both
+    checkpoints (main run at ``closing_ckpts[0]``, branch at ``closing_ckpts[1]``) on the primary
+    lengths DC contains, and ``source`` says so. Not evaluable -> no label, a note in the verdict.
+    """
+    cfg = f"C{k}"
+    c1k, c4k = spec.closing_ckpts
+    tried = []
+    for src, suite, ck1 in (("CS", spec.cs_suite, spec.main_ckpt), ("DC", spec.dc_suite, c1k)):
+        s1 = _branch_scores(df, suite, spec.main_branch, ck1, Tp)
+        s4 = _branch_scores(df, suite, spec.dose_branch, c4k, Tp)
+        if s1 is None or s4 is None or not {cfg, "C12"} <= (set(s1.index) & set(s4.index)):
+            tried.append(f"{src}: results missing")
+            continue
+        seeds = [s for s in s4.columns if pd.notna(s4.loc[cfg, s]) and pd.notna(s4.loc["C12", s])
+                 and s in s1.columns and pd.notna(s1.loc[cfg, s]) and pd.notna(s1.loc["C12", s])]
+        if not seeds:
+            tried.append(f"{src}: no common seed")
+            continue
+        seed = min(seeds)
+        g1 = float(s1.loc["C12", seed] - s1.loc[cfg, seed])
+        g4 = float(s4.loc["C12", seed] - s4.loc[cfg, seed])
+        delta = g4 - g1
+        flag = bool(abs(delta) > P.STILL_CLOSING)
+        return dict(evaluable=True, source=src, impl_fallback=src != "CS", seed=int(seed), gap_1000=g1,
+                    gap_4000=g4, delta=delta, flag=flag, label=P.STILL_CLOSING_LABEL if flag else None)
+    return dict(evaluable=False, flag=False, label=None, reason="; ".join(tried))
 
 
 def saturation_guard(df: pd.DataFrame, spec: AnalysisSpec, Tp: Sequence[int], k: int) -> dict[str, Any]:

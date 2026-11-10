@@ -1,0 +1,109 @@
+CMD: python -m pytest -q -s -p no:cacheprovider tests/test_vt22_long_transplant.py
+START 2026-11-10T06:04:58+05:30 gpu_free_MiB=7307
+VT-22 qwen3 C12 T=4096 fp32: rel_rms 2.49e-06 rel_max 4.25e-06 band 2.32 pass=True
+VT-22 qwen3 C12 T=16384 bf16: rel_rms 6.35e-03 rel_max 7.38e-03 band 0.99 pass=True
+VT-22 qwen3 C12 T=32768 bf16: rel_rms 6.88e-03 rel_max 7.44e-03 band 0.98 pass=True
+VT-22 fla_gdn C0 T=4096 fp32: rel_rms 2.60e-04 rel_max 4.54e-04 band 1.11 pass=True
+VT-22 fla_gdn C0 T=16384 bf16: rel_rms 2.02e-02 rel_max 2.68e-02 band 1.06 pass=False
+VT-22 fla_gdn C0 T=32768 bf16: rel_rms 2.00e-02 rel_max 2.31e-02 band 1.03 pass=False
+VT-22 C3 packed vs alone: rel_rms 0.00e+00 (doc0 0.00e+00, doc1 0.00e+00) bitwise=True pass=True
+F
+=================================== FAILURES ===================================
+__________________________ test_vt22_long_transplant ___________________________
+
+    @pytest.mark.gpu
+    @pytest.mark.slow
+    def test_vt22_long_transplant() -> None:
+        if not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        from hybridlc.models.build import build_model
+        from hybridlc.models.config import ModelConfig
+        from hybridlc.utils.gpu import claim
+    
+        dev = claim(0.44)
+        meta = RC.run_meta("VT-22", {"criteria": TOL, "scale": SCALE})
+        wr = RC.RawWriter("vt22", "vt22_transplant", meta)
+        fails = []
+        cases = [(4096, False), (16384, True), (32768, True)]
+        for family, cfg_name in (("qwen3", "C12"), ("fla_gdn", "C0")):
+            cfg = ModelConfig.for_scale(SCALE, cfg_name)
+            ours = build_model(cfg, seed_index=0).eval()
+            for T, bf16 in cases:
+                if family == "qwen3":
+                    ref = _qwen3(cfg, "sdpa" if bf16 else "eager")
+                    _transplant_qwen(ours, ref)
+                else:
+                    ref = _fla_gdn_lm(cfg)
+                    _transplant_fla(ours, ref)
+                ours_d, ref_d = ours.to(dev), ref.to(dev)
+                g = RC.torch_gen(22, T, 0 if family == "qwen3" else 1)
+                ids = torch.randint(8, cfg.vocab_size, (1, T), generator=g).to(dev)
+                P = sample_positions(T)
+                with torch.no_grad():
+                    ref_lg = _ref_hidden_logits(ref_d, ids, P, bf16, family)
+                    torch.cuda.empty_cache()
+                    mine = _ours_logits(ours_d, ids, P, bf16)
+                row = _metrics(mine.cpu(), ref_lg.cpu(), P, T)
+                row.update(family=family, config=cfg_name, T=T, precision="bf16" if bf16 else "fp32",
+                           peak_mem_gib=torch.cuda.max_memory_allocated() / 2**30)
+                row["pass"] = bool(_judge(row, T, bf16))
+                wr.write(row)
+                print(f"VT-22 {family} {cfg_name} T={T} {row['precision']}: rel_rms {row['rel_rms']:.2e} rel_max "
+                      f"{row['rel_max']:.2e} band {row['band_ratio']:.2f} pass={row['pass']}")
+                if not row["pass"]:
+                    fails.append((family, T, row["precision"], row["rel_rms"], row["rel_max"], row["band_ratio"]))
+                ref_d.cpu()
+                ours.cpu()
+                del ref, ref_d, mine, ref_lg
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats()
+    
+        # (3) C3 packed 16K+16K vs each alone (32K, bf16)
+        cfg = ModelConfig.for_scale(SCALE, "C3")
+        ours = build_model(cfg, seed_index=0).eval().to(dev)
+        L = 16384
+        g = RC.torch_gen(22, 3)
+        a = torch.randint(8, cfg.vocab_size, (1, L), generator=g).to(dev)
+        b = torch.randint(8, cfg.vocab_size, (1, L), generator=g).to(dev)
+        P = sample_positions(L).to(dev)
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            cu = torch.tensor([0, L, 2 * L], dtype=torch.int32, device=dev)
+            pos = torch.cat([torch.arange(L), torch.arange(L)]).to(dev)[None]
+            hp = ours(torch.cat([a, b], 1), cu, pos, max_seqlen=L)
+            packed = [ours.logits(hp[0, P]).float(), ours.logits(hp[0, L + P]).float()]
+            del hp
+            alone = []
+            for x in (a, b):
+                h = ours(x, torch.tensor([0, L], dtype=torch.int32, device=dev), torch.arange(L, device=dev)[None],
+                         max_seqlen=L)
+                alone.append(ours.logits(h[0, P]).float())
+                del h
+        pk, al = torch.cat(packed).cpu(), torch.cat(alone).cpu()
+        row = {"family": "packed_vs_alone", "config": "C3", "T": 2 * L, "precision": "bf16",
+               "rel_rms": RC.rel_rms(pk, al), "rel_max": RC.rel_max(pk, al),
+               "doc0_rel_rms": RC.rel_rms(packed[0].cpu(), alone[0].cpu()),
+               "doc1_rel_rms": RC.rel_rms(packed[1].cpu(), alone[1].cpu()),
+               "bitwise_equal": bool(torch.equal(pk, al))}
+        row["pass"] = bool(row["rel_rms"] <= TOL["packed_rel_rms"])
+        wr.write(row)
+        print(f"VT-22 C3 packed vs alone: rel_rms {row['rel_rms']:.2e} (doc0 {row['doc0_rel_rms']:.2e}, doc1 "
+              f"{row['doc1_rel_rms']:.2e}) bitwise={row['bitwise_equal']} pass={row['pass']}")
+        if not row["pass"]:
+            fails.append(("packed_vs_alone", 2 * L, "bf16", row["rel_rms"]))
+        wr.close({"fails": fails, "verdict": "PASS" if not fails else "FAIL"})
+>       assert not fails, fails
+E       AssertionError: [('fla_gdn', 16384, 'bf16', 0.020207663708710747, 0.02680304000427673, 1.0581181645197957), ('fla_gdn', 32768, 'bf16', 0.02004300828461261, 0.023123335994147006, 1.0257150645388344)]
+E       assert not [('fla_gdn', 16384, 'bf16', 0.020207663708710747, 0.02680304000427673, 1.0581181645197957), ('fla_gdn', 32768, 'bf16', 0.02004300828461261, 0.023123335994147006, 1.0257150645388344)]
+
+tests/test_vt22_long_transplant.py:231: AssertionError
+=============================== warnings summary ===============================
+tests/test_vt22_long_transplant.py: 14 warnings
+  /home/sedrica-lynx/Downloads/outeropt/.venv/lib/python3.12/site-packages/torch/jit/_script.py:365: DeprecationWarning: `torch.jit.script_method` is deprecated. Please switch to `torch.compile` or `torch.export`.
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_vt22_long_transplant.py::test_vt22_long_transplant - Assert...
+1 failed, 14 warnings in 122.66s (0:02:02)
+EXIT=1
+2026-11-10T06:07:01+05:30

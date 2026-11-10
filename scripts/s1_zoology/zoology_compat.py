@@ -149,7 +149,10 @@ class CaptureLogger:
     def log_config(self, config: Any) -> None:  # noqa: D401 - zoology API
         pass
 
+    model_ref: Any = None  # last model seen by log_model (R4 post-training diagnostics; never serialised)
+
     def log_model(self, model: Any, config: Any) -> None:
+        CaptureLogger.model_ref = model
         max_seq_len = max(c.input_seq_len for c in config.data.test_configs)
         self.extra["num_parameters"] = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
         try:
@@ -255,7 +258,20 @@ def _atomic_torch_save(obj: Any, path: Path) -> None:
     os.replace(tmp, path)
 
 
-def _patch_fit_resumable(ztrain: Any, ckpt_path: Path) -> None:
+def collapse_abort_due(valid_accs: list[float], threshold: float = 0.05, run_len: int = 3,
+                       first_epoch: int = 3) -> bool:
+    """Collapse-abort rule (plan §2.0 / amendment §17.6; reading C1 of experiments/repro/R4/prereg.yaml).
+
+    ``valid_accs[e]`` is the overall validation accuracy after 0-based epoch ``e``. True iff the last
+    ``run_len`` epochs all have index >= ``first_epoch`` ("after epoch 2") and accuracy < ``threshold``.
+    """
+    e = len(valid_accs) - 1
+    if e - (run_len - 1) < first_epoch:
+        return False
+    return all(a < threshold for a in valid_accs[-run_len:])
+
+
+def _patch_fit_resumable(ztrain: Any, ckpt_path: Path, collapse_abort: bool = False) -> None:
     """Replace ``Trainer.fit`` by Zoology's ``fit`` (train.py L178-202) + per-epoch checkpoints.
 
     The optimisation code is unchanged: AdamW(lr, weight_decay), CosineAnnealingLR(T_max =
@@ -292,6 +308,12 @@ def _patch_fit_resumable(ztrain: Any, ckpt_path: Path) -> None:
         for epoch_idx in range(start, self.max_epochs):
             self.train_epoch(epoch_idx)
             metrics = self.test(epoch_idx)
+            if collapse_abort and collapse_abort_due([r["valid/accuracy"] for r in self.logger.valid]):
+                self.logger.extra["collapsed"] = True
+                self.logger.extra["collapsed_at_epoch"] = int(epoch_idx)
+                print(f"[s1] collapse-abort at epoch {epoch_idx}: valid acc < 0.05 for 3 epochs after epoch 2",
+                      flush=True)
+                break
             if (self.early_stopping_metric is not None) and metrics[
                 self.early_stopping_metric
             ] > self.early_stopping_threshold:
@@ -317,7 +339,7 @@ def _patch_fit_resumable(ztrain: Any, ckpt_path: Path) -> None:
 
 
 def setup_zoology(check_commit: bool = True, micro_batch: int | None = MICRO_BATCH,
-                  ckpt_path: Path | None = None) -> None:
+                  ckpt_path: Path | None = None, collapse_abort: bool = False) -> None:
     """Put Zoology on sys.path, apply the fla shim and the capture logger. Idempotent."""
     global _PATCHED
     if _PATCHED:
@@ -338,6 +360,6 @@ def setup_zoology(check_commit: bool = True, micro_batch: int | None = MICRO_BAT
     if micro_batch is not None:
         _patch_microbatch(ztrain, micro_batch)
     if ckpt_path is not None:
-        _patch_fit_resumable(ztrain, ckpt_path)
+        _patch_fit_resumable(ztrain, ckpt_path, collapse_abort=collapse_abort)
     ztrain.WandbLogger = CaptureLogger  # train() instantiates WandbLogger(config)
     _PATCHED = True
