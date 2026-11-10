@@ -9,7 +9,8 @@
 ## Active workflows (scripts live in ~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/)
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
-| S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 2026-11-10 05:34; integrator (partial output committed 2fffe8f) → verify → gate report |
+| S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | DONE: G0 conditional PASS (D045–D057 proposed), G-RP PASS |
+| PI rulings → implement → soak + R6 → G-RV gate | pi-decisions-and-grv-wf_b92a39ce-f17.js | wf_b92a39ce-f17 | launched 2026-11-10 ~13:20 |
 | Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | DONE: audit confirms R4 and R5 PASS; R2, R3 and R7 FAIL as pre-registered, none from a code defect |
 | Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
@@ -86,3 +87,11 @@
   - R5/D1: accept R5 even though the O4 soak did not run;
   - R2: enforce `gpu_lock` and event tags in the runner and trainer.
 - Then R6, then G-RV.
+
+**2026-11-10 ~13:20 IST**
+
+- S0 is done.
+  - G0 is a conditional PASS: 447 of 447 VT-01 to VT-20 checks pass. Clean throughput and memory criteria are met; peak VRAM is 6.0 GiB.
+  - G-RP: PASS.
+- Launched the PI rulings workflow. It covers the D045–D057 proposals and the G-RV residuals, then implementation, then the soak and R6, then an independent G-RV gate.
+- **Next, if G-RV passes:** S2 FEAS.
