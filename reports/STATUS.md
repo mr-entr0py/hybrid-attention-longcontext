@@ -9,7 +9,7 @@
 ## Active workflows (scripts live in ~/.claude/projects/-home-sedrica-lynx-Downloads-outeropt/73b71b1c-85a4-4704-b75f-7c9b668d4052/workflows/scripts/)
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
-| S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 22:12; at integrator / verify |
+| S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 2026-11-10 05:34; integrator (partial output committed 2fffe8f) → verify → gate report |
 | Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
 ## Detached jobs
@@ -47,3 +47,7 @@
 - The reproduction plan is done: R1 (passed) through R10, plus a new gate G-RV that opens FEAS.
 - **Next, after S0 finishes:** run R2 through R7 as a workflow, then compute G-RV.
 - **Flag:** two Xid-8 GPU faults happened during S1. R2 should check for a display-watchdog cause (the desktop runs on this GPU). The longest kernel must stay under 1 s.
+
+**2026-11-10 05:34 IST**
+
+- The usage limit (reset 03:10) interrupted the integrator. Partial output, including the items in `experiments/items/` and `s0_integration.md`, is committed as 2fffe8f. The S0 workflow has been resumed. No detached jobs are running.
