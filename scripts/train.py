@@ -10,7 +10,8 @@ Usage::
 
 Resume is the default: if ``checkpoints/<run_id>/`` holds a full checkpoint the run continues from the
 newest one (bitwise-identical data, LR and RNG state). Exit codes: 0 done, 75 OOM (runner retries),
-76 diverged twice (failed), 77 refused (dirty tree, config/parent problem), other = crash.
+76 diverged twice (failed), 77 refused (dirty tree, config/parent problem, Triton-cache or GPU-lock
+policy), 78 no GPU lock and no inherited token (R2-LIVE v2), other = crash.
 """
 from __future__ import annotations
 
@@ -103,6 +104,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.print_config:
         print(yaml.safe_dump(cfg.to_dict(), sort_keys=False))
         return 0
+    # R2-LIVE v2 L1 (PI ruling D077): the GPU lock (or the holder's inherited token, e.g. from the runner)
+    # BEFORE the first CUDA call -- the trainer imports the model (fla), which creates a CUDA context.
+    if str(cfg.runtime.device).startswith("cuda") or not str(cfg.impl.model_factory).startswith("hybridlc.training.fakes"):
+        from hybridlc.utils.gpu_lock import guard
+
+        guard(f"train:{cfg.run_id}")
     from hybridlc.training.trainer import main_exit_code, train
 
     print(f"[train] run_id={cfg.run_id} stage={cfg.stage} steps={cfg.schedule.steps} "

@@ -11,7 +11,7 @@
 |---|---|---|---|
 | Cost benchmark session 1 (§10.2), background agent | (Agent, not workflow) | — | launched 2026-11-10 ~13:30; output experiments/bench/cost_session1/, reports/cost_benchmarks_session1.md |
 | S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | DONE: G0 conditional PASS (D045–D057 proposed), G-RP PASS |
-| PI rulings → implement → soak + R6 → G-RV gate | pi-decisions-and-grv-wf_b92a39ce-f17.js | wf_b92a39ce-f17 | launched 2026-11-10 ~13:20 |
+| PI rulings → implement → soak + R6 → G-RV gate | pi-decisions-and-grv-wf_b92a39ce-f17.js | wf_b92a39ce-f17 | resumed 2026-11-10 15:20 after the session ended (rulings done; implementation partial, committed 490798d) |
 | Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | DONE: audit confirms R4 and R5 PASS; R2, R3 and R7 FAIL as pre-registered, none from a code defect |
 | Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
@@ -96,3 +96,9 @@
   - G-RP: PASS.
 - Launched the PI rulings workflow. It covers the D045–D057 proposals and the G-RV residuals, then implementation, then the soak and R6, then an independent G-RV gate.
 - **Next, if G-RV passes:** S2 FEAS.
+
+**2026-11-10 15:20 IST**
+
+- The Claude Code session ended. The PI workflow was resumed from cache.
+- **Cost bench session 1:** the driver reached "session end" at 14:51 (1,896 rows). The agent was resumed only to write the report; no new GPU measurement runs.
+- **CARLA is running again:** two UE4 instances use about 11.2 GB and ~98% utilisation. The GPU is shared again, so timing benchmarks are paused. Training and verification jobs can still run, but with only about 5 GB free, and our cap is 7 GB, so OOM is a risk.
