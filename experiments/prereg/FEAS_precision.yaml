@@ -1,0 +1,32 @@
+# FEAS-PREC: evaluation-precision measurements owed at S2 FEAS.
+# Pre-registration (PI, 2026-11-10, written before any FEAS run).
+id: FEAS-PREC
+version: 1
+covers:
+  Q1: "D052(i) measurement (bf16-rounded vs fp32 evaluation weights), threshold and consequence as already stated in D052"
+  Q2: "the deferred VT-06 bf16 sub-item = protocol §9.2 re-score (I-29) on the first trained checkpoints, unchanged"
+  Q3: "NEW: fp32-reference re-score (audit_R2-R7.md §3 item 4; R7 showed Pythia collapsing under bf16 autocast, 0.12/0.05, while Wang GDN did not, 0.3421)"
+checkpoints: "every FEAS TEF-1000 checkpoint: k in {0, 12} x seeds {101, 102} x Stage-B branches {30M, 90M} = 8 checkpoints (D384 path; the same rule applies to FEAS-512 checkpoints if FEAS-512 runs). The SSMax arm checkpoint is scored report-only."
+suite: "FD (all cells), the FEAS dev suite"
+scoring_passes:
+  P0: "production default: canonical bf16-rounded weights, bf16 autocast, branched cache path (scripts/evaluate.py default)"
+  P1: "fp32 weights (--fp32-weights), otherwise identical to P0 (full FD)"
+  P2: "§9.2 re-score as frozen: the standard 5% subset (rescore_subset), single-pass ForwardOnlyAdapter, bf16 autocast, bf16-rounded weights"
+  P3: "fp32 reference re-score: the same 5% subset, single-pass ForwardOnlyAdapter, fp32 weights, autocast off (TF32 flags as production defaults, recorded)"
+metric: "EM_tf flip rate between two passes over the queries they share, pooled per checkpoint (over FD cells) and per k (over that k's checkpoints)"
+criteria:
+  Q1: >-
+    flip(P0, P1) pooled per k. If >= 1% for any k: evaluation switches to fp32 weights (fp32 milestones) before S4
+    (PI decision row). Otherwise canonical bf16 weights stay (D052(i) confirmed).
+  Q2: >-
+    flip(P0, P2) < 1% for EVERY checkpoint (pooled over FD cells) -> VT-06 bf16 sub-item PASS. Otherwise FAIL ->
+    E10.3 consequence: the affected checkpoints' FD scores used for FEAS verdicts are re-scored with the single-pass
+    bf16 path, and the cache path is diagnosed (VT-06/07 on that checkpoint) before S4.
+  Q3: >-
+    flip(P0, P3) pooled per k. If >= 1% for any k: the PI logs a decision row before S4 choosing among
+    (a) fp32-compute scoring for all confirmatory suites, (b) fp32 weights only (if Q1 accounts for the flips),
+    (c) keep production scoring with a per-k caveat on every R(k). Below 1% for every k: production scoring stays;
+    from S4 on, P3 runs on the seed-0 checkpoint of each Tier-A configuration (report-only; a rate >= 1% reopens).
+report_only: "flip(P1, P3) (compute precision alone); |delta logp_gold| distributions per k; per-cell flips"
+blinding: "these are computed by tested code (DTS10-AT scope); flip rates are not judged by hand"
+outputs: "experiments/feas/precision/{q1.json, q2.json, q3.json}"

@@ -77,6 +77,11 @@ REPLAY_PG19_SHARE = 0.6
 #: Answer tokens per query of each generator family (4 digits; 1 token for aggregation).
 ANSWER_LEN = {"retrieval": 4, "multihop": 4, "aggregation": 1}
 N_QUERIES = 4
+#: Per-label answer-family codes (``answer_family``; metrics only, R6 v2 / PI ruling D080): R1-type and
+#: R-load-type retrieval answers are the "retrieval family" of ``answer_ce_retrieval``; every other
+#: answer token is "other"; non-answer labels are 0. Not part of the batch hash or the loss.
+FAMILY_NONE, FAMILY_R1, FAMILY_RLOAD, FAMILY_OTHER = 0, 1, 2, 3
+FAMILY_CODE_OF_SUBTYPE = {"R1": FAMILY_R1, "R-load": FAMILY_RLOAD}
 
 
 @dataclass(frozen=True)
@@ -434,7 +439,7 @@ class TEFStream:
         """Tokens, segment starts, answer mask and item metadata of one planned sequence."""
         b, g = self._seq_index(step, micro, j)
         segs = self.block_plan(b)[g]
-        toks, amask, starts, eot_start, metas = [], [], [], [], []
+        toks, amask, fams, starts, eot_start, metas = [], [], [], [], [], []
         from hybridlc.eval.generators import flatten_item
 
         pos = 0
@@ -446,11 +451,13 @@ class TEFStream:
                 x, am = flatten_item(it)
                 assert len(x) == sg.length, (len(x), sg.length)
                 assert int(am.sum()) == sg.spec.n_answer_tokens
+                fam = np.where(am, FAMILY_CODE_OF_SUBTYPE.get(sg.spec.subtype, FAMILY_OTHER), FAMILY_NONE).astype(np.int8)
                 metas.append(dict(start=pos, **it["meta"]["tef"], task=it["meta"]["task"], level=it["meta"]["level"],
                                   length=sg.length))
             else:
                 x = self._replay_tokens(b, sg)
                 am = np.zeros(sg.length, bool)
+                fam = np.zeros(sg.length, np.int8)
                 # A FineWeb-Edu replay chunk is several whole documents, each led by
                 # <|endoftext|>: every inner separator is a document boundary too (§6.4
                 # intra-document masking, RoPE reset; §9.1 attention never crosses a
@@ -462,8 +469,10 @@ class TEFStream:
                 metas.append(dict(start=pos, replay=sg.replay_kind, length=sg.length, n_docs=1 + len(inner)))
             toks.append(x)
             amask.append(am)
+            fams.append(fam)
             pos += sg.length
-        return dict(tokens=np.concatenate(toks), answer=np.concatenate(amask), starts=np.asarray(starts, np.int64),
+        return dict(tokens=np.concatenate(toks), answer=np.concatenate(amask), family=np.concatenate(fams),
+                    starts=np.asarray(starts, np.int64),
                     eot_start=np.asarray(eot_start, bool), segments=metas)
 
     # ------------------------------------------------------------------ batch
@@ -477,6 +486,7 @@ class TEFStream:
         inp = np.empty(N, np.int64)
         lab = np.full(N, IGNORE_INDEX, np.int64)
         ans_lab = np.zeros(N, bool)
+        fam_lab = np.zeros(N, np.int8)
         all_starts, segs = [], []
         for j in range(mb):
             sq = self.sequence(step, micro, j)
@@ -488,6 +498,7 @@ class TEFStream:
                     nxt_ok[s - 1] = False
             lab[o:o + L - 1] = np.where(nxt_ok, x[1:], IGNORE_INDEX)
             ans_lab[o:o + L - 1] = sq["answer"][1:]
+            fam_lab[o:o + L - 1] = sq["family"][1:]
             all_starts.append(sq["starts"] + o)
             segs.append(sq["segments"])
         st = np.concatenate(all_starts)
@@ -509,7 +520,8 @@ class TEFStream:
         h.update(cu.astype("<i4").tobytes())
         h.update(w.astype("<f4").tobytes())
         out = dict(input_ids=inp[None], labels=lab[None], cu_seqlens=cu, position_ids=pos[None],
-                   loss_weights=w[None], answer_mask=ans_lab[None], max_seqlen=int(seglen.max()),
+                   loss_weights=w[None], answer_mask=ans_lab[None], answer_family=fam_lab[None],
+                   max_seqlen=int(seglen.max()),
                    segments=segs, batch_hash=h.hexdigest())
         if self.answer_norm == "block":
             # the trainer divides sum(w * CE) over the step by this constant (not by sum(w); see docstring)
@@ -521,7 +533,7 @@ class TEFStream:
         import torch
 
         b = self.get_numpy(step, micro)
-        for k in ("input_ids", "labels", "position_ids", "cu_seqlens", "loss_weights", "answer_mask"):
+        for k in ("input_ids", "labels", "position_ids", "cu_seqlens", "loss_weights", "answer_mask", "answer_family"):
             b[k] = torch.from_numpy(b[k])
         return b
 

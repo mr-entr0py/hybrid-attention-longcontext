@@ -1,0 +1,45 @@
+# FEAS-SMOKE: integration smoke of the full FEAS chain on the final pre-FEAS tree, with the real FEAS run YAMLs.
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before the FEAS YAMLs, the DTS-10 code or any smoke run exist).
+id: FEAS-SMOKE
+version: 1
+why: >-
+  Review O13: FEAS spends ~10 GPU-h on a tree that no end-to-end run has exercised since the S0 smoke, which ran on an
+  older tree and caught a real bug (rescore_check KeyError on subset runs; s0_integration.md §11). Since then the
+  runner, lock, infra classification, TEF normalisation, G-div near-miss logging, FEAS-PREC passes, DTS-10 decision
+  code and blinding have all been added or changed.
+claim_type: "integration check only: it makes no claim about any model or hypothesis; its numbers are meaningless and are never read as results"
+preconditions:
+  - "Phase I tasks complete and committed; DTS-10 code (DTS10_acceptance.v2.yaml) passes its acceptance tests"
+  - "FEAS run YAMLs committed (generated, checked against protocol values)"
+  - "TC-PF archive exists; TRITON_CACHE_DIR = a fresh extraction of it (W3 coverage check)"
+  - "R2-LIVE v2 live; GPU lock; memory fraction 0.44"
+configuration: >-
+  The real FEAS YAMLs for D384, k in {0, 12}, seed 101, and the SSMax arm, shortened ONLY by documented CLI overrides
+  of schedule length and milestone cadence: Stage A 30 steps; both Stage-B branches (30M and 90M recipes) 10 steps
+  each; SSMax arm Stage A 10 + B 5 steps; TEF 20 steps with answer_norm block, through scripts/runner.py under the
+  lock, with separate runs/ckpt/registry/results roots under experiments/feas_smoke/ (never the study registry).
+injections:
+  infra: "the R2-LIVE test journal hook injects one Xid 8 + RC watchdog line into one TEF attempt window -> the runner classifies infra_failed_attempt and resumes"
+  suspect_sw: "on a training.fakes run: one Xid 31 line -> suspect_sw_failure; a second at the same optimizer step after resume -> the run stops for diagnosis (paused state, registry row)"
+  near_miss: "on a training.fakes run: a planted loss excursion of +1.2 nats for 60 steps -> a gdiv_near_miss registry note and no restart"
+evaluation: >-
+  scripts/evaluate.py on the TEF-20 checkpoints (k = 0, k = 12, SSMax) with --n-contexts 2: pass P0 on all FD cells;
+  P1 on all FD cells; P2 and P3 via rescore_check on the scored contexts; P4 on the FEAS ladder verdict cells
+  (FEAS_precision.v2.yaml), including at least one 32K cell for k = 12 through R-ATT. Wall time per pass and per
+  cell is recorded to price FEAS-PREC in the D041 re-pricing row.
+decision_code: >-
+  scripts/feas_decide.py (a) on the incomplete smoke tree (seed 102 missing) must refuse with a non-zero exit naming
+  the missing inputs; (b) on the smoke tree completed by a fixture copy of the seed-101 rows labelled synthetic (seed
+  102 rows, branch rows and LM-2 values) must write feas_decisions.json with a complete rule trace: Q1-Q4, every
+  ladder rule, the TEF gates, U-15, I-08 and the flags F-nearmiss, F-infra and F-precision.
+pass: >-
+  ALL of: every run and attempt exits as specified (including the classified infra resume and the suspect_sw stop);
+  the registry chains A -> B(30M), A -> B(90M), each B -> TEF, and the SSMax arm; checkpoints and bf16 milestones are
+  written; summary.json and terminal rows carry infra blocks; the near-miss note exists; P0-P4 result files and
+  _meta.json exist with the precision fields; both feas_decide behaviours hold; 0 new Triton files are compiled in
+  the extraction (TC-PF W3); scripts/evaluate.py prints no score, EM, logp or flip value for exp_stage S2
+  checkpoints before a DTS10-commit note (stdout/stderr captured and checked), and does print them for a
+  non-S2 control.
+fail_and_retry: "fix the defect, commit, and re-run FEAS-SMOKE as a new attempt (every attempt is recorded in the ledger). Allowed because the smoke carries no evidential claim; any fix that touches code exercised by an earlier Phase II item re-runs that item."
+budget: "<= 0.2 GPU-h; if an attempt passes 0.3 GPU-h it is stopped and reported"
+outputs: "experiments/feas_smoke/{runs/, registry.jsonl, results/, feas_decisions.json, timings.json, smoke_result.json}"

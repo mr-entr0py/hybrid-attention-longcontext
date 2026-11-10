@@ -1,0 +1,61 @@
+# VT-23b: trainer update rule vs an independent reference, one step at a time from identical states.
+# Pre-registration (PI, 2026-11-10, written before any VT-23b run).
+id: VT-23b
+version: 1
+relation: >-
+  NEW complementary check. VT-23 FAILED as registered (steps 2-10 grad norm 3.0e-4 > 1e-5; steps 11-50 1.77 > 1e-3;
+  final params 0.194 > 1e-3; results_R3.md, audit §1.4). That FAIL stays on record; its trajectory criteria are
+  accepted as residual RR-VT23 (PR-16). VT-23b does not replace VT-23. VT-23b is BLOCKING for G-RV.
+question: >-
+  Does the production trainer apply exactly the protocol §7.1-§7.2 update (loss assembly with z-loss, accumulation,
+  global-L2 clipping after accumulation, AdamW with decoupled weight decay on the right groups, bias correction,
+  LR schedule) at every phase of a run (first step, warm-up, warm-up boundary, constant LR, clipped and unclipped
+  steps), judged one step at a time from identical states so that chaotic amplification of rounding cannot occur?
+why: >-
+  VT-23's own diagnosis shows trajectory comparison is impossible here: a pure summation-order change makes the
+  reference diverge from itself by 3.0e-3 (steps 2-10) and 0.188 (final params). D1 established bitwise identity
+  only for steps 1-4 and only with the production loss and clip swapped into the reference.
+reference: >-
+  The independent loop of VT-23 (scripts/repro/r3_vt23_reference_loop.py), unchanged in substance, with a
+  'one step from state' entry point: load (theta_s, AdamW exp_avg m_s, exp_avg_sq v_s, step count) from a trainer
+  checkpoint; compute its OWN loss (own CE over non-ignored tokens pooled over the optimizer step + z-loss
+  1e-4*mean(lse^2)), its OWN global-L2 clip at 1.0 after accumulation, and its OWN AdamW step written from §7.1
+  (beta (0.9, 0.95), eps 1e-8, decoupled weight decay 0.1 on ndim >= 2 incl. the tied embedding, none on 1-D
+  tensors / A_log / dt_bias, torch's documented AdamW bias-correction convention, lr(s) = eta * min(1, (s+1)/10)),
+  evaluated in float64 from the fp32 state. It imports neither hybridlc.training.optim nor .schedules nor the trainer.
+trainer_run:
+  config: "D384 C3, fp32, audit mode, activation checkpointing on (the VT-23 deviation required by the 0.44 cap), StageStream('A', data_seed=901) (VT-23 used 900), 2 x 4096 micro-batches, accum 2, 50 steps, 10 warm-up steps then constant at eta = 2.0e-3 (experiments/repro/R3/vt23/training_vt23.yaml values), current pre-FEAS committed tree (D051 conv init included)"
+  states: >-
+    Full trainer checkpoints (params, AdamW state, step) at s and s+1 for s in S = {0, 1, 4, 8, 9, 10, 20, 35, 48}
+    (0-based optimizer step index; s = 0 is the state before the first step). Any capture method that does not
+    alter the trainer's update code is allowed, e.g. checkpoint cadence 1 with retention, or run-to-s then resume
+    (bitwise identical in audit mode, VT-13).
+  batches: "the reference reads the batch of step s+1 from the stateless StageStream with the same indices as the trainer; batch hashes are compared first (must be equal)"
+criteria:   # for every s in S
+  C1: "loss of step s+1: |ref - trainer| / |trainer| <= 1e-5"
+  C2: "pre-clip global gradient L2 norm of step s+1: relative difference <= 1e-5"
+  C3: >-
+    clipped gradient, per parameter tensor: ||g_ref - g_tr||_2 / ||g_tr||_2 <= 1e-4 for every tensor with ||g_tr|| > 0,
+    where g_tr = (m_{s+1} - 0.9 * m_s) / 0.1 is recovered in float64 from the trainer's AdamW first moments;
+    a tensor with g_tr exactly 0 must have g_ref exactly 0
+  C4: >-
+    update rule, per parameter tensor: the reference AdamW applied to (theta_s, m_s, v_s, g_tr) reproduces the
+    trainer's update theta_{s+1} - theta_s with ||D_ref - D_tr||_2 / ||D_tr||_2 <= 1e-4, and v_{s+1} with relative
+    L2 <= 1e-4
+  C5: "weight-decay group membership by parameter name identical (as VT-23)"
+regime_check: >-
+  At least one tested s with trainer pre-clip norm > 1.0 and at least one with <= 1.0. If not, add s from
+  (15, 25, 30, 40, 45) in that order until both occur. If still not, report the clip/no-clip sub-claim as not
+  exercised; the verdict stands on C1-C5.
+pass: "C1-C5 hold at every tested s"
+fail: "candidate trainer defect: plan R3d failure tree (loss assembly and label shift; parameter groups; schedule indexing; clipping placement; accumulation normalisation; bias-correction step count). G-RV blocked until resolved."
+report_only: "an end-to-end 50-step reference trajectory (as VT-23) to document chaotic growth; never a criterion"
+tolerance_basis: >-
+  From identical states in deterministic fp32 the only differences are summation order (measured 4.9e-8 step-1 loss,
+  6e-8 grad-norm 1-ulp steps in VT-23/D1) and float64-vs-fp32 arithmetic in the optimizer (~1e-7 of the update).
+  Gradient recovery from fp32 moments adds about 10 ulp of |m|. Bounds of 1e-5 (scalars) and 1e-4 (per tensor) leave
+  >= 100x margin. Target defects give >= 1e-3: z-loss coefficient x10 (~1e-2 on the gradient), clip before
+  accumulation (O(1) on clipped steps), warm-up off by one (>= 10% of the update), weight decay on 1-D gains
+  (~10% of those tensors' updates), bias correction off by one step (~50% at s = 1).
+gpu_h: "~0.2"
+outputs: "experiments/repro/VT-23b/{trainer_run/, onestep.jsonl, _meta.json}"

@@ -1,0 +1,114 @@
+# FEAS-PREC v2: evaluation-precision measurements at S2 FEAS, and how they feed the FEAS verdict.
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before any FEAS run and before any FEAS-PREC code exists).
+# Supersedes FEAS_precision.yaml v1 in full (v1 never ran; it stays on record unchanged).
+id: FEAS-PREC
+version: 2
+supersedes: "FEAS_precision.yaml v1, sha256 06a80265e6580773e65bae80745fa3f6001847488ac34fb8950825e452985144"
+why_v2: >-
+  Adversarial review O1 (reports/reviews/review_pi_rulings_2026-11-10.md): v1 judged only pooled per-k flip rates
+  (diluted by floor/ceiling cells), had no between-k rule and no 16K/32K breakdown, offered a no-op exit (Q3 option
+  (c)), and its Q1/Q3 consequences applied only "before S4" while the FEAS verdicts were computed from P0 regardless.
+  PI finding (new): fp32 attention runs on the SDPA MATH backend (src/hybridlc/models/attention.py L18-23, L183-195,
+  L206-221), whose score matrix needs ~25.8 GB per call at 32K with 6 heads (6.4 GB at 16K), so v1's fp32 passes could
+  not run at 16K/32K for k > 0 under the 0.44 cap. Requirement R-ATT below fixes that.
+residuals_served:
+  RR-D052i: "bf16-rounded evaluation weights (D052(i)); differs by k (GDN A_log/dt_bias)"
+  RR-G0-1: "VT-05 bf16 chunk final state (GDN only)"
+  RR-G0-2: "VT-07 TF32 chunk vs IEEE recurrent (GDN only)"
+  RR-R7: "unexplained bf16-autocast collapse of an attention LM (Pythia), GDN robust"
+
+implementation_requirements:   # merged and tested before FEAS-SMOKE runs
+  R-ATT: >-
+    An explicitly selected fp32 reference attention path for (a) the full-sequence forward (single-pass) and (b) the
+    inference prefill / extend (lower-right causal) / decode calls of the cache path: query-tiled exact attention in
+    fp32, or SDPA pinned to EFFICIENT_ATTENTION in fp32 (raise if it cannot run; never auto-switch). Default
+    production paths unchanged (bf16 FLASH/cuDNN pins, VT-08). Acceptance: vs MATH at T in {512, 4096}, relative RMS
+    <= 1e-5 (fp32) for full forward, prefill, extend and decode, F_g and F_gc, with cu_seqlens document isolation;
+    peak memory <= 7 GiB for D384 C12 at T = 32768 for the single-pass forward and for cache-path prefill + extend.
+  passes_in_code: >-
+    scripts/evaluate.py / integration/evaluate.py / eval/scorer.py implement P1 (--fp32-weights, exists), P2 and P3
+    (rescore_check(ref="bf16"|"fp32"), both records kept in _eval_log.jsonl), and P4 (--reference fp32-cache: fp32
+    weights, autocast off, branched cache path through R-ATT) restricted to named cells (--only); P1, P3 and P4 skip
+    candidate scoring (EM_tf and logp_gold only). Every result _meta records weights dtype, autocast flag, TF32
+    flags, attention backend and pass id.
+  decision_code: "all Q1-Q4 quantities and the verdict-source selection are computed by src/hybridlc/analysis/feas.py (DTS10-AT v2 scope); no flip rate or contrast is judged by hand"
+
+checkpoints: >-
+  every FEAS TEF-1000 checkpoint: k in {0, 12} x seeds {101, 102} x Stage-B branches {30M, 90M} = 8 checkpoints on
+  the D384 path, plus every SSMax-arm checkpoint that enters FEAS-5. The same rules apply to FEAS-512 checkpoints if
+  FEAS-512 runs (with the 16K cells added to P4, below).
+suite: "FD (dev namespace), all cells, as frozen"
+
+scoring_passes:
+  P0: "production default: canonical bf16-rounded weights, bf16 autocast, branched cache path, candidates scored (scripts/evaluate.py default); full FD"
+  P1: "fp32 weights (--fp32-weights), bf16 autocast, branched cache path; full FD"
+  P2: "frozen protocol §9.2 re-score (I-29): the standard 5% subset (rescore_subset), single-pass ForwardOnlyAdapter, bf16 autocast, bf16-rounded weights"
+  P3: "fp32 single-pass reference: the same 5% subset, single-pass ForwardOnlyAdapter, fp32 weights, autocast off, attention through R-ATT for T >= 16K (MATH below), TF32 flags as production defaults (recorded)"
+  P4: >-
+    fp32 cache-path reference (always runs): fp32 weights, autocast off, branched cache path with R-ATT, all
+    contexts of the FEAS ladder verdict cells: FD R1 D in {3, 15} and R-load N in {8, 32} at 4K; R1 D in {3, 15} and
+    R-load N in {8, 32, 128, 512, 1024} at 32K; and every C0 (no-filler) counterpart of those levels. On FEAS-512
+    checkpoints also the 16K ladder cells (R1 D in {3, 15}, R-load N in {8, ..., 1024}) and their C0 cells.
+    Estimated 1-2 GPU-h on the D384 path (fp32 attention at 32K dominates for k = 12; one prefill per context); the
+    cost is measured in FEAS-SMOKE and priced in the D041 re-pricing row.
+    If the measured estimate exceeds 3 GPU-h, the PI logs a row before FEAS starts (never after FEAS data exist).
+
+definitions:
+  flip: "flip(a, b) = fraction of queries shared by passes a and b whose EM_tf differs"
+  cell_EM: "mean EM_tf over the cell's shared queries under one pass"
+  informative_cell: >-
+    for a pass pair (a, b): max(cell_EM_a, cell_EM_b) > 0.05 AND min(cell_EM_a, cell_EM_b) < 0.95. Symmetric on
+    purpose: conditioning on P0 alone would exclude a cell that collapses under bf16 (P0 at floor, reference high),
+    which is RR-R7's failure shape.
+  pooled_rate_k: "flip over all FD cells of all of k's checkpoints (as v1)"
+  restricted_rate_k_T: "flip over the informative cells at length T only, pooled over k's checkpoints, separately for T = 16K and T = 32K"
+  contrast: "C(pass, seed) = S_12 - S_0 at 32K on branch b*, with S the DTS-10 ladder (DTS10_acceptance.v2.yaml definitions) computed from that pass"
+  ladder_rules: "FEAS-3 (U-04), FEAS (U-01) at D384, FEAS-1/2 at D512 (incl. the 16K fallback), FEAS-5 (U-03 SSMax), elicitation check"
+
+criteria:
+  Q1_weights:   # D052(i)'s owed measurement, strengthened
+    measure: "flip(P0, P1): pooled_rate_k and restricted_rate_k_T for T in {16K, 32K}, k in {0, 12}"
+    rule: >-
+      If any of these rates is >= 1% for any k: from S4 on, evaluation uses fp32 weights (fp32 milestones); the PI
+      records the switch by decision row before S4 and RR-D052i is reopened. Otherwise canonical bf16-rounded weights
+      stay (D052(i) confirmed for this scale).
+  Q2_frozen_rescore:   # deferred VT-06 bf16 sub-item = protocol §9.2, UNCHANGED
+    measure: "flip(P0, P2) pooled per checkpoint over FD cells"
+    rule: >-
+      < 1% for EVERY checkpoint -> VT-06 bf16 sub-item PASS. Otherwise FAIL -> E10.3: the affected checkpoints' FD
+      scores that enter FEAS rules are re-scored with the single-pass bf16 path for the verdict, and the cache path
+      is diagnosed (VT-06/07 on that checkpoint) before S4.
+    report_only: "restricted_rate_k_T of flip(P0, P2) (feeds the RR-G0-1/RR-G0-2 reopen trigger)"
+  Q3_compute:
+    measure: "flip(P0, P3): pooled_rate_k and restricted_rate_k_T"
+    rule: >-
+      If any rate is >= 1% for any k, the PI logs a decision row before S4 choosing among (a) fp32-compute scoring for
+      every confirmatory suite; (b) fp32 weights only, allowed only if every restricted_rate_k_T of flip(P1, P3) is
+      < 1%; (c) production scoring with a per-k caveat on every R(k), allowed only if Q4 found no ladder-rule outcome
+      difference between P0 and P4 and |C(P4, s) - C(P0, s)| <= 0.02 for both seeds. If every rate is < 1%:
+      production scoring stays, and from S4 on P3 runs on the seed-0 checkpoint of each Tier-A configuration
+      (report-only; a restricted rate >= 1% reopens this decision).
+  Q4_between_k:   # NEW; feeds the FEAS verdict
+    measure: "every ladder rule computed from P0 scores and from P4 scores; C(P0, s) and C(P4, s) for s in {101, 102}"
+    rule: >-
+      If any ladder-rule outcome differs between P0 and P4, OR |C(P4, s) - C(P0, s)| > 0.02 for either seed, every
+      ladder rule's FEAS verdict is computed from P4 scores (P0 verdicts reported beside, the trigger named in the
+      FEAS gate report). Otherwise the verdicts come from P0 (the frozen canonical path, D044).
+    precedence_with_Q2: >-
+      If Q2 FAILED for a checkpoint, the Q2 consequence comes first: that checkpoint's verdict-cell scores are its
+      single-pass bf16 re-scores, and Q4 compares those (in place of P0) with P4 by the same rule.
+    also_reported: "the same comparison for P1 (weights only); a P0-vs-P1 outcome difference with P0 = P4 changes nothing"
+    not_covered: >-
+      U-15 (ICC) and the TEF forgetting gate (LM-2, Tier-0 LM path) are computed from P0 only. I-08 promotion is
+      computed from P0; if any Q4 trigger fires it is also computed from P1, and a P0-vs-P1 difference in I-08 is
+      settled by a PI decision row before S3.
+  order: >-
+    P0-P4 are scored for every checkpoint first; feas.py computes Q1-Q4 before any FEAS rule and passes the
+    selected score source to every ladder rule. Nothing in Q1-Q4 is read by an agent before the DTS10-commit note.
+
+reopen_triggers_written_into_the_residual_register:
+  RR-G0-1_and_RR-G0-2: "restricted_rate_k_T >= 1% for any k in flip(P0, P2) or flip(P0, P3); or the Q4 switch fires; or R6 v2's '--' chain-consistency flip rate >= 1%"
+  RR-D052i: "Q1 rule fires"
+  RR-R7: "Q3 rule fires or the Q4 switch fires"
+report_only: "flip(P1, P3) (compute precision alone); |delta logp_gold| distributions per k and length; per-cell flips; P4 vs P3 EM agreement (path effect at fp32)"
+outputs: "experiments/feas/precision/{passes/, q1.json, q2.json, q3.json, q4.json} (written by tested code only)"

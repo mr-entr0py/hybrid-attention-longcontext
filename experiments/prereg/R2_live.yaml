@@ -1,0 +1,42 @@
+# R2-LIVE: single GPU queue (R2(a)) and per-run infrastructure tagging (R2(b)) live project-wide.
+# Pre-registration (PI, 2026-11-10, written before any R2-LIVE check ran).
+id: R2-LIVE
+version: 1
+relation: >-
+  R2(a) and R2(b) FAILED as registered: the plan's pass rule "(a) and (b) live before R4 starts" was not met
+  (R4 started 07:33:15; audit_R2-R7.md §1.1). That FAIL stays on record (accepted as RR-R2 for the runs already
+  made). R2-LIVE is a NEW check of the state after the fix; G-RV's condition "R2 (a) and (b) live" is judged on it.
+owners: "orchestrator (policy, launch scripts); S0 training/runner (trainer, runner, gpumon); eval (evaluate.py); tests (conftest)"
+
+implementation_requirements:   # must be merged before C1 runs
+  L1_lock:
+    - "One lock: runs/gpu_queue.lock (fcntl.flock; HYBRIDLC_GPU_LOCK may override only inside tests). Move the logic of scripts/repro/gpu_lock.py into src/hybridlc/utils/gpu_lock.py (keep the script as a thin CLI) so src/ code can import it."
+    - "Every entry point that creates a CUDA context acquires the lock, or verifies that it descends from the current holder through an inherited token (env HYBRIDLC_GPU_LOCK_TOKEN matching the holder file), BEFORE its first CUDA call, and otherwise exits with code 78 and a one-line message: scripts/train.py, scripts/runner.py (acquires per job; children inherit the token), scripts/evaluate.py, scripts/g0_throughput.py, scripts/bench_train_step.py, scripts/benchmark_inference.py, scripts/warm_triton.py, scripts/vt13_production_resume.py, every GPU driver in scripts/repro/ and scripts/s1_zoology/."
+    - "pytest: new tests/conftest.py acquires the lock once per session iff any collected test is gpu-marked or requests CUDA; CPU-only sessions never lock. Same conftest sets TRITON_CACHE_DIR=$REPO/.cache/triton-diag unless already set to a non-production dir."
+    - "Escape hatch HYBRIDLC_GPU_UNLOCKED=1 only for labelled debug runs that write no registry row; the trainer refuses it for any exp_stage S2..S8 run and for reproduction gate runs."
+    - "Wait policy: --wait-exclusive semantics (also wait until no other project process holds a CUDA context) for every timed or gate run."
+  L2_tagging:
+    - "Move scripts/repro/infra_events.py logic (kernel_events, InfraTagger) into src/hybridlc/utils/infra.py with tests; keep the script as CLI."
+    - "Trainer: runs/<id>/summary.json gains block 'infra' = {window: [start, end], events: [...], flagged, journal_ok, oomd_ok, foreign_gpu_processes: [...], unlocked_project_processes: [...], lock_wait_s}. Every terminal registry row (completed, failed, oom, diverged) carries infra_flagged, journal_ok, n_infra_events."
+    - "Runner: after every attempt, including attempts killed by a CUDA error or signal (where the trainer cannot write), append registry row 'attempt_end' with the same block, the exit code and the attempt number."
+    - "scripts/evaluate.py: same block in every _eval_log.jsonl record and every result _meta.json."
+  L3_monitor:
+    - "training/gpumon.py samples compute apps every 5 s during any locked job and records, per project CUDA process, whether it is the lock holder or a descendant (/proc ancestry) -> field lock_ok."
+
+checks:
+  C1_tests:   # tests/test_r2_live.py (+ existing scripts/repro/test_r2_tooling.py kept green)
+    - "Two concurrent scripts/train.py smoke runs (tiny config or training.fakes, 20 steps, separate scratch roots) serialise: their CUDA windows do not overlap and the second records lock_wait_s > 0."
+    - "A GPU entry point started without the lock and without the escape hatch exits 78 before creating a CUDA context (assert torch.cuda.is_initialized() is False at exit, via a subprocess probe)."
+    - "A pytest session with a gpu-marked test holds the lock for its duration; a CPU-only session does not acquire it."
+    - "With a monkeypatched journal source injecting one 'NVRM: Xid (PCI:...): 8, pid=..., name=python, channel 0x00000003' line inside the window, a fake trainer run (training.fakes) writes infra.flagged = true and n_infra_events = 1 into summary.json and into its terminal registry row; with an empty journal flagged = false and journal_ok = true; with an unreadable journal journal_ok = false."
+    - "The runner writes an attempt_end row with the infra block for an attempt whose child is SIGKILLed."
+  C2_live_window:
+    window: "from the start of O4-A1 to the end of R6, plus the VT-22b, VT-23b and pre-FEAS G0-suite windows"
+    requirements:
+      - "zero gpumon samples (5-s cadence) in which a project process holding a CUDA context has lock_ok = false"
+      - "every run and attempt in the window has an infra block with journal_ok = true"
+      - "every terminal registry row and attempt_end row in the window carries the infra fields"
+pass: "all C1 tests pass AND C2 has zero violations"
+fail: "a C1 failure -> fix and re-run C1; a C2 violation -> R2(a)/(b) not live, G-RV blocked; fix, then judge C2 again over the next window that contains at least one gate run"
+gpu_h: "C1 ~0.05; C2 uses windows that run anyway"
+outputs: "experiments/repro/R2-LIVE/{c1_pytest.log, c2_compliance.json}"

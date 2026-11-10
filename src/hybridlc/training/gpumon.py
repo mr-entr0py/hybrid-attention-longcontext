@@ -195,3 +195,67 @@ def monitor(out: str | os.PathLike, pid: int | None = None, interval: float = 30
             if (pid is not None and not pid_alive(pid)) or (t_end is not None and time.time() >= t_end):
                 break
     return s.to_dict()
+
+
+# ----------------------------------------------------------------------------------------------
+# R2-LIVE v2 L3: lock compliance sampler (every 5 s while a GPU lock is held)
+# ----------------------------------------------------------------------------------------------
+LOCK_SAMPLE_INTERVAL = 5.0
+
+
+def lock_sample(holder_pid: int | None = None, lock_file: str | os.PathLike | None = None) -> dict[str, Any]:
+    """One compliance sample: every process holding a CUDA context, whether it belongs to this project,
+    and for project processes ``lock_ok`` = it is the lock holder or descends from it (/proc ancestry)."""
+    from hybridlc.utils.gpu_lock import compute_apps, descends_from, is_locked, is_project_process, read_holder
+
+    lf = Path(lock_file) if lock_file else None
+    holder = read_holder(lf)
+    hp = holder.get("pid") if holder else holder_pid
+    locked = is_locked(lf)
+    rec: dict[str, Any] = {"ts": time.time(), "holder_pid": hp, "holder_label": holder.get("label"), "locked": locked,
+                           "procs": []}
+    for a in compute_apps():
+        if "error" in a:
+            rec["error"] = a["error"]
+            continue
+        proj = is_project_process(a["pid"], a["name"])
+        ok = bool(proj and locked and hp and descends_from(a["pid"], int(hp))) if proj else None
+        rec["procs"].append({"pid": a["pid"], "name": a["name"], "used_mib": a["used_mib"], "project": proj,
+                             "lock_ok": ok})
+    rec["violations"] = [p["pid"] for p in rec["procs"] if p["project"] and not p["lock_ok"]]
+    return rec
+
+
+class LockMonitor:
+    """Background thread writing :func:`lock_sample` records to a JSONL file every 5 s."""
+
+    def __init__(self, out: str | os.PathLike, holder_pid: int | None = None,
+                 lock_file: str | os.PathLike | None = None, interval: float = LOCK_SAMPLE_INTERVAL):
+        import threading
+
+        self.out, self.holder_pid, self.lock_file, self.interval = Path(out), holder_pid, lock_file, interval
+        self._stop = threading.Event()
+        self._th = threading.Thread(target=self._loop, daemon=True, name="gpumon-lock")
+        self.n = self.n_viol = 0
+
+    def _loop(self) -> None:
+        self.out.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.out, "a", buffering=1) as f:
+            while True:
+                try:
+                    rec = lock_sample(self.holder_pid, self.lock_file)
+                except Exception as e:  # noqa: BLE001 - never kill the job; record
+                    rec = {"ts": time.time(), "error": f"{type(e).__name__}: {e}"}
+                self.n += 1
+                self.n_viol += bool(rec.get("violations"))
+                f.write(json.dumps(rec) + "\n")
+                if self._stop.wait(self.interval):
+                    break
+
+    def start(self) -> "LockMonitor":
+        self._th.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._th.join(timeout=30)

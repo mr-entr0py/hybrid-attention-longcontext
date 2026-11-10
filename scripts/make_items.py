@@ -187,8 +187,53 @@ def main(argv: list[str] | None = None) -> int:
                                                 n_max_cap=args.n_max or None,
                                                 filler="dev_text" if args.dev_filler else "data/tokens"))
             print(f"manifest: {m}", flush=True)
+    rp = write_repairs(Path(args.out))
+    print(f"G-ORACLE repairs: {rp}", flush=True)
     print(f"done: {len(results)} ok, {len(failed)} failed", flush=True)
     return 1 if failed else 0
+
+
+def write_repairs(out_root: Path) -> Path:
+    """List every G-ORACLE repair (VT-24r v2) found in the item files under ``out_root`` in
+    ``<out_root>/vt24r_repairs.json``: (file, context, fact, old value, new value, attempts, trigger),
+    plus counts per cell and per template."""
+    import zipfile
+
+    import numpy as np
+
+    from hybridlc.eval.items import load_items
+
+    reps, by_cell, by_tpl, trig = [], {}, {}, {}
+    for ns in ("test", "dev"):
+        for p in sorted((out_root / ns).rglob("*.npz")):
+            with zipfile.ZipFile(p) as zf:
+                if b"vt24r_repair" not in zf.read("meta.json"):
+                    continue
+            items, cell = load_items(p)
+            rel = p.relative_to(out_root).as_posix()
+            for it in items:
+                last_of_fact = {int(r["fact"]): r for r in it["meta"].get("vt24r_repair", [])}
+                for r in it["meta"].get("vt24r_repair", []):
+                    f = int(r["fact"])
+                    fs, fe = int(it["arrays"]["fact_start"][f]), int(it["arrays"]["fact_end"][f])
+                    d0 = fe - 5  # "<4 digits>." closes every code-template fact
+                    assert fs <= d0
+                    if last_of_fact[f] is r:  # a fact repaired twice: its last value is the final one
+                        assert int(it["arrays"]["fact_value"][f]) == int(r["new_value"])
+                    reps.append(dict(file=rel, context=int(it["meta"]["context_id"]), fact=f, old_value=r["old_value"],
+                                     new_value=r["new_value"], attempts=int(r["attempts"]), trigger=r["trigger"],
+                                     template=it["meta"].get("template"), T=cell.get("T"), digit_start=d0))
+                    by_cell[rel] = by_cell.get(rel, 0) + 1
+                    by_tpl[str(it["meta"].get("template"))] = by_tpl.get(str(it["meta"].get("template")), 0) + 1
+                    trig[r["trigger"]] = trig.get(r["trigger"], 0) + 1
+    out = out_root / "vt24r_repairs.json"
+    filler_16_32 = sum(1 for r in reps if r["trigger"] in ("filler", "mixed") and r["T"] in (16384, 32768))
+    out.write_text(json.dumps(dict(rule="G-ORACLE (experiments/prereg/VT-24r.v2.yaml)", n_repair_records=len(reps),
+                                   n_distinct_facts=len({(r["file"], r["context"], r["fact"]) for r in reps}),
+                                   by_cell=by_cell, by_template=by_tpl, triggers=trig,
+                                   triggered_by_filler=sum(trig.get(k, 0) for k in ("filler", "mixed")),
+                                   triggered_by_filler_16K_32K=filler_16_32, repairs=reps), indent=1) + "\n")
+    return out
 
 
 if __name__ == "__main__":

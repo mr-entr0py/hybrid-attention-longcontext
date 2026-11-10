@@ -7,6 +7,14 @@
     python scripts/runner.py status
     python scripts/runner.py stop             # SIGTERM the detached runner (the job resumes later)
     python scripts/runner.py cancel <run_id>
+    python scripts/runner.py unpause <run_id> [--reason TEXT]   # PI release of a paused run (PR-27 v2)
+    python scripts/runner.py summary          # per-run / per-class / per-k attempt counts (JSON)
+
+GPU lock (R2-LIVE v2, D077): for every CUDA job the runner acquires the project GPU lock
+(``hybridlc.utils.gpu_lock``) before the launch and holds it until the child exits; the child inherits
+the token, so ``scripts/train.py``'s guard passes. ``--wait-exclusive`` adds the exclusive-GPU wait.
+Each attempt ends with an ``attempt_end`` registry row carrying the infra block; classified attempts
+follow PR-27 v2 (see ``hybridlc.training.queue``).
 
 Each job runs ``scripts/train.py --config ... --resume`` with its output appended to
 ``runs/<run_id>/train.log`` and a GPU monitor writing ``runs/<run_id>/gpu.jsonl`` (+ gpu_summary.json,
@@ -37,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--poll", type=float, default=30.0)
     ap.add_argument("--monitor-interval", type=float, default=30.0)
     ap.add_argument("--no-monitor", action="store_true")
+    ap.add_argument("--wait-exclusive", action="store_true", help="per-job lock waits for a project-free GPU")
+    ap.add_argument("--max-infra-attempts", type=int, default=10)
     sub = ap.add_subparsers(dest="cmd", required=True)
     e = sub.add_parser("enqueue")
     e.add_argument("configs", nargs="+")
@@ -52,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status")
     c = sub.add_parser("cancel")
     c.add_argument("run_id")
+    u = sub.add_parser("unpause")
+    u.add_argument("run_id")
+    u.add_argument("--reason", default="PI decision")
+    sub.add_parser("summary")
     return ap
 
 
@@ -60,7 +74,8 @@ def make_runner(a: argparse.Namespace) -> Runner:
     paths = PathsConfig(runs_root=a.runs_root or d.runs_root, ckpt_root=a.ckpt_root or d.ckpt_root,
                         registry=a.registry or d.registry)
     return Runner(RunnerConfig(paths=paths, poll=a.poll, min_free_gb=a.min_free_gb,
-                               monitor_interval=a.monitor_interval, monitor=not a.no_monitor))
+                               monitor_interval=a.monitor_interval, monitor=not a.no_monitor,
+                               wait_exclusive=a.wait_exclusive, max_infra_attempts=a.max_infra_attempts))
 
 
 def _pidfile(runner: Runner) -> Path:
@@ -79,6 +94,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "cancel":
         runner.cancel(a.run_id)
+        return 0
+    if a.cmd == "unpause":
+        runner.unpause(a.run_id, reason=a.reason)
+        return 0
+    if a.cmd == "summary":
+        import json
+
+        print(json.dumps(runner.failure_counts(), indent=1, default=str))
         return 0
     if a.cmd == "run":
         import fcntl

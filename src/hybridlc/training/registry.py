@@ -15,6 +15,17 @@ interrupted  runner found a "running" job whose process is gone; retried
 diverged     G-div event (informational; the run restarts once automatically)
 failed       terminal: second divergence, 3 consecutive no-progress failures, refused start, ...
 cancelled    terminal: removed from the queue by the user
+
+PR-27 v2 (PI ruling D084) and R2-LIVE v2 (D077):
+infra_failed_attempt  an attempt ended by an infrastructure event (Xid 8 + RC watchdog, Xid 79, host
+                      OOM-kill); retried with auto-resume; never counts toward D031's failure count
+suspect_sw_failure    an attempt ended with a suspected software fault (Xid 13/31/43, CUDA illegal
+                      address/instruction, misaligned address, unknown Xid); counts as a failure; one resume
+paused                the queue stops scheduling the run for the PI (10 infra attempts, or a suspect
+                      failure recurring at the same optimizer step); never auto-failed
+unpaused              the PI released a paused run (retryable again; infra count restarts)
+attempt_end           annotation written by the runner after every attempt (infra block, exit code, last
+                      completed optimizer step, attempt number), including attempts killed by a signal
 """
 from __future__ import annotations
 
@@ -27,9 +38,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 TERMINAL = {"completed", "failed", "cancelled"}
-RETRYABLE = {"queued", "oom", "crashed", "interrupted"}
+RETRYABLE = {"queued", "oom", "crashed", "interrupted", "infra_failed_attempt", "suspect_sw_failure", "unpaused"}
+#: Neither terminal nor retryable: the run waits for a PI decision (PR-27 v2).
+HELD = {"paused"}
 # Records that annotate a run without changing its queue state.
-ANNOTATIONS = {"diverged", "restarted", "throughput_alert", "note", "checkpoint", "monitor"}
+ANNOTATIONS = {"diverged", "restarted", "throughput_alert", "note", "checkpoint", "monitor", "attempt_end"}
 
 
 class Registry:

@@ -1,0 +1,46 @@
+# R6 known-answer associative recall in our pipeline: PI-fixed readings and preconditions.
+# Pre-registration supplement (PI, 2026-11-10, written before R6 ran). The criteria are those of
+# reproduction_plan.md v1.0 §2.6 (SHA-256 6bc14af6...8adcebc), copied unchanged; this file only fixes readings
+# the plan leaves open, so that no reading is made after a result is visible.
+id: R6
+version: 1
+gate_role: "G-RV: R6 not FAIL"
+preconditions:
+  - "O4-A PASS (experiments/prereg/O4_soak.yaml)"
+  - "R2-LIVE L1/L2 merged (R6 windows are part of the R2-LIVE C2 compliance window)"
+  - "VT-24r generator fix merged; R6's own evaluation items are generated with it and pass VT-24r K1 (oracle) before the first R6 evaluation"
+  - "committed clean tree with D050 (answer_norm block) and D051 (conv init N(0, 0.02)); commit recorded in every run"
+  - "TRITON_CACHE_DIR = .cache/triton-diag (reproduction item); memory fraction 0.44; GPU lock"
+configuration:   # plan §2.6, unchanged
+  models: "ModelConfig.for_scale('D384', pattern='AA', n_layers=2) and pattern='--', each built by build_model(cfg, seed_index=300)"
+  data: "TEFStream(seed_index=300, seq_len=32768, micro_batch=1, accum=2, synthetic_share=1.0, buckets=(1024,)), D014 loss weighting with answer_norm block (D050); 65,536 tokens per step; 50M tokens = 763 steps; 100M = 1,526; 150M = 2,289"
+  optimizer: "AdamW per §7.1; schedule 100-step linear warm-up to 1e-3, then constant; production mode, bf16 autocast, activation checkpointing as the TEF recipe"
+  eval_items: "repro stream, namespace dev (word list B, template T1, dev filler), T = 1,024: R1 D in {3, 15}, R-load N in {8, 32}, and their C0 nofill versions; 200 contexts x 4 queries per cell"
+  scoring: "production path: scripts/evaluate.py, cache path, bf16 autocast, canonical bf16-rounded weights (D052(i))"
+readings:
+  R6-R1_metric: "known-answer score = unweighted mean of EM_tf over the two primary cells R1 D=3 @1K and R-load N=8 @1K (each cell = mean over its 800 queries), on the AA model"
+  R6-R2_looks: >-
+    Evaluations at 50M tokens (step 763). If the score is < 0.90 at 50M, the SAME run continues (no restart) and is
+    evaluated at 100M (step 1,526) and 150M (step 2,289). PASS at the first look with score >= 0.90 (training stops
+    there). These three looks are the only ones that bear on the verdict; any other evaluation is report-only.
+    (The plan extends only for 0.5 <= EM < 0.9; a score < 0.5 at 50M also continues, because the plan's FAIL rule
+    is defined at 150M.)
+  R6-R3_fail: >-
+    FAIL iff (i) score < 0.50 at 150M, or (ii) at any look the format-mismatch signature holds: mean answer-token
+    training CE over the 50 steps before the look <= 0.5 x its mean over steps 1-50 AND score < 0.05.
+    Answer-token CE is the trainer's logged synthetic-answer CE component (add non-semantic logging if absent).
+  R6-R4_inconclusive: >-
+    INCONCLUSIVE iff not PASS and not FAIL at 150M, i.e. 0.50 <= score < 0.90 at 150M. The plan names the rising
+    case (score(150M) - score(100M) > 0.02); the plateau case (difference <= 0.02) is also INCONCLUSIVE (the plan
+    does not cover it; a format bug gives a score near 0, not a plateau above 0.5). INCONCLUSIVE never blocks:
+    FEAS proceeds flagged (plan §4.1).
+  R6-R5_chain_consistency: >-
+    (a) evaluated on the AA checkpoint at the verdict look: EM_tf flip rate between the scorer's cache path and a
+    single-pass ForwardOnlyAdapter forward under the same bf16 autocast and the same bf16-rounded weights (the
+    training-precision forward), over ALL queries of the 8 R6 cells (6,400 queries); point estimate < 1% (I-29).
+    Report-only alongside: flip rate against a single-pass forward with fp32 weights and no autocast.
+  R6-R6_overall: "R6 = FAIL if (a) fails or (b) FAILs; PASS if (a) passes and (b) PASSes; otherwise INCONCLUSIVE"
+  R6-R7_baseline: "the '--' model trains to the same token count as AA's verdict look and is scored on the same cells; descriptive only (plan (c))"
+  R6-R8_infra: "R6 is a gate run: an attempt whose window contains an infra event (Xid, RC watchdog, device or host OOM) is discarded before any of its evaluations is read and repeated in full from step 0 with checkpoints moved aside; at most 3 full repeats, then BLOCKED and the PI decides"
+outputs: "experiments/repro/R6/{prereg.yaml (copy of this file + plan §2.6 block), runs/, eval/, r6_results.json}"
+gpu_h: "0.3 (50M) to 0.6 (150M), priced at the R2e-X rates"

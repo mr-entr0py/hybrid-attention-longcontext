@@ -1,0 +1,58 @@
+# O4 environment soak: pre-registration (PI, 2026-11-10, written before any O4 run).
+# Source: reproduction_plan.md v1.0 §2.11 (O4 row) and §2.2 (trigger, "run O4 before any further gate run");
+#         audit_R2-R7.md §3 item 2; PI rulings 2026-11-10 (PR-21).
+id: O4
+version: 1
+written: "2026-11-10, PI rulings step, before any O4 run"
+trigger_record:
+  fired: "2026-11-10 07:56:54 IST: RC watchdog + Xid 8, pid 1915001, R4 exploratory config-A d128 (experiments/repro/R4/infra/R4-our_gdn_configA-d128-lr1.0e-03-a1.infra.json)"
+  further_events: "R5: 08:45:18, 09:29:10, 09:46:38, 09:47:14 (experiments/repro/R5/r5_infra_summary.json)"
+  all_events: "7 RC-watchdog + Xid-8 events since 2026-11-09 (2 in R1, 1 in R4, 4 in R5), all channel 0x00000003, all during GDN training in the Zoology harness (Zoology GDN 5x, ours 2x); none in VT-13 production, G0 throughput, R2(c), R3, R7 or the G0 full suite"
+  last_scan: "no NVRM/RC-watchdog/OOM line 2026-11-10 09:47:14 to 13:31:52 (PI scan with scripts/repro/infra_events.py)"
+decides: "whether gate runs (R6, VT-22b, VT-23b, the pre-FEAS G0 suite) and production study runs (S2 FEAS onward) may proceed"
+
+preconditions:
+  - "R2-LIVE implementation items L1 (lock enforced in trainer/runner/evaluate/pytest) and L2 (infra tagging in summary.json and the registry) merged, with their C1 tests passing. O4-A runs through the production trainer with both live; its windows are part of the R2-LIVE C2 compliance window."
+  - "Committed clean tree (commit recorded in every run); D050 (TEF answer_norm block) and D051 (conv init N(0,0.02)) in the tree."
+  - "TRITON_CACHE_DIR = $REPO/.cache/triton-diag, created by extracting runs/_artifacts/triton_cache.tar (SHA-256 f417e487a0341891873b8fd80f5f4475a01c8564c884da12bd0418966896e3de). Never the production dir."
+  - "Memory fraction 0.44. Exclusive GPU: foreign processes allowed are display/desktop clients and the idle CARLA-env client (pid 124395, ~454 MiB, 0% util at 13:31). Any other foreign compute process, or any unlocked project CUDA process, during a window makes that window BLOCKED (repeat it)."
+seeds: "reproduction range (§17.6): 305 determinism probe; 306, 307, 308, 309 soak segments"
+
+O4-A:   # verdict-bearing
+  A1_determinism_probe_start:
+    config: "D384 C3, audit mode (runtime.audit: true: use_deterministic_algorithms, no cuDNN SDPA, CUBLAS_WORKSPACE_CONFIG=:4096:8), StageStream('A') with seed/data index 305, 2 x 4096 micro-batches, accum 2, 50 optimizer steps, stage_A schedule with schedule.steps=50, no activation checkpointing, fp32 master weights + bf16 autocast exactly as the VT-13 audit recipe"
+    runs: "two separate processes, back to back"
+    check: "per-step loss and grad-norm float64 bit patterns and the final parameter SHA-256 are identical across the two processes"
+  A2_production_soak:
+    mode: "production (default, non-deterministic) mode, bf16 autocast, scripts/train.py under the GPU lock, separate runs/ckpt/registry roots under experiments/repro/O4/ (never experiments/registry.jsonl)"
+    time_box: "each segment is a fresh run time-boxed to 30 min of wall time (schedule.steps sized from measured throughput so the run lasts >= 30 min; the run is stopped by SIGTERM at 30 min if still running and that clean stop counts as completion); checkpoint every 250 steps"
+    segments:
+      S1: "D384 C0, Stage-A recipe (2 x 4K, no activation checkpointing), seed index 306"
+      S2: "D384 C0, Stage-B shapes (StageStream('B'), 1 x 32K, accum 4, activation checkpointing), from scratch (no parent), seed index 307"
+      S3: "D384 C3, TEF shapes (TEFStream, buckets 512..32K, synthetic share 0.9, answer_norm block, 1 x 32K, activation checkpointing), from scratch (no parent), seed index 308"
+      S4: "D384 C12, Stage-B shapes (1 x 32K, activation checkpointing), from scratch, seed index 309"
+    order: "S1, S2, S3, S4, back to back; total soak wall time 2.0 h"
+  A3_determinism_probe_end: "repeat A1 exactly (two processes) immediately after S4"
+  monitoring: "infra tagging over every window: journalctl -k lines matching 'NVRM: Xid|RC watchdog|Out of memory|oom-kill' and systemd-oomd kills; nvidia-smi every 5 s (utilisation, memory, SM/mem clocks, clocks_event_reasons, power, temperature, compute apps with lock-holder ancestry); host MemAvailable minimum"
+  pass: "ALL of P1-P4"
+  P1: "zero kernel-log events of the listed kinds in [start of A1, end of A3], with journal_ok = true throughout"
+  P2: "every soak segment ran its full 30-min time box and ended by normal exit or the time-box SIGTERM, never by a CUDA error (launch timeout, illegal address, ECC, unspecified launch failure)"
+  P3: "A1 bitwise identical across its two processes; A3 bitwise identical across its two processes; A3 bitwise identical to A1"
+  P4: "no OOM (device or host) in any window"
+  fail: "any of P1-P4 violated with journal_ok = true"
+  blocked: "journal unreadable at any point, or a window not exclusive (see preconditions): repeat the affected part; BLOCKED is never PASS"
+  not_criteria: "loss values, G-div events of the from-scratch soak runs (reported, not environment faults), throughput (reported)"
+  statistical_basis: "Observed Zoology-harness GDN rate in R5: 4 events in 1.17 h of windows (~3.4/h). If production shapes hung at that rate, P(0 events in 2 h) = exp(-6.8) = 1.1e-3. Zero events bounds the production-shape rate at <= 1.5/h (one-sided 95%, Poisson, 2 h alone); with the prior event-free production-shape exposure since 2026-11-10 06:00 the bound is tighter (reported, not a criterion)."
+  consequence_pass: "gate runs (VT-22b, VT-23b, R6, pre-FEAS G0 suite) and, once the FEAS entry checklist is complete, production study runs may proceed"
+  consequence_fail: "no gate or production run. Run O4-B at once. The PI logs a decision row before any further GPU work among: (a) a configuration-only change that avoids the localised kernel, (b) headless operation of this GPU (needs the user's consent: it changes the desktop setup), (c) accepting the risk with the infra-status rule (PR-27) and full-repeat of affected gate runs. Code is never changed to hit a number."
+
+O4-B:   # diagnostic, never verdict-bearing
+  when: "after O4-A; if O4-A PASSES, after R6, VT-22b and VT-23b and before FEAS; if O4-A FAILS, immediately"
+  workload: "R5 run gdn_zoology-d64-lr1.0e-03-s125 (Zoology harness @1ad20d1, Zoology's GDN, d64, lr 1e-3, seed/data seed 125; the cell that hung twice in epoch 1) via scripts/s1_zoology/run_one_r5.py, alone under the GPU lock"
+  environment: "CUDA_LAUNCH_BLOCKING=1, PYTHONFAULTHANDLER=1, faulthandler.dump_traceback_later(20, repeat=True) to a log file, TRITON_CACHE_DIR=.cache/triton-diag; Zoology cache_dir data/zoology/ with checkpoints moved aside (never reused)"
+  time_box: "60 min or until the first RC-watchdog/Xid event, whichever comes first"
+  record: "event times; the Python stack at the hang (identifies the blocking op under CUDA_LAUNCH_BLOCKING); last completed epoch; nvidia-smi samples. Descriptive only; outputs go to experiments/repro/O4/O4-B/"
+  note: "CUDA_LAUNCH_BLOCKING changes timing; 'no hang under blocking launches' is reported as observed and proves nothing either way"
+
+gpu_h: "O4-A ~2.4 h (2.0 h soak + 4 x ~5 min probes); O4-B <= 1.0 h. Charged to the optional-items contingency (plan §3.1: <= 4.7 h)."
+outputs: "experiments/repro/O4/{A1,A2,A3,O4-B}/ with run dirs, infra JSONs, gpumon samples, o4_result.json (P1-P4, verdict)"

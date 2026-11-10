@@ -1,0 +1,42 @@
+# TC-PF: fresh, exclusive-GPU warm of the production Triton cache before FEAS; G5 add-only rule.
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before the warm).
+id: TC-PF
+version: 1
+why: >-
+  Review O7. The DRAFT's PR-12 restored the S0 archive "to remove autotune entries made under contention (E10.2)",
+  but the S0 archive itself was warmed under contention: 2026-11-09 23:13-23:39 (runs/_logs/warm_triton.log), with
+  CARLA running (STATUS 22:15, ~3.6 GB) and the VT-13 C12 audit running concurrently (the warm process, 8.64 GiB,
+  OOM'd it; s0_integration.md §6). E10.2's safeguard is "pre-warmed on an idle GPU". The DRAFT also quoted a spliced
+  hash "be0c80b1...f74316": its prefix is the post-warm trainer-style hash
+  be0c80b1fdd326545ff3152904dec314fd81b76d318160c89f6cd285cd09fed7 (experiments/registry.jsonl, run_id
+  S0-triton-cache) and its suffix is the pre-warm hash
+  1330ca4516aa0d8e15bbe01fd2c4a3e21f44abb31d6afd9c42efdf08f4f74316 (warm log line 1); it originates in
+  s0_integration.md §8 and was copied into G0.md §6. Hashes are quoted in full from now on.
+preconditions:
+  - "O4 v2 complete with O4-A PASS"
+  - "final pre-FEAS tree committed (kernels are compiled from the installed fla 0.6.0 wheel and our modules)"
+  - "exclusive GPU: no other project CUDA process (the warm runs under the lock with --wait-exclusive); foreign processes only display/desktop clients and the idle CARLA-env client"
+procedure:
+  1: "move $REPO/.cache/triton to $REPO/.cache/triton-pre-restore-20261110/ (never deleted); tar it deterministically, record its SHA-256, copy the tarball to ~/outeropt_artifacts/"
+  2: "create an empty $REPO/.cache/triton and record its trainer-style hash"
+  3: "python scripts/repro/gpu_lock.py run --label TC-PF --wait-exclusive -- python scripts/warm_triton.py --scales D384 D512 --archive runs/_artifacts/triton_cache_prefeas.tar"
+  4: "record the full 64-hex trainer-style cache hash and the archive SHA-256 in the registry note run_id 'pre-FEAS-triton-cache', in <archive>.sha256 and in the ledger; copy the archive to ~/outeropt_artifacts/"
+criteria:
+  W1_complete: "the warm exits 0 and its log lists every configuration x scale x shape family of scripts/warm_triton.py (training 2 x 4K and 1 x 32K, every frozen eval cell family, benchmark shapes) with no error"
+  W2_exclusive: "gpumon over the warm window shows no project CUDA process other than the warm and no foreign compute process beyond the allowed clients; otherwise the warm is BLOCKED: empty the dir and repeat"
+  W3_coverage: >-
+    FEAS-SMOKE, run with TRITON_CACHE_DIR = a fresh extraction of this archive, and R2e-X's production-mode cells,
+    run on another fresh extraction, compile 0 new files (find -newer on the extraction). Otherwise add the missing
+    shapes to scripts/warm_triton.py, empty the production dir and repeat TC-PF (new archive, new hashes) before FEAS.
+report_only: "number of fla autotune result entries whose chosen config differs from the S0 archive for the same key; files present in only one of the two caches"
+use:
+  FEAS: "every exp_stage S2 run starts from this cache; the trainer records the cache hash per checkpoint"
+  extractions: "FEAS-SMOKE and R2e-X use fresh extractions of this archive; the trainer's production guard accepts the production dir or a directory whose trainer-style hash equals the recorded pre-FEAS hash at start"
+  diagnostics: "every reproduction, diagnostic, verification and test job uses $REPO/.cache/triton-diag (extracted from the S0 archive f417e487a0341891873b8fd80f5f4475a01c8564c884da12bd0418966896e3de); never the production dir"
+G5_add_only: >-
+  At G5 the production dir is re-warmed in place for any shape added since TC-PF. A manifest (path -> SHA-256 of every
+  file) is taken before and after: every file present before must be byte-identical after; only additions are allowed.
+  A changed or removed existing entry is a mid-study cache change: the PI logs a decision row before any S4 run.
+  The new archive SHA-256 and trainer-style hash are frozen in the G5 row.
+gpu_h: "~0.45 (the S0 warm took 1,579 s)"
+outputs: "runs/_artifacts/triton_cache_prefeas.tar{,.sha256}; experiments/repro/TC-PF/{warm.log, tc_pf.json, autotune_diff.json}"

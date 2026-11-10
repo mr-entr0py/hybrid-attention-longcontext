@@ -5,6 +5,16 @@ ours-bf16, ours-fp32 and fla-bf16 against fla-fp32 (same weights, same ids as th
     python scripts/repro/r3_vt22_diagnose.py [--T 16384]
 Output: experiments/repro/R3/vt22/vt22_diagnosis.jsonl
 """
+
+# --- R2-LIVE v2 L1 entry-point guard (PI ruling D077): take the project GPU lock, or verify the
+# holder's inherited token, BEFORE any import that can create a CUDA context; otherwise exit 78.
+import sys as _sys_guard  # noqa: E402
+from pathlib import Path as _Path_guard  # noqa: E402
+if __name__ == "__main__":
+    _sys_guard.path.insert(0, str(_Path_guard(__file__).resolve().parents[2] / "src"))
+    from hybridlc.utils.gpu_lock import guard as _gpu_guard  # noqa: E402
+    _gpu_guard(_Path_guard(__file__).name)
+# ---
 import argparse, sys
 from pathlib import Path
 import torch

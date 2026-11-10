@@ -1,0 +1,21 @@
+# VT-13p2 v2: criterion for any FUTURE production-mode resume audit; trigger narrowed.
+# Pre-registration (PI FINAL rulings, 2026-11-10). Not scheduled; never applied retroactively. Supersedes the trigger
+# clause of VT-13p2.yaml v1 (sha256 ec6c93d5bee260319498d318677a5a048e54a98cae4c91944ad9bc356869fb25); design,
+# statistic and criterion are unchanged. VT-13p2 has never run.
+id: VT-13p2
+version: 2
+why_v2: >-
+  v1 made a production statistical audit (~2.2 GPU-h) mandatory after any change to checkpoint, resume, loader or
+  RNG-state code. Ruling D060 counts runner-side changes as resume code, which would trigger it now. The bitwise
+  audit-mode check VT-13r is strictly more sensitive to resume defects than this statistical criterion (clean-vs-clean
+  noise |a - c| = 0.0042 against 0.005), and every resume code path except production-only ones runs in audit mode.
+  VT-13p2 therefore covers only code that audit mode cannot exercise.
+trigger: >-
+  Mandatory only after a change to code that runs only when runtime.audit is false AND saves, restores or advances
+  checkpointed state (parameters, optimizer state, step counter, RNG state, data position). Every other change to
+  checkpoint, resume, loader, runner or RNG-state code requires VT-13r (bitwise, audit mode) instead.
+design: "D384 C3, production mode, real Stage-A data, 640 steps, checkpoint every 50; for each data/seed index in {900, 901, 902}: run a (clean), run c (clean, second process), run b (kill -9 at step 137 mid-accumulation, resume from step 100)"
+statistic: "per seed: L_x = mean training loss over steps 630-639 for x in {a, b, c}"
+criterion: "PASS iff for every seed |L_a - L_b| <= max(0.005, 2 * |L_a - L_c|)"
+note: "VT-13 production attempt 1 (|a - b| = 0.0075 against 0.005) FAILED as registered and stays on record as residual RR-G0-3."
+gpu_h: "~2.2 (3 triples)"

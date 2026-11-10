@@ -1,0 +1,66 @@
+# VT-22b v2: C0 <-> fla GatedDeltaNetForCausalLM and C12 <-> Qwen3ForCausalLM at the evaluated lengths, fp32 and
+# calibrated bf16. Pre-registration (PI FINAL rulings, 2026-11-10; written before any VT-22b run).
+# Supersedes VT-22b.yaml v1 (never ran; stays on record unchanged).
+id: VT-22b
+version: 2
+supersedes: "VT-22b.yaml v1, sha256 d2d095d61d97df2e370564117d69938e3adc4063d89551e49686c71df5a00117"
+why_v2: >-
+  Review O8: (1) v1's B1 bound (1.5 x the larger self-drift) was proposed after VT-22's diagnosis and lands near
+  3.2e-2 against a cross-implementation error of ~2.0e-2, and v1's 16K fp32 values are already known from that
+  diagnosis, so those parts cannot fail informatively; v2 states the predicted values now, so that only the
+  unknown parts carry weight at G-RV. (2) v1 checked long-context fp32 equivalence only for C0; RoPE and position
+  handling matter only for k > 0, so v2 adds a C12 fp32 arm at 16K/32K (it needs the fp32 reference attention path
+  R-ATT of FEAS_precision.v2.yaml, because fp32 MATH attention does not fit under the 0.44 cap at >= 16K).
+relation: >-
+  NEW complementary check. VT-22 FAILED as registered (C0 bf16 rel RMS 2.021e-2 at 16K and 2.004e-2 at 32K against
+  2e-2; results_R3.md, audit §1.3). That FAIL stays on record and is accepted as residual RR-VT22 (PR-15). VT-22b
+  does not replace VT-22. VT-22b is BLOCKING for G-RV.
+question: >-
+  With bf16 noise removed, are our C0 (GDN-A LM) and our C12 (F_g LM) the same functions as their references at 16K
+  and 32K, with no error that grows with position? And is our bf16 production C0 path's deviation within the
+  intrinsic bf16 drift of the two implementations?
+references:
+  C0: "fla 0.6.0 GatedDeltaNetForCausalLM with the VT-09(2) mapping, exactly as VT-22"
+  C12: "transformers 5.22.2 Qwen3ForCausalLM with the VT-09(1) mapping (our C12 with the gate bypassed and per-head gains tied, test flag), attn_implementation='sdpa' pinned to SDPBackend.EFFICIENT_ATTENTION in fp32"
+configuration:
+  weights: "random init with torch.manual_seed(1) (VT-22 used 0), norm gains randomised U(0.6, 1.4) as in VT-22, copied by the VT-09 maps"
+  inputs: "ids uniform in [8, V) from the repro stream, SeedSequence(31337, spawn_key=('VT-22b', T))"
+  T: [16384, 32768]
+  arms:
+    C0_fp32: "no autocast on either side; TF32 flags as torch defaults in this environment (recorded); fla chunk path for the reference; our production varlen path (cu_seqlens [0, T], position ids, max_seqlen) in fp32"
+    C0_bf16: "both sides under torch.autocast('cuda', torch.bfloat16) with fp32 master weights, as VT-22"
+    C0_self_drift: "each implementation's bf16 output vs its own fp32 output, same weights and ids"
+    C12_fp32: "no autocast on either side; ours through the R-ATT fp32 reference attention path (full-sequence forward, position ids 0..T-1); the reference as above"
+  positions: "every 16th position plus the last 512 (as VT-22); logits computed only at those positions if needed for the 0.44 cap"
+metrics: "rel RMS = ||a - b||_2 / ||b||_2 over sampled positions x vocab (b = reference); band error = absolute RMS of (a - b) over sampled positions in [0, 1024) and in [T-1024, T); band ratio = last / first"
+criteria:
+  F1: "C0 fp32 ours vs fla: rel RMS <= 1e-3, at each T"
+  F2: "C0 fp32 band ratio <= 2, at each T"
+  B1: "C0 bf16 ours vs fla (both bf16): rel RMS <= 1.5 x max(self_drift_fla, self_drift_ours), at each T"
+  B2: "C0 bf16 band ratio <= 2, at each T"
+  F3: "C12 fp32 ours vs Qwen3: rel RMS <= 1e-3, at each T"
+  F4: "C12 fp32 band ratio <= 2, at each T"
+predictions_stated_before_the_run:   # from vt22_diagnosis.jsonl / vt22_transplant.jsonl (seed-0 weights)
+  F1_16K: "~2.6e-4 (diagnosis: ours_fp32 vs fla_fp32 2.606e-4)"
+  F2_16K: "~1.10 (diagnosis band ratio 1.097)"
+  B1_16K: "cross ~2.0e-2 (2.021e-2) vs bound ~3.2e-2 (1.5 x 2.149e-2)"
+  B2_16K: "~1.06 (1.058)"
+  B1_32K: "cross ~2.0e-2 (VT-22: 2.004e-2) vs bound ~3.2e-2 if self-drift is as at 16K (not measured at 32K)"
+  B2_32K: "~1.03 (VT-22 band ratio)"
+  F1_F2_32K: "no prior measurement (informative)"
+  F3_F4: "no prior measurement at 16K/32K (informative); C12 bf16 cross error was 6.4e-3 / 6.9e-3 with flat bands (VT-22), and fp32 at 4K 4.3e-6"
+evidential_weight_at_G-RV: >-
+  Only F1 and F2 at 32K and F3 and F4 at both T carry evidential weight. F1/F2 at 16K and B1/B2 at both T are
+  confirmatory of known values: they must still pass (a FAIL there means something changed since R3 and is a
+  candidate defect), but their PASS is reported as "as predicted" and adds no weight.
+pass: "F1, F2, B1, B2, F3 and F4 all hold at both T"
+fail: "candidate defect (E10.4). C0 parts: plan R3c failure tree (chunk-state accumulation, max_seqlen, cu_seqlens, autocast casting of state/gates). C12 parts: RoPE theta and tables, position ids, QK-norm, gate bypass flag. G-RV blocked until resolved; any fix touching model code re-runs VT-04/05/09/22/22b and R4/R5 per plan §4.1."
+blocked: "an arm cannot run under the 0.44 cap even with position-sampled logits, or EFFICIENT_ATTENTION cannot run in fp32 on sm_120 for the reference -> log it; the PI decides by row before any re-design. BLOCKED is never PASS."
+tolerance_basis: >-
+  F1/F3: 1e-3 is the VT-09 / VT-22-4K fp32 transplant tolerance; defects in the target class (state accumulation,
+  position handling, varlen bookkeeping, RoPE tables or theta, position-id resets) give >= 1e-2 at 16K-32K in fp32.
+  F2/F4: VT-22's own band rule. B1: if each implementation deviates from the common fp32 function by about d,
+  their mutual distance lies between 0 and 2d (about 1.4d for independent errors); 1.5 x the larger self-drift admits
+  that range. B2 catches a bf16-only error that grows with position.
+gpu_h: "~0.15"
+outputs: "experiments/repro/VT-22b/{vt22b.jsonl, _meta.json}"

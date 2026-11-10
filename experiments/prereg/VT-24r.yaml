@@ -1,0 +1,62 @@
+# VT-24r: collision-repaired retrieval items and the VT-24 oracle check on the regenerated item set.
+# Pre-registration (PI, 2026-11-10, written before the generator fix, the regeneration or any VT-24r check).
+id: VT-24r
+version: 1
+relation: >-
+  VT-24 FAILED as registered: 39,793 / 39,800 retrieval queries at 16K/32K; 7 misses in
+  test/MS/R1-T4_D3_32K (5/400), dev/DG/R-load_N1024_16K (1/800) and dev/FD/R-load_N1024_16K (1/400, the same
+  item as DG by prefix-stable design); 0 misses in test/CS. Every miss is a fact-vs-fact value-prefix collision:
+  a more recent fact in the same context shares the 6-token window before an answer digit (T4: no key token in the
+  window from digit 2 on, so a shared 2- or 3-digit value prefix suffices; T1: only the key noun remains in the
+  window at digit 4) (results_R3.md; audit §1.5; diagnosis_misses.json). The plan pre-registered "any miss is an
+  item defect" and "regenerate the item files before G5 (new manifest, VT-12 rerun) and log a decision row"
+  (plan §2.3 R3e; amendment part F). PI ruling PR-17: this is a genuine generator gap (values are drawn with no
+  check that each queried value is determined within the copy window), the items are regenerated BEFORE FEAS,
+  and VT-24r is the NEW check. The VT-24 FAIL on the old item set (manifest content hashes at commit 97ef269)
+  stays on record.
+
+generator_fix:   # implemented in src/hybridlc/eval/ (generators / context assembly) before regeneration
+  rule_G-ORACLE: >-
+    For every queried retrieval fact (task in {R1, R-load, R3, R-dist}, every variant: C0 nofill, C2, T4, natural,
+    repetitive) and every answer digit j in 1..4: in the token sequence context + prompt + gold digits d_1..d_{j-1},
+    the most recent earlier occurrence of the 6-token window that ends immediately before d_j lies inside the
+    queried fact's own (for R3: latest) occurrence. Equivalently, InductionLM(order=6) predicts every gold digit.
+  repair: >-
+    If the rule fails for a queried fact, resample that fact's 4 value digits (for R3 the latest update of the
+    queried key; never filler, keys, templates, positions or other facts) from a dedicated substream
+    SeedSequence(entropy = the cell generator's entropy, spawn_key = (*cell rng_key, 'vt24r-repair', context_index,
+    fact_index, attempt)); write the new value into the fact occurrence and the gold answer; recompute every derived
+    field (answer ids, in-context and absent candidate sets, absent_in_context, item hashes); re-check every queried
+    fact of the context; at most 1000 attempts per fact, else raise (no silent fallback).
+  constraints:
+    - "a repaired value differs from every other value of the same key (R3 stale-value distinctness) and keeps the train/eval (key, value, template) hash disjointness of VT-12"
+    - "absent candidates differ from every in-context value; candidate token lengths stay equal"
+    - "every existing VT-12 invariant holds"
+  stability: "the repair depends only on (rng_key, context index, fact index, attempt), never on n or suite, so prefix-stable dev cells (DG 200 vs DC/FD 100 contexts) stay prefix-identical"
+  untouched: "M-hop, A-freq, A-count, Tier-0 (LM-1/3/4) item files and the TEF stream (training namespaces; no repair applied)"
+  scope: "all namespaces (test, dev, and the repro stream used by R6) and every future prefix-stable extension (e.g. CS contexts 301-600 if U-15 fires)"
+
+regeneration: >-
+  scripts/make_items.py --suite all with the fixed generator; refresh test/dev manifests (refresh_manifest); write
+  experiments/items/vt24r_repairs.json listing every (file, context, fact, old value, new value, attempts).
+
+checks:   # all must pass
+  K1_oracle: >-
+    VT-24's criteria, unchanged, on a wider file set: every retrieval query of every R1, R-load, R3 and R-dist file
+    (all variants) at EVERY length (1K .. 32K and the C0 nofill cells) in test/CS, test/MS, dev/DG, dev/FD, dev/DC
+    and dev/MS has EM_tf = 1 and |logp_gold - 4 ln 0.9| <= 1e-4, scored on CPU by
+    eval.scorer.score_file(InductionLM(16384, order=6, p_hit=0.9), ..., score_candidates=False).
+  K2_negative_control: "every M-hop file at every length in those directories: mean EM_tf < 0.5 per file"
+  K3_content_stability: >-
+    every cell with zero repairs is content-identical (items.item_content_sha256) to its pre-fix manifest entry;
+    in a repaired cell every array except the repaired facts' value-digit tokens and their derived fields is
+    byte-identical to the pre-fix file; the repair count per cell is reported
+  K4_vt12: "the full VT-12 suite passes on the regenerated items (manifests verify by content, prefix-stability FD/DC == leading DG contexts, train/eval disjointness, layout invariants)"
+  K5_tef_untouched: "VT-17 TEF batch hashes for seed indices 0 and 1, steps 0-2, are identical before and after the fix"
+  K6_unit: "a new VT-12 unit test builds synthetic contexts with planted collisions (T1 same noun + same 3-digit prefix in a later fact; T4 same 2-digit prefix in a later fact; a filler span containing the window) and asserts that G-ORACLE detects each and that the repair resolves it"
+pass: "K1-K6 all hold"
+fail: "inspect every miss; fix the generator; regenerate; re-run under a new file VT-24r2 written before it runs"
+timing: "generator fix -> K6 -> regeneration -> K1-K5, all before R6 (R6's evaluation items come from the same generator) and before FEAS"
+reported: "number of repaired facts per cell and per template; whether any repair was triggered by filler (expected 0 at 16K/32K per VT-24)"
+gpu_h: "0 (CPU, minutes)"
+outputs: "experiments/repro/VT-24r/{k1_scores/, vt24r_summary.json, k3_stability.json}"

@@ -8,6 +8,16 @@ trace of the verdict attempt, plus a reference-vs-reference rounding control:
     python scripts/repro/r3_vt23_diagnose.py <attempt_dir>
 Output: <attempt_dir>/diag_<name>/ and experiments/repro/R3/vt23/vt23_diagnosis.json
 """
+
+# --- R2-LIVE v2 L1 entry-point guard (PI ruling D077): take the project GPU lock, or verify the
+# holder's inherited token, BEFORE any import that can create a CUDA context; otherwise exit 78.
+import sys as _sys_guard  # noqa: E402
+from pathlib import Path as _Path_guard  # noqa: E402
+if __name__ == "__main__":
+    _sys_guard.path.insert(0, str(_Path_guard(__file__).resolve().parents[2] / "src"))
+    from hybridlc.utils.gpu_lock import guard as _gpu_guard  # noqa: E402
+    _gpu_guard(_Path_guard(__file__).name)
+# ---
 import json, os, struct, subprocess, sys
 from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]

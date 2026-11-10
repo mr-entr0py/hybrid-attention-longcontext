@@ -273,6 +273,125 @@ def _facts_task(ctx: _Ctx, i: int, irng: np.random.Generator, n_facts: int, quer
     return _finish(ctx, placed.context, queries, meta, _fact_arrays(keys, vals, placed, roles))
 
 
+# =========================================================================== G-ORACLE repair (VT-24r v2)
+#: Namespaces whose retrieval items are repaired under rule G-ORACLE (PI ruling D074 / PR-17,
+#: experiments/prereg/VT-24r.v2.yaml). The TEF draws its items from these generators in namespace
+#: 'train', which is NEVER repaired: the call sites check the namespace explicitly (not the rarity of
+#: collisions), so the training stream is byte-identical to the pre-fix generator.
+VT24R_REPAIR_NAMESPACES: tuple[str, ...] = ("test", "dev")
+VT24R_MAX_ATTEMPTS = 1000
+VT24R_SUBSTREAM = "vt24r-repair"
+
+
+class RepairError(RuntimeError):
+    """A queried fact could not be made G-ORACLE-consistent within the attempt budget."""
+
+
+def _vt24r_maybe_repair(ctx: _Ctx, i: int, item: Item) -> Item:
+    """Call-site guard of the G-ORACLE repair: explicit namespace check (never 'train')."""
+    if ctx.namespace not in VT24R_REPAIR_NAMESPACES:
+        return item
+    repair_item(item, ctx.ts, ctx.cell_rng, i)
+    return item
+
+
+def _occurrence_kind(item: Item, s: int, order: int) -> str:
+    """Where the colliding window occurrence lies: inside another fact, in filler, or in the query."""
+    a = item["arrays"]
+    lo, hi = s - order + 1, s + 1
+    n_ctx = len(item["context_ids"])
+    if lo >= n_ctx:
+        return "query"
+    for fs, fe in zip(a["fact_start"], a["fact_end"]):
+        if fs <= lo and hi < fe:
+            return "fact"
+        if lo < fe and hi >= fs:
+            return "mixed"
+    return "filler" if hi < n_ctx else "mixed"
+
+
+def repair_item(item: Item, ts: TokenSpace, cell_rng: np.random.Generator, context_index: int,
+                max_attempts: int = VT24R_MAX_ATTEMPTS) -> list[dict]:
+    """Make every queried fact of a retrieval item satisfy rule G-ORACLE (in place).
+
+    For a queried fact that fails the independent checker (``eval.oracle_check``), only that fact's
+    4 value digits are resampled (for R3 the latest update of the queried key), from the substream
+    ``child_rng(cell_rng, 'vt24r-repair', context_index, fact_index, attempt)`` (= SeedSequence with
+    the cell's entropy and spawn key ``(*rng_key, 'vt24r-repair', context, fact, attempt)``). A value
+    is accepted only if it differs from every fact value of the item (so R3 stale values stay distinct)
+    and from every candidate of every query (so absent candidates stay absent). The new value is
+    written into the fact occurrence, the gold answer, every candidate list that carried the old value
+    and the query meta; every queried fact is then re-checked. At most ``max_attempts`` attempts per
+    fact, else :class:`RepairError` (no silent fallback). Filler, keys, templates, positions and other
+    facts are never touched. Returns one record per repaired fact (also stored in the item meta as
+    ``vt24r_repair``; items without a repair are left byte-identical).
+    """
+    from hybridlc.eval.oracle_check import ORACLE_ORDER, check_item
+
+    meta = item["meta"]
+    if meta.get("namespace") not in VT24R_REPAIR_NAMESPACES:
+        raise ValueError(f"G-ORACLE repair refused for namespace {meta.get('namespace')!r}")
+    arr = item["arrays"]
+    fstart, fend, fval = arr["fact_start"], arr["fact_end"], arr["fact_value"]
+    ctx_ids = item["context_ids"]
+    attempts: dict[int, int] = {}
+    records: list[dict] = []
+    while True:
+        recs = check_item(item)
+        bad = [(qi, r) for qi, r in enumerate(recs) if not r["loc_ok"]]
+        if not bad:
+            break
+        qi, r = bad[0]
+        f_idx = np.flatnonzero((fstart == r["fact_start"]) & (fend == r["fact_end"]))
+        if len(f_idx) != 1:
+            raise RepairError(f"query {qi}: queried fact span {r['fact_start']}:{r['fact_end']} not unique")
+        f = int(f_idx[0])
+        first_bad = next(d for d in r["digits"] if not d["loc_ok"])
+        trigger = _occurrence_kind(item, first_bad["occ_end"], ORACLE_ORDER) if first_bad["occ_end"] >= 0 else "none"
+        old = int(fval[f])
+        forbidden = {int(v) for v in fval.tolist()}
+        for q in item["queries"]:
+            forbidden.update(int(v) for v in q["meta"].get("cand_values", []))
+        a = attempts.get(f, 0)
+        new = None
+        while a < max_attempts:
+            rr = child_rng(cell_rng, VT24R_SUBSTREAM, int(context_index), f, a)
+            a += 1
+            v = int(rr.integers(10_000))
+            if v not in forbidden:
+                new = v
+                break
+        attempts[f] = a
+        if new is None:
+            raise RepairError(f"context {context_index} fact {f}: no G-ORACLE-consistent value in {max_attempts} attempts")
+        old_ids, new_ids = TP.value_ids(ts, old), TP.value_ids(ts, new)
+        span = ctx_ids[int(fstart[f]):int(fend[f])]
+        hits = [j for j in range(len(span) - 3) if np.array_equal(span[j:j + 4], old_ids)]
+        if len(hits) != 1:
+            raise RepairError(f"context {context_index} fact {f}: value digits not found exactly once in the fact")
+        d0 = int(fstart[f]) + hits[0]
+        ctx_ids[d0:d0 + 4] = new_ids
+        fval[f] = new
+        old_s, new_s = f"{old:04d}", f"{new:04d}"
+        for q in item["queries"]:
+            qm = q["meta"]
+            if int(qm["needle_start"][0]) == int(fstart[f]):
+                q["answer_ids"] = new_ids.astype(np.int32)
+                qm["value"] = new_s
+            cv = qm.get("cand_values", [])
+            for c, s in enumerate(cv):
+                if s == old_s:
+                    q["candidates"][c] = new_ids.tolist()
+                    cv[c] = new_s
+        records.append(dict(context=int(context_index), fact=f, old_value=old_s, new_value=new_s, attempts=a,
+                            digit_start=d0, query_idx=int(r["query_idx"]), trigger=trigger,
+                            template=meta.get("template"), task=meta.get("task")))
+    if records:
+        meta["vt24r_repair"] = [{k: rec[k] for k in ("fact", "old_value", "new_value", "attempts", "trigger")}
+                                for rec in records]
+    return records
+
+
 def _queried_subset(irng: np.random.Generator, n_facts: int, nq: int = Q_PER_CONTEXT) -> list[int]:
     if n_facts >= nq:
         return [int(x) for x in irng.choice(n_facts, size=nq, replace=False)]
@@ -287,7 +406,7 @@ def gen_r1(task_level: dict, T: int | None, n: int, rng: np.random.Generator, na
     out = []
     for i in range(n):
         irng = child_rng(rng, i)
-        out.append(_facts_task(ctx, i, irng, D + 1, _queried_subset(irng, D + 1)))
+        out.append(_vt24r_maybe_repair(ctx, i, _facts_task(ctx, i, irng, D + 1, _queried_subset(irng, D + 1))))
     return out
 
 
@@ -299,7 +418,7 @@ def gen_rload(task_level: dict, T: int | None, n: int, rng: np.random.Generator,
     out = []
     for i in range(n):
         irng = child_rng(rng, i)
-        out.append(_facts_task(ctx, i, irng, N, _queried_subset(irng, N)))
+        out.append(_vt24r_maybe_repair(ctx, i, _facts_task(ctx, i, irng, N, _queried_subset(irng, N))))
     return out
 
 
@@ -322,7 +441,7 @@ def gen_rdist(task_level: dict, T: int | None, n: int, rng: np.random.Generator,
         it = _facts_task(ctx, i, irng, nf, list(range(len(dists))), dist=dist)
         for q, d in zip(it["queries"], dists):
             q["meta"]["target_distance"] = d
-        out.append(it)
+        out.append(_vt24r_maybe_repair(ctx, i, it))
     return out
 
 
@@ -374,7 +493,8 @@ def gen_r3(task_level: dict, T: int | None, n: int, rng: np.random.Generator, na
             _query_meta_positions(queries[q], placed, [latest[kk]] + [kk * (U + 1) + u for u in range(U)], ctx)
         roles = [ROLE_QUERIED if j in latest else ROLE_STALE for j in range(len(needles))]
         meta = dict(context_id=i, filler_source=src, n_facts=len(needles), U=U, snap_rate=_snap_rate(placed))
-        out.append(_finish(ctx, placed.context, queries, meta, _fact_arrays(fkeys, vals, placed, roles)))
+        out.append(_vt24r_maybe_repair(ctx, i, _finish(ctx, placed.context, queries, meta,
+                                                      _fact_arrays(fkeys, vals, placed, roles))))
     return out
 
 

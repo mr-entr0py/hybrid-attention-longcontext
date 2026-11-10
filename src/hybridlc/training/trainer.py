@@ -51,6 +51,7 @@ from . import checkpoint as ckpt
 from .compat import claim_gpu, env_info, git_commit, git_dirty_paths, triton_cache_hash
 from .config import RunConfig, dump_yaml, import_object
 from .gdiv import DivergenceError, GDivMonitor
+from .guards import check_cache_and_lock_policy
 from .optim import build_optimizer, set_lr
 from .registry import Registry
 from .schedules import lr_at
@@ -162,6 +163,15 @@ class Faults:
             self._fire("nan_at")
             return float("nan")
         return None
+
+    def loss_offset(self, step: int) -> float:
+        """``{"loss_offset": [start, n_steps, delta]}``: add ``delta`` to the logged / G-div loss of steps
+        start..start+n-1 (planted G-div excursions; the training update is unaffected)."""
+        spec = self.spec.get("loss_offset")
+        if not spec:
+            return 0.0
+        start, n, delta = int(spec[0]), int(spec[1]), float(spec[2])
+        return delta if start <= step < start + n else 0.0
 
     def maybe_oom(self, step: int) -> None:
         if self._armed("oom_at") and int(self.spec["oom_at"]) == step:
@@ -301,7 +311,7 @@ def build_val_stream(cfg: RunConfig) -> Any | None:
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     out = dict(batch)
-    for k in ("input_ids", "labels", "cu_seqlens", "position_ids", "loss_weights"):
+    for k in ("input_ids", "labels", "cu_seqlens", "position_ids", "loss_weights", "answer_family"):
         if k in out and isinstance(out[k], torch.Tensor):
             out[k] = out[k].to(device, non_blocking=True)
     return out
@@ -348,9 +358,21 @@ class Trainer:
     # -- main entry -----------------------------------------------------------------------------
     def run(self, resume: bool = True) -> dict[str, Any]:
         c = self.cfg
+        from hybridlc.utils.infra import InfraTagger
+
+        # R2-LIVE v2 L2: the run window starts here; every terminal row carries its infra fields
+        self.infra = InfraTagger(tag=c.run_id, interval=5.0, sample=c.runtime.device.startswith("cuda")).start()
+        policy = check_cache_and_lock_policy(c)
+        if policy.get("debug_registry"):
+            # labelled debug run without the GPU lock: never writes the study registry (R2-LIVE v2 L1)
+            self.registry = Registry(self.run_dir / "debug_registry.jsonl")
+        if policy.get("refuse"):
+            self.registry.append(c.run_id, "failed", reason=policy["refuse"], **self._infra_fields())
+            raise RefusedError(policy["refuse"])
+        self.policy = policy
         dirty = git_dirty_paths()
         if dirty and not self.allow_dirty:
-            self.registry.append(c.run_id, "failed", reason="dirty_tree", dirty=dirty[:50])
+            self.registry.append(c.run_id, "failed", reason="dirty_tree", dirty=dirty[:50], **self._infra_fields())
             raise RefusedError(f"git tree has uncommitted changes under code paths ({len(dirty)} entries); "
                                "commit them or pass --allow-dirty")
         device = setup_runtime(c)
@@ -375,9 +397,10 @@ class Trainer:
             except DivergenceError as e:
                 sc = self._sidecar()
                 self.registry.append(c.run_id, "diverged", step=e.step, reason=e.reason, loss=e.loss,
-                                     ema=e.ema, restarts_so_far=sc["gdiv_restarts"])
+                                     ema=e.ema, restarts_so_far=sc["gdiv_restarts"], **self._infra_fields())
                 if sc["gdiv_restarts"] >= c.gdiv.max_restarts:
-                    self.registry.append(c.run_id, "failed", reason="diverged_twice", step=e.step)
+                    self.registry.append(c.run_id, "failed", reason="diverged_twice", step=e.step,
+                                         **self._infra_fields())
                     raise
                 sc["gdiv_restarts"] += 1
                 sc["events"].append({"ts": time.time(), "event": "gdiv_restart", "step": e.step, "reason": e.reason})
@@ -398,8 +421,25 @@ class Trainer:
                 resume = True
             except torch.cuda.OutOfMemoryError as e:
                 self.registry.append(c.run_id, "oom", error=str(e)[:500], ckpt_step=ckpt.latest_step(self.ckpt_dir),
-                                     peak_mem=(torch.cuda.max_memory_allocated() if device.type == "cuda" else None))
+                                     peak_mem=(torch.cuda.max_memory_allocated() if device.type == "cuda" else None),
+                                     **self._infra_fields())
                 raise
+
+    # -- R2-LIVE v2 infra block -------------------------------------------------------------------
+    def _infra_block(self) -> dict[str, Any]:
+        tagger = getattr(self, "infra", None)
+        if tagger is None:
+            return {}
+        try:
+            return tagger.snapshot()
+        except Exception as e:  # noqa: BLE001 - tagging must never break a run; the failure is recorded
+            return {"classification": "none", "flagged": False, "journal_ok": False, "n_events": 0,
+                    "error": f"{type(e).__name__}: {e}"}
+
+    def _infra_fields(self, block: dict[str, Any] | None = None) -> dict[str, Any]:
+        from hybridlc.utils.infra import registry_fields
+
+        return registry_fields(self._infra_block() if block is None else block)
 
     # -- one attempt (fresh model/optimiser, resumed from the newest state on disk) --------------
     def _attempt(self, device: torch.device, env: dict[str, Any], resume: bool, attempt: int) -> dict[str, Any]:
@@ -468,6 +508,9 @@ class Trainer:
 
         metrics = JsonlWriter(self.run_dir / "metrics.jsonl")
         trace = JsonlWriter(self.run_dir / "trace.jsonl") if c.logging.trace_every_step else None
+        family_ce_on = os.environ.get("HYBRIDLC_FAMILY_CE", "1") != "0"
+        fam_log = JsonlWriter(self.run_dir / "family_ce.jsonl")
+        fam_win: list[float] = []
         self.registry.append(c.run_id, "running", pid=os.getpid(), attempt=attempt, start_step=start_step,
                              resumed_from=resumed_from, host=os.uname().nodename, allow_dirty=self.allow_dirty,
                              git_commit=meta["git_commit"], config_hash=meta["config_hash"],
@@ -478,7 +521,10 @@ class Trainer:
                              parent_run_id=c.parent_run_id,
                              # §6.2 tokenizer hash + data MANIFEST hash per run (verification round 1, DTS-08)
                              tokenizer_sha256=env.get("tokenizer_sha256"),
-                             data_manifest_sha256=env.get("data_manifest_sha256"))
+                             data_manifest_sha256=env.get("data_manifest_sha256"),
+                             lock_mode=getattr(self, "policy", {}).get("lock_mode"),
+                             triton_cache_dir=os.environ.get("TRITON_CACHE_DIR"),
+                             triton_cache_check=getattr(self, "policy", {}).get("cache_check"))
         metrics.write({"kind": "start", "step": start_step, "attempt": attempt, "resumed_from": resumed_from,
                        "ts": time.time(), "optimizer": opt_summary, "activation_checkpointing": ac_mode,
                        "n_params": sum(p.numel() for p in model.parameters()), "peak_lr": peak_lr})
@@ -515,6 +561,8 @@ class Trainer:
                 log_step = (step + 1) % c.logging.every == 0 or step == sched.steps - 1
                 ce_acc = torch.zeros((), dtype=torch.float32, device=device)
                 z_acc = torch.zeros((), dtype=torch.float32, device=device)
+                fam_sum = torch.zeros((), dtype=torch.float64, device=device)
+                fam_n = 0
                 n_seg = 0
                 for m, b in enumerate(batches):
                     b = _to_device(b, device)
@@ -528,6 +576,11 @@ class Trainer:
                                                   ignore_index=c.optim.ignore_index, **kw)
                     if log_step and m == 0:
                         attn.arm(False)
+                    if family_ce_on and "answer_family" in b:
+                        # metrics only (R6 v2): CE of R1-type / R-load-type answer labels, no grad
+                        fs, fn = family_answer_ce(hidden, model.lm_head_weight, b["labels"], b["answer_family"])
+                        fam_sum += fs
+                        fam_n += fn
                     a_m, b_m = b["_w"] / W_obj, b["_n"] / N
                     obj = loss.float() * a_m + z.float() * b_m
                     obj.backward()
@@ -546,7 +599,12 @@ class Trainer:
                     ce_val = inj
                 if not math.isfinite(gn_val) and math.isfinite(ce_val):
                     ce_val = float("nan")  # non-finite gradients count as a NaN event (G-div)
+                ce_val += self.faults.loss_offset(step)
                 gdiv.update(step, ce_val)  # raises DivergenceError before the bad update is applied
+                nm = gdiv.pop_near_miss()
+                if nm is not None:  # PR-10 / D067: log-only frozen-EMA excursion without the literal trigger
+                    self.registry.append(c.run_id, "note", note="gdiv_near_miss", step=step, **nm)
+                    metrics.write({"kind": "gdiv_near_miss", "step": step, "ts": time.time(), **nm})
                 opt.step()
                 opt.zero_grad(set_to_none=True)
 
@@ -557,6 +615,10 @@ class Trainer:
                 if trace is not None:
                     trace.write({"step": step, "loss": ce_val, "loss_hex": float_hex(ce_val), "z": z_val,
                                  "gnorm_hex": float_hex(gn_val), "lr": lr, "batch_hash": step_hash})
+                if fam_n:
+                    fam_val = float(fam_sum.item()) / fam_n
+                    fam_log.write({"step": step, "answer_ce_retrieval": fam_val, "n_tokens": fam_n})
+                    fam_win.append(fam_val)
                 dt = time.perf_counter() - t0
                 win.add(ce_val, z_val, gn_val, n_in, dt)
                 last_loss = ce_val
@@ -575,6 +637,9 @@ class Trainer:
                            "loss_win": win.mean_loss(), "z_loss": z_val, "lr": lr, "grad_norm": gn_val,
                            "tok_s": win.tok_s(), "n_segments": n_seg, "batch_hash": step_hash,
                            "gdiv_ema": gdiv.s.ema, "gdiv_above": gdiv.s.above, "ts": time.time(), **mem}
+                    if fam_win:
+                        rec["answer_ce_retrieval"] = sum(fam_win) / len(fam_win)
+                        fam_win = []
                     st_attn = attn.read()
                     rec.update(st_attn or {"attn_max_logit": None, "attn_entropy": None})
                     metrics.write(rec)
@@ -614,10 +679,14 @@ class Trainer:
         metrics.write({"kind": "end", "step": done - 1, "ts": time.time(), **summary})
         summary = {"status": "completed", **summary}
         metrics.close()
+        fam_log.close()
         if trace is not None:
             trace.close()
+        blk = self._infra_block()
+        summary["infra"] = blk
         (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=1, default=str))
-        self.registry.append(c.run_id, "completed", **{k: v for k, v in summary.items() if k != "status"})
+        self.registry.append(c.run_id, "completed", **{k: v for k, v in summary.items() if k not in ("status", "infra")},
+                             **self._infra_fields(blk))
         return summary
 
     # -- validation -----------------------------------------------------------------------------
@@ -716,6 +785,30 @@ def _check_parent_lr(parent_state: dict[str, Any], child_peak_lr: float, path: P
             f"parent {path} trained at peak LR {actual:g} (LR restart) but its config says {configured:g}, "
             f"and this run's peak LR is the stale {child_peak_lr:g}; relaunch with -o schedule.peak_lr={actual:g} "
             f"(or set lr: {actual:g} in the run YAML)")
+
+
+#: TEF per-label answer-family codes (data/tef.py): 0 none, 1 R1-type, 2 R-load-type, 3 other answer.
+RETRIEVAL_FAMILY_CODES = (1, 2)
+
+
+@torch.no_grad()
+def family_answer_ce(hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, family: torch.Tensor,
+                     codes: tuple[int, ...] = RETRIEVAL_FAMILY_CODES) -> tuple[torch.Tensor, int]:
+    """(sum of CE in nats, count) over the labels whose answer-family code is in ``codes`` (R6 v2
+    ``answer_ce_retrieval``). Metrics only: fp32 logits of the selected positions, no autograd, so the
+    training loss and its gradients are untouched."""
+    fam = family.to(labels.device).reshape(-1)
+    sel = torch.zeros_like(fam, dtype=torch.bool)
+    for cde in codes:
+        sel |= fam == cde
+    idx = torch.nonzero(sel).reshape(-1)
+    if idx.numel() == 0:
+        return torch.zeros((), dtype=torch.float64, device=hidden.device), 0
+    h = hidden.detach().reshape(-1, hidden.shape[-1])[idx].float()
+    logits = h @ weight.detach().float().t()
+    lab = labels.reshape(-1)[idx].long()
+    ce = torch.logsumexp(logits, dim=-1) - logits.gather(1, lab[:, None]).squeeze(1)
+    return ce.double().sum(), int(idx.numel())
 
 
 def _step_weights(batches: list[dict[str, Any]], ignore_index: int) -> tuple[float, int]:

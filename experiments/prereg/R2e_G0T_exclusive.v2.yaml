@@ -1,0 +1,54 @@
+# R2e-X v2: clean (exclusive-GPU) throughput with the production trainer, for budgeting and guard references.
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before any R2e-X run).
+# Supersedes R2e_G0T_exclusive.yaml v1 (never ran; stays on record unchanged).
+id: R2e-X
+version: 2
+supersedes: "R2e_G0T_exclusive.yaml v1, sha256 3fa66d49e2ba42cbb302e65760fcc5b8f3c979f8a25871cd8c68868e919b82fd"
+why_v2: >-
+  Review O2: v1's criterion G0-T512x let a re-measurement whose outcome is already known (idle bench D512 Stage A
+  97.5 / 97.9 / 99.1K tok/s against 70K, experiments/bench/train_step_idle_20261110.json; G0 pass 2 best windows
+  93.3-95.9K) decide the D512 question in place of G0's pre-registered failure consequence, the move PR-19 refuses
+  for R7. v2 relabels it as a budgeting re-measurement. The G0 D512 throughput sub-item stays FAIL-as-registered
+  (RR-G0-6); the 0.6B Stage-A fallback is WAIVED by logged deviation DEV-03 (decision row D061) on the ground of
+  D031's reopen clause. Review O7: v2 also fixes which Triton cache R2e-X uses.
+basis:
+  - "R2(e) of reproduction_plan.md §2.2 ('Measure clean throughput ... then re-price D041 and R6/R9'), never done (audit §1.1)."
+  - "D031 reopen clause, fired: 'The GPU becomes exclusive -> re-measure throughput at G0 and re-budget.' The user gave the project the whole PC on 2026-11-10 (~06:10; STATUS.md)."
+  - "D029 reopen clause: 'G0 on an idle GPU measures <= 3% total overhead -> production runs deterministically.'"
+preconditions: "O4 v2 complete with O4-A PASS; R2-LIVE v2 L1/L2 merged; TC-PF done (fresh pre-FEAS production cache archived and hashed); FEAS-SMOKE PASS; committed clean tree"
+triton_cache: >-
+  A fresh extraction of the TC-PF archive at $REPO/.cache/triton-r2ex/ (hash verified equal to the recorded
+  pre-FEAS trainer-style hash at start). Never the production dir, never the diagnostics cache. Production-mode
+  cells must compile 0 new files into it (count reported; > 0 -> TC-PF W3 action: re-warm the production cache
+  from empty before FEAS). Audit-mode cells' compilations stay in the extraction, which is discarded afterwards.
+configuration:
+  tool: "scripts/g0_throughput.py (production trainer, real StageStream / TEFStream, bf16 autocast, production mode), under the GPU lock with --wait-exclusive"
+  condition: "exclusive GPU: foreign = display/desktop clients and the idle CARLA-env client only; memory fraction 0.44; record foreign SM% per window"
+  cells:
+    stage_A: "D384 and D512, 2 x 4K, k in {0, 3, 12}"
+    stage_B: "D384 and D512, 1 x 32K with activation checkpointing, k in {0, 3, 12}"
+    tef: "D384, TEF shapes (1 x 32K packed, buckets 512..32K), k in {0, 12}"
+    audit_overhead: "D384 Stage A, k in {0, 3, 12}, audit mode (deterministic), same windows"
+  windows: "per cell: 60-s warm-up, then >= 4 windows of 60 s; statistic = median tok/s over the windows after the first"
+  seeds: "reproduction range 320-329 (one per cell family; recorded)"
+outputs_and_rules:
+  D512_budget_remeasurement: >-
+    NOT a G0 test: it neither decides nor exonerates the G0 D512 throughput FAIL, which stays FAIL-as-registered
+    (pass 1 C3 67.2K < 70K) and is reported beside it. Waiver-lapse guard of DEV-03: if any D512 Stage-A median is
+    < 70,000 tok/s under these exclusive conditions, the waiver lapses and the pre-registered 0.6B Stage-A fallback
+    (protocol §13.3 G0 row) applies to every D512 run (FEAS-512 and beyond). The guard is not expected to fire
+    (idle bench 97-99K) and carries no evidential weight either way.
+  D384_regression_flag: >-
+    Not a G0 verdict (G0's D384 throughput criterion passed in both contended passes). If any D384 Stage-A median is
+    < 95,000 or the D384 C12 Stage-B median < 27,000 under exclusive conditions, the PI logs a decision row before
+    FEAS (a slowdown on an exclusive GPU would indicate a regression).
+  D029_reading: >-
+    overhead_k = 1 - median_audit_k / median_production_k for D384 Stage A. If overhead_k <= 0.03 for every k, the
+    PI logs a row making production runs deterministic (D029's pre-declared consequence). Otherwise no change.
+  G-throughput_reference: "these medians, per (scale, stage, k), replace the G0 pass-2 contended values (PR-04)"
+  D041_repricing: >-
+    decision row (PI) after R2e-X: FEAS-384, FEAS-512, S3, Tier A, Tier B, R6, R9 hours from these rates + 20%
+    contingency, including the FEAS-PREC v2 scoring passes P1-P4 (timed in FEAS-SMOKE), O4 v2, VT-13r, TC-PF,
+    FEAS-SMOKE and VT-22b v2. If R9's price grows > 50% versus the DEV-01 pricing, the PI re-decides R9 (DEV-01 rule).
+files: "experiments/repro/R2e-X/{g0t_results.jsonl, summary.json, cache_new_files.json}"
+gpu_h: "~0.6"

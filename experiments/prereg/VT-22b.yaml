@@ -1,0 +1,43 @@
+# VT-22b: C0 <-> fla GatedDeltaNetForCausalLM at the evaluated lengths, fp32 and calibrated bf16.
+# Pre-registration (PI, 2026-11-10, written before any VT-22b run).
+id: VT-22b
+version: 1
+relation: >-
+  NEW complementary check. VT-22 FAILED as registered (C0 bf16 rel RMS 2.021e-2 at 16K and 2.004e-2 at 32K
+  against 2e-2; results_R3.md, audit §1.3). That FAIL stays on record and is accepted as residual RR-VT22
+  (PR-15). VT-22b does not replace VT-22. VT-22b is BLOCKING for G-RV.
+question: >-
+  With bf16 noise removed, is our C0 (GDN-A LM) the same function as fla's GatedDeltaNetForCausalLM at 16K and
+  32K, with no error that grows with position? And is our bf16 production path's deviation within the intrinsic
+  bf16 drift of the two implementations?
+gap_closed: >-
+  VT-22 asserted fp32 equivalence only at 4K. Its bf16 band criterion cannot see a position-growing error smaller
+  than the ~2e-2 bf16 noise (an extra error rising to 1e-2 at 32K moves the band ratio only to ~1.1). In fp32 the
+  noise floor is ~2.6e-4 (VT-22 diagnosis, 16K, report-only), about 100x more sensitive.
+reference: "fla 0.6.0 GatedDeltaNetForCausalLM with the VT-09(2) mapping, exactly as VT-22"
+configuration:
+  model: "D384 C0. Weights: random init with torch.manual_seed(1) (VT-22 used 0), norm gains randomised U(0.6, 1.4) as in VT-22, copied into ours by the VT-09(2) map."
+  inputs: "ids uniform in [8, V) from the repro stream, SeedSequence(31337, spawn_key=('VT-22b', T))"
+  T: [16384, 32768]
+  arms:
+    fp32: "no autocast on either side; TF32 flags as torch defaults in this environment (recorded); fla chunk path for the reference; our production varlen path (cu_seqlens [0, T], position ids, max_seqlen) in fp32"
+    bf16: "both sides under torch.autocast('cuda', torch.bfloat16) with fp32 master weights, as VT-22"
+    self_drift: "each implementation's bf16 output vs its own fp32 output, same weights and ids"
+  positions: "every 16th position plus the last 512 (as VT-22); logits computed only at those positions if needed for the 0.44 cap"
+metrics: "rel RMS = ||a - b||_2 / ||b||_2 over sampled positions x vocab (b = fla); band error = absolute RMS of (a - b) over sampled positions in [0, 1024) and in [T-1024, T); band ratio = last / first"
+criteria:
+  F1: "fp32 ours vs fla: rel RMS <= 1e-3, at each T"
+  F2: "fp32 band ratio <= 2, at each T"
+  B1: "bf16 ours vs fla (both bf16): rel RMS <= 1.5 x max(self_drift_fla, self_drift_ours), at each T"
+  B2: "bf16 band ratio <= 2, at each T"
+pass: "F1, F2, B1 and B2 all hold at both T"
+fail: "candidate defect (E10.4). Diagnose with the plan's R3c failure tree (chunk-state accumulation, max_seqlen, cu_seqlens, autocast casting of state/gates). G-RV blocked until resolved; any fix touching GDN code re-runs VT-04/05/09/22/22b and R4/R5 per plan §4.1."
+blocked: "a cell cannot run under the 0.44 cap even with position-sampled logits -> log it; the PI decides before any re-design"
+tolerance_basis: >-
+  F1: 1e-3 is the VT-09 / VT-22-4K fp32 transplant tolerance; defects in the target class (state accumulation,
+  position handling, varlen bookkeeping) give >= 1e-2 at 16K-32K in fp32. F2: VT-22's own band rule. B1: if each
+  implementation deviates from the common fp32 function by about d, their mutual distance lies between 0 and 2d
+  (about 1.4d for independent errors); 1.5 x the larger self-drift admits that range while a bf16-specific defect of
+  the size of the bf16 noise itself is caught. B2 catches a bf16-only error that grows with position.
+gpu_h: "~0.1"
+outputs: "experiments/repro/VT-22b/{vt22b.jsonl, _meta.json}"

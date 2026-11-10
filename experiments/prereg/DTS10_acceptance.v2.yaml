@@ -1,0 +1,76 @@
+# DTS10-AT v2: acceptance specification for the S2 FEAS decision code (open problem 14, DTS-10).
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before the code exists and before any FEAS run).
+# Supersedes DTS10_acceptance.yaml v1 (never ran; stays on record). Every v1 definition and rule is kept verbatim
+# below; v2 adds the FEAS-PREC v2 precision rules, the verdict flags, the stated readings and technical blinding.
+id: DTS10-AT
+version: 2
+supersedes: "DTS10_acceptance.yaml v1, sha256 35339907c756bcdc98d4fabb6da24e2f3066708d613b10caabd8ab60f478d208"
+why_v2: "review O1 (precision rules must feed the FEAS verdict), O5 (per-k resume monitor), O14 (G-div near-miss consequence at FEAS; technical blinding; readings stated as readings)"
+deliverable: "src/hybridlc/analysis/feas.py + scripts/feas_decide.py (CLI) + tests/test_vt18_feas.py; output experiments/feas/feas_decisions.json containing every input value, every intermediate quantity and a rule trace"
+inputs: >-
+  FEAS scored result trees for passes P0-P4 (FEAS_precision.v2.yaml; FD and DC rows from scripts/evaluate.py), LM-2
+  values before and after each TEF (trainer metrics / Tier-0 outputs), the registry (config, seed, branch, stage;
+  gdiv_near_miss notes; attempt_end rows with PR-27 v2 classes). Missing or partial inputs -> refuse (non-zero exit
+  naming the missing cells); never impute
+arithmetic: "scores are EM_tf means; thresholds in pp are fractions (25 pp = 0.25); every comparison is computed from integer counts with exact rational arithmetic (fractions.Fraction), no epsilon; inequality directions exactly as below"
+definitions:   # v1, unchanged
+  ladder_T: "retrieval ladder mean at length T on FD at TEF 1,000 = 1/2 * mean over R1 levels D in {3, 15} + 1/2 * mean over R-load levels present in FD at T (32K and 16K: N in {8, 32, 128, 512, 1024}; 8K: {8, 32, 128, 512}; 4K: {8, 32}) (D018: R1 and R-load weighted equally)"
+  ladder_C0: "the same ladder computed on FD's C0 (no-filler) cells of the same levels"
+  S_k: "ladder_T of the k-configuration model; S_12(C0) = ladder_C0 of the k = 12 model"
+  branch_star: "b* = the 30M branch if FEAS-3 selects the smallest budget, otherwise the 90M branch (protocol §13.3 FEAS row)"
+precision_rules:   # NEW in v2; computed FIRST, before any rule below
+  source: "FEAS_precision.v2.yaml Q1-Q4, with its definitions (flip, informative_cell, pooled and restricted rates, contrast C)"
+  computation: >-
+    feas.py computes Q1, Q2, Q3 and Q4 from the P0-P4 trees; Q4 computes every ladder rule (FEAS-3, FEAS/U-01,
+    FEAS-1/2, FEAS-5, elicitation) from P0 and from P4 and selects the score source for the verdict: P4 if any
+    ladder-rule outcome differs or |C(P4, s) - C(P0, s)| > 0.02 for either seed s, else P0 (for a checkpoint whose
+    Q2 FAILED, its single-pass bf16 re-scores take the place of P0 in this comparison). Every ladder rule below
+    then reads the selected source; U-15 and the TEF forgetting gate read P0; I-08 reads P0 (and P1 if any Q4
+    trigger fires; a P0-vs-P1 I-08 difference is flagged for a PI row before S3).
+  outputs: "q1-q4 blocks with every rate (pooled and restricted per k and length, numerators and denominators), the informative-cell lists, both contrast values per seed, the per-rule outcome under P0, P1 and P4, and the selected source"
+rules:   # v1, unchanged in meaning; each reads the score source selected above
+  FEAS-3_U-04: "Delta = mean over seeds {101, 102} of [S_12(90M) - S_12(30M)] at 32K. Delta <= 0.03 -> smallest (30M); 0.03 < Delta <= 0.10 -> middle (60M); Delta > 0.10 -> largest (90M). Computed first among the ladder rules (it defines b*)"
+  FEAS_U-01_D384: "D384 is adopted iff for BOTH seeds 101 and 102 at 32K on branch b*: S_12 >= 0.85 * S_12(C0) AND S_12 - S_0 >= 0.25. Otherwise -> FEAS-512"
+  FEAS-1-2_D512: "on every FEAS-512 seed run (seed 101 by design): S_12 >= 0.80 * S_12(C0) AND S_12 - S_0 >= 0.20 at 32K -> D512 at 32K; else the same two inequalities at 16K -> D512 with L_ext = 16K; else STOP and re-scope with the user (stop rule)"
+  FEAS-5_U-03_SSMax: "k = 12, seed 101, branch b*: SSMax adopted for all arms iff [ladder_32K(SSMax) - ladder_32K(plain)] >= 0.03 AND [ladder_4K(plain) - ladder_4K(SSMax)] <= 0.02; else plain per-head gains (default)"
+  TEF_forgetting_U-08: "rise_k = LM-2(after TEF 1,000) - LM-2(before TEF), in nats, mean over seeds {101, 102} on branch b*, per k in {0, 12}. Keep 90/10 iff rise_0 <= 0.05 AND rise_12 <= 0.05 AND |rise_0 - rise_12| <= 0.02. Else 50/50; evaluate the 50/50 TEF reruns by the same rule; if they fail -> TEF LR 1e-4 at 50/50 (final, no further test). Per-seed rises reported"
+  elicitation: "k = 12 FD R1 D=3 at 4K EM_tf < 0.50 at TEF 1,000 for BOTH seeds (branch b*) -> answer-only loss, re-run the FEAS TEF branches; if the same condition holds again -> promote the direct-supervision screen (I-08) and consult the user"
+  ICC_U-15: "units = contexts (m = 4 queries, binary EM_tf); strata = (FD retrieval cell at 16K or 32K, k in {0, 12}, seed, branch b*); pooled within-stratum one-way ANOVA: MSB from context means about stratum means (df = sum over strata of n_s - 1), MSW from queries about context means (df = sum n_s (m - 1)); ICC = (MSB - MSW) / (MSB + (m - 1) MSW), truncated at 0; DE = 1 + 3 ICC. DE > 2 -> confirmatory retrieval cells at 16K/32K use 600 contexts (prefix-stable extension generated under VT-24r's repair rule, VT-12 and VT-24r K1 re-run on the extension, before G5); DE <= 2 -> 300"
+  I-08_promotion_D033: "for k = 0 and for k = 12 separately (seed mean, branch b*, TEF 1,000): a family (retrieval = R1 + R-load; multi-hop = M-hop; aggregation = A-freq) triggers promotion iff EVERY FD level of that family at every FD length is individually at floor (EM_tf <= 0.05) or at ceiling (EM_tf >= 0.95). Any trigger -> run the direct-supervision screen before S3"
+readings_stated:   # fixed before any FEAS data; labelled as readings of frozen text
+  I-08: "'at floor ... or ceiling ... at every FD level of a family' is read per level: a family whose levels are a mix of floor and ceiling levels triggers (mixed allowed). This is the reading that triggers most easily (review O14); chosen because a family with no level in the informative range cannot discriminate k either way."
+  elicitation: "'for both FEAS seeds' (protocol §7.3) is read literally: the fallback fires only if both seeds are below 0.50."
+verdict_flags:   # NEW in v2; a flagged verdict is computed and written but is not acted on until the PI enters a decision row
+  F-nearmiss: "any FEAS run (any k, seed, branch, arm) with a gdiv_near_miss registry note (PR-10) -> every FEAS verdict that reads that run is flagged"
+  F-infra: >-
+    per-k resume monitor (review O5): n(k) = number of attempts classified infra_failed_attempt or suspect_sw_failure
+    over all FEAS runs of k. |n(0) - n(12)| >= 3, or any single FEAS run with >= 3 such attempts -> every FEAS verdict
+    is flagged. The PI's row reviews VT-13r's result and the loss continuity at every resume point: mean training loss
+    over the first 20 steps after the resume minus the mean over the 20 steps that precede the checkpoint it resumed
+    from, compared with the distribution of the same adjacent-20-step differences away from resume points in that run.
+  F-precision: "Q4 selected P4 -> reported in the verdict header (not a hold: the rule is automatic)"
+acceptance_tests:   # all must pass before FEAS-SMOKE and before any FEAS evaluation result is read
+  - "per rule: synthetic result trees with planted values on both sides of every threshold, including exact equality at the boundary (asserting the inequality direction above)"
+  - "FEAS-3 middle choice -> FEAS rule reads the 90M branch; smallest -> 30M"
+  - "seed disagreement (one seed passes, one fails) -> D384 not adopted"
+  - "missing cell, missing seed, missing pass (P0-P4), missing LM-2 value, NaN anywhere -> refusal with the missing items named"
+  - "ICC: simulated clustered binary data (true ICC 0.0, 0.15, 0.33, 0.5; 300 contexts x 4 queries x 10 strata) recovered within +-0.03 on average over 200 simulations; DE boundary at ICC = 1/3 exact"
+  - "precision: a flip rate of exactly 1% triggers Q1/Q3 (>= 1%); an informative-cell boundary at EM exactly 0.05 or 0.95 excludes the cell (strict inequalities); |delta C| exactly 0.02 does not switch the source, 0.02 + 1/n does; a planted P4 tree that flips U-01 switches the source and the trace names the trigger; a planted collapse (P0 cell at 0.0, P4 at 0.9) is counted as informative"
+  - "flags: a near-miss note on one run flags exactly the verdicts reading that run; |n(0) - n(12)| = 3 flags, = 2 does not; one run with 3 infra/suspect attempts flags"
+  - "end-to-end CLI run on the S0 smoke result tree (structure only), on one synthetic full FEAS tree with P0-P4, and on the FEAS-SMOKE tree (FEAS_smoke.yaml)"
+blinding:
+  procedural: >-
+    feas.py, the CLI and the tests are committed and a registry note 'DTS10-commit' records the commit and the SHA-256
+    of feas.py BEFORE any FEAS evaluation output is opened. FEAS evaluations may run and write files earlier; no agent
+    opens, prints or summarises FEAS scores before that note. FEAS verdicts come only from feas_decisions.json; the
+    FEAS gate reviewer recomputes them independently from raw rows.
+  technical: >-
+    (1) scripts/evaluate.py, for a checkpoint whose run has exp_stage S2, while no DTS10-commit note exists in the
+    registry it uses, writes scores only to result files and prints no score, EM, logp, rank or flip value to stdout,
+    stderr, logs or _eval_log.jsonl summaries (cell names, counts, paths and timings only); (2)
+    scripts/analyse_results.py and any summary tool refuse S2 result trees before that note (non-zero exit, one-line
+    message); (3) tests/test_dts10_blinding.py asserts both by capturing stdout/stderr, and asserts the normal
+    behaviour for a non-S2 control and after a fake DTS10-commit note. This guards against inadvertent reading; it does
+    not make the files unreadable, so the procedural rule still applies.
+timing: "code complete and acceptance tests passing before FEAS-SMOKE; DTS10-commit note before the first FEAS evaluation output is read (the first TEF-1000 evaluation is the latest deadline because the TEF gates are mid-FEAS decisions)"
+not_in_scope: "R8 (induction/ICL) and R10 (length behaviour) readings and the RP-2 LM-3 clause have their own pre-registered readings (plan §2.8-§2.10) and need their own helpers before the first FEAS Stage-A milestone is evaluated"

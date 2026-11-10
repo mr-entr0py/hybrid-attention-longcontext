@@ -244,6 +244,11 @@ class FakeTEFStream(FakeStageStream):
         if n_oth:
             w[(lab != IGNORE_INDEX) & ~am] = (0.5 if n_ans else 1.0) / n_oth
         b["loss_weights"] = torch.from_numpy(w)[None]
+        # per-label answer-family codes (data/tef.py contract): answers alternate R1 / R-load / other by position
+        fam = np.zeros(lab.shape, dtype=np.int8)
+        idx = np.flatnonzero(am)
+        fam[idx] = (1 + (idx % 3)).astype(np.int8)
+        b["answer_family"] = torch.from_numpy(fam)[None]
         return b
 
 

@@ -1,0 +1,35 @@
+# DTS10-AT: acceptance specification for the S2 FEAS decision code (open problem 14, DTS-10).
+# Pre-registration (PI, 2026-11-10, written before the code exists and before any FEAS run).
+# It fixes the exact semantics of every FEAS-stage rule so that no reading is made after FEAS data exist.
+id: DTS10-AT
+version: 1
+deliverable: "src/hybridlc/analysis/feas.py + scripts/feas_decide.py (CLI) + tests/test_vt18_feas.py; output experiments/feas/feas_decisions.json containing every input value, every intermediate quantity and a rule trace"
+inputs: "FEAS scored result trees (FD and DC rows from scripts/evaluate.py), LM-2 values before and after each TEF (trainer metrics / Tier-0 outputs), the registry (config, seed, branch, stage). Missing or partial inputs -> refuse (non-zero exit naming the missing cells); never impute"
+arithmetic: "scores are EM_tf means; thresholds in pp are fractions (25 pp = 0.25); every comparison is computed from integer counts with exact rational arithmetic (fractions.Fraction), no epsilon; inequality directions exactly as below"
+definitions:
+  ladder_T: "retrieval ladder mean at length T on FD at TEF 1,000 = 1/2 * mean over R1 levels D in {3, 15} + 1/2 * mean over R-load levels present in FD at T (32K and 16K: N in {8, 32, 128, 512, 1024}; 8K: {8, 32, 128, 512}; 4K: {8, 32}) (D018: R1 and R-load weighted equally)"
+  ladder_C0: "the same ladder computed on FD's C0 (no-filler) cells of the same levels"
+  S_k: "ladder_T of the k-configuration model; S_12(C0) = ladder_C0 of the k = 12 model"
+  branch_star: "b* = the 30M branch if FEAS-3 selects the smallest budget, otherwise the 90M branch (protocol §13.3 FEAS row)"
+rules:
+  FEAS-3_U-04: "Delta = mean over seeds {101, 102} of [S_12(90M) - S_12(30M)] at 32K. Delta <= 0.03 -> smallest (30M); 0.03 < Delta <= 0.10 -> middle (60M); Delta > 0.10 -> largest (90M). Computed first (it defines b*)"
+  FEAS_U-01_D384: "D384 is adopted iff for BOTH seeds 101 and 102 at 32K on branch b*: S_12 >= 0.85 * S_12(C0) AND S_12 - S_0 >= 0.25. Otherwise -> FEAS-512"
+  FEAS-1-2_D512: "on every FEAS-512 seed run (seed 101 by design): S_12 >= 0.80 * S_12(C0) AND S_12 - S_0 >= 0.20 at 32K -> D512 at 32K; else the same two inequalities at 16K -> D512 with L_ext = 16K; else STOP and re-scope with the user (stop rule)"
+  FEAS-5_U-03_SSMax: "k = 12, seed 101, branch b*: SSMax adopted for all arms iff [ladder_32K(SSMax) - ladder_32K(plain)] >= 0.03 AND [ladder_4K(plain) - ladder_4K(SSMax)] <= 0.02; else plain per-head gains (default)"
+  TEF_forgetting_U-08: "rise_k = LM-2(after TEF 1,000) - LM-2(before TEF), in nats, mean over seeds {101, 102} on branch b*, per k in {0, 12}. Keep 90/10 iff rise_0 <= 0.05 AND rise_12 <= 0.05 AND |rise_0 - rise_12| <= 0.02. Else 50/50; evaluate the 50/50 TEF reruns by the same rule; if they fail -> TEF LR 1e-4 at 50/50 (final, no further test). Per-seed rises reported"
+  elicitation: "k = 12 FD R1 D=3 at 4K EM_tf < 0.50 at TEF 1,000 for BOTH seeds (branch b*) -> answer-only loss, re-run the FEAS TEF branches; if the same condition holds again -> promote the direct-supervision screen (I-08) and consult the user"
+  ICC_U-15: "units = contexts (m = 4 queries, binary EM_tf); strata = (FD retrieval cell at 16K or 32K, k in {0, 12}, seed, branch b*); pooled within-stratum one-way ANOVA: MSB from context means about stratum means (df = sum over strata of n_s - 1), MSW from queries about context means (df = sum n_s (m - 1)); ICC = (MSB - MSW) / (MSB + (m - 1) MSW), truncated at 0; DE = 1 + 3 ICC. DE > 2 -> confirmatory retrieval cells at 16K/32K use 600 contexts (prefix-stable extension generated under VT-24r's repair rule, VT-12 and VT-24r K1 re-run on the extension, before G5); DE <= 2 -> 300"
+  I-08_promotion_D033: "for k = 0 and for k = 12 separately (seed mean, branch b*, TEF 1,000): a family (retrieval = R1 + R-load; multi-hop = M-hop; aggregation = A-freq) triggers promotion iff EVERY FD level of that family at every FD length is individually at floor (EM_tf <= 0.05) or at ceiling (EM_tf >= 0.95). Any trigger -> run the direct-supervision screen before S3"
+acceptance_tests:   # all must pass before any FEAS evaluation result is read
+  - "per rule: synthetic result trees with planted values on both sides of every threshold, including exact equality at the boundary (asserting the inequality direction above)"
+  - "FEAS-3 middle choice -> FEAS rule reads the 90M branch; smallest -> 30M"
+  - "seed disagreement (one seed passes, one fails) -> D384 not adopted"
+  - "missing cell, missing seed, missing LM-2 value, NaN anywhere -> refusal with the missing items named"
+  - "ICC: simulated clustered binary data (true ICC 0.0, 0.15, 0.33, 0.5; 300 contexts x 4 queries x 10 strata) recovered within +-0.03 on average over 200 simulations; DE boundary at ICC = 1/3 exact"
+  - "end-to-end CLI run on the S0 smoke result tree (structure only) and on one synthetic full FEAS tree"
+blinding: >-
+  feas.py, the CLI and the tests are committed and a registry note 'DTS10-commit' records the commit and the
+  SHA-256 of feas.py BEFORE any FEAS evaluation output is opened. FEAS evaluations may run and write files earlier;
+  no agent opens, prints or summarises FEAS scores before that note. FEAS verdicts come only from
+  feas_decisions.json; the FEAS gate reviewer recomputes them independently from raw rows.
+not_in_scope: "R8 (induction/ICL) and R10 (length behaviour) readings and the RP-2 LM-3 clause have their own pre-registered readings (plan §2.8-§2.10) and need their own helpers before the first FEAS Stage-A milestone is evaluated"

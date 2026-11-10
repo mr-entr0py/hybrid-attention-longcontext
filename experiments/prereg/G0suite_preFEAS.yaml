@@ -1,0 +1,53 @@
+# SUITE-PF: outcome rules for the pre-FEAS full test suite (G0 no-regression condition, registered-criterion markers,
+# VT-25 pinned batch). Pre-registration (PI FINAL rulings, 2026-11-10; written before the suite runs and before the
+# markers or the VT-25 pin exist).
+id: SUITE-PF
+version: 1
+why: >-
+  Review O6 and O3: (1) the DRAFT made VT-21/22/23 strict-xfail; VT-22 exceeds its bound by only 1% (16K) and 0.2%
+  (32K) and its fla-LM kernels will be re-autotuned in the diagnostics cache, so an unexpected pass would fail the
+  suite under strict mode and block G-RV over a non-defect; (2) the pinned VT-25 batch can exceed 2e-2 (observed
+  5.6e-3 to 1.82e-2 across batches, audit §1.5) and the DRAFT left that outcome undefined; (3) the registered criteria
+  of VT-03 (GDN fp32), VT-05, VT-07 and VT-15 must stay executable beside their relaxed regression guards, and suite
+  counts must not hide skips.
+run: >-
+  python scripts/repro/gpu_lock.py run --label SUITE-PF --wait-exclusive -- python -m pytest tests/ -q -rfEsxX
+  -p no:cacheprovider --junitxml=runs/_logs/suite_prefeas.xml; on the final pre-FEAS committed tree with the
+  regenerated items (VT-24r v2 PASS); TRITON_CACHE_DIR=.cache/triton-diag (set by tests/conftest.py); memory
+  fraction 0.44. A window containing an infra event (any PR-27 v2 class) or an R2-LIVE C2 violation -> the run is
+  discarded and repeated in full.
+markers:   # implementation requirement, merged before the run
+  registered_criterion_tests: >-
+    Each asserts the literal registered criterion and is marked
+    pytest.mark.xfail(strict=False, reason="FAIL-as-registered; accepted residual <RR>; PI ruling <row>; criterion
+    unchanged"): VT-03 GDN-family packed vs alone in fp32, max abs 0.0 (RR-G0-5); VT-05 bf16 final state <= 8e-3 for
+    every seed-case (RR-G0-1); VT-07 branched vs single-pass |delta logp_gold| < 1e-3 (RR-G0-2); VT-15 Appendix A
+    within 15% on all 11 cells (RR-G0-4); VT-21 (RR-VT21); VT-22 (RR-VT22); VT-23 (RR-VT23).
+  relaxed_regression_guards: >-
+    stay ordinary tests and say "regression guard, not the registered criterion" in their docstrings: VT-03 fp32
+    linear-mixer relative RMS <= 3e-3 (4 cases), VT-05 bf16 median <= 8e-3 and per-seed <= 1e-2 (4 cases), VT-07
+    single-pass <= 2e-2 (4 cases), VT-15 8 of 11 cells (1 case): 13 test cases in the 2026-11-10 tree.
+  outcome_record: "a conftest hook writes runs/_logs/suite_prefeas_outcomes.json with every test's outcome (passed, failed, skipped, xfailed, xpassed) and the measured values printed by the registered-criterion tests"
+  vt25_pin: "tests/test_vt25_zoology_transplant.py seeds the global torch RNG immediately before building the MQAR batch (Zoology data/multiquery_ar.py L137 uses the global torch.randint); scripts/repro/vt25_seed_sweep.py runs the same check for 10 pinned seeds and reports each worst-tensor GDN gradient error"
+outcomes:
+  O-a_no_regression: >-
+    every test that is not a registered-criterion marker passes (VT-01...VT-20 incl. the relaxed guards, VT-24 on
+    the regenerated items, VT-25 pinned subject to O-d, every other test file). Any failure -> G0's condition of
+    ruling D058 fails: candidate regression, G0 reopened, G-RV blocked until diagnosed.
+  O-b_markers: >-
+    XFAIL is the expected outcome and has no consequence. XPASS is recorded in the ledger with the measured values and
+    reported to the PI; it is NOT a PASS of the item (each item's verdict is its registered verdict run), it never
+    blocks, and it never relabels a residual.
+  O-c_skips: >-
+    expected skips: the 4 env-gated real-model VT-13 tests (covered by VT-13r and the S0 audit). Any other skip makes
+    the run BLOCKED (fix the environment, repeat).
+  O-d_vt25: >-
+    x = worst-tensor GDN gradient error of the pinned VT-25 test; x_sweep = the maximum over the 10-seed sweep.
+    max(x, x_sweep) <= 2e-2 -> consistent with the verdict run. 2e-2 < max <= 4e-2 -> residual RR-VT25 ("VT-25 margin
+    not robust across MQAR batches") is entered by PI row; G-RP(b)'s precondition is reported as "met on the
+    registered verdict run"; no block. max > 4e-2 (2x the bound; planted defects gave >= 8e-2) -> candidate
+    regression: G-RV blocked until diagnosed (tree diff since the verdict run; re-run on the verdict-run batch).
+    The VT-25 verdict (registered run, 1.82e-2 < 2e-2) stands in every case.
+reporting: "counts in the form 'P passed / S skipped / XF xfailed / XP xpassed / F failed; G test cases assert relaxed regression guards (listed)'. A bare 'N/N' is never used."
+gpu_h: "~0.35 (suite ~0.3 + VT-25 sweep ~0.05)"
+outputs: "runs/_logs/suite_prefeas.{log,xml}, runs/_logs/suite_prefeas_outcomes.json, experiments/repro/SUITE-PF/summary.json"

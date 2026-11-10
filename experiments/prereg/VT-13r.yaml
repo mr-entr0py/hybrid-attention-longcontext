@@ -1,0 +1,29 @@
+# VT-13r: real-model resume re-verification on the final pre-FEAS tree (trainer path and runner path).
+# Pre-registration (PI FINAL rulings, 2026-11-10; written before any VT-13r run).
+id: VT-13r
+version: 1
+why: >-
+  Review O9. RR-G0-3 (VT-13 production attempt 1 FAIL) rests on the real-model audit-mode bitwise resume, which ran
+  on a frozen snapshot of a3dfff2 plus the builders' files (s0_integration.md §6). Its reopen trigger is "resume code
+  changes". PI ruling D060: runner-side changes count as resume code; R2-LIVE v2 (lock/token in train.py and
+  runner.py, infra blocks, runner attempt_end rows) and PR-27 v2 (resume policy for classified attempts) change it,
+  so the trigger has fired. The pre-FEAS suite skips the env-gated real-model audit (tests/test_vt13_training.py
+  L624-630); the fakes-based kill-9 tests (L412, L577) do run but use no real model. Hang-driven resumes concentrate
+  in GDN workloads, so resume exactness bears on the k-contrast.
+design:
+  config: "D384 C3, audit mode (configs/training/vt13_audit.yaml: use_deterministic_algorithms, no cuDNN SDPA, CUBLAS_WORKSPACE_CONFIG=:4096:8), real Stage-A data, seed/data index 903 (VT-13 family index; S0 used 900-902), lr 2.0e-3, 200 optimizer steps, checkpoint every 50"
+  environment: "final pre-FEAS committed tree; GPU lock; memory fraction 0.44; TRITON_CACHE_DIR=.cache/triton-diag; separate runs/ckpt/registry roots under experiments/repro/VT-13r/"
+  runs:
+    p1: "clean run launched by scripts/runner.py (single job)"
+    r1_trainer: "scripts/train.py; kill -9 at step 137, micro-batch 3 (mid-accumulation); resume with scripts/train.py (expected from the step-100 checkpoint)"
+    r2_runner_infra: "launched by scripts/runner.py; at step 137, micro-batch 3, the child is SIGKILLed and the R2-LIVE test journal hook injects 'NVRM: Xid (...): 8, ...' plus 'RC watchdog' lines into the attempt window; the runner writes attempt_end, classifies infra_failed_attempt (PR-27 v2) and auto-resumes from the last checkpoint"
+    r3_runner_ckpt: "launched by scripts/runner.py; kill -9 inside the step-150 checkpoint write (no injected event); the runner records an ordinary failed attempt and resumes (expected from step 100)"
+criteria:
+  R1_bitwise: "r1, r2 and r3 are each bitwise identical to p1: per-step (loss, grad-norm) float64 bit patterns for steps 1-200 (the last value per step after a resume), per-step batch hashes, and the final parameter SHA-256"
+  R2_classification: "r2's registry holds an attempt_end row with infra_flagged = true and infra_class = infra, followed by a resumed attempt; r1 and r3 hold no infra classification"
+  R3_counting: "r2's infra attempt does not count toward D031's consecutive-failure count (runner state shows 0 counted failures and 1 infra attempt); r3's failed attempt counts as 1 ordinary failure and is reset by the completed resume"
+pass: "R1, R2 and R3 hold"
+fail: "candidate resume defect: G-RV blocked; diagnose (checkpoint content, RNG state, data position, optimizer state, runner resume selection); any fix is followed by a new run under a new file VT-13r.v2.yaml written before it runs. This FAIL stays on record."
+mandatory_when: "before FEAS; and again before the next study run after any change to scripts/train.py, scripts/runner.py, src/hybridlc/training/{trainer,checkpoint,queue,registry}.py, the StageStream/TEFStream position logic, or RNG-state code"
+gpu_h: "~0.55 (four runs of 200-250 optimizer steps each in audit mode)"
+outputs: "experiments/repro/VT-13r/{runs/, registry.jsonl, vt13r_result.json}"

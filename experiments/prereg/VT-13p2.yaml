@@ -1,0 +1,11 @@
+# VT-13p2: criterion for any FUTURE production-mode resume audit.
+# Pre-registration (PI, 2026-11-10). Not scheduled. It applies only to an audit run after this date, e.g. after a
+# change to checkpoint, resume, loader or RNG-state code. It never applies retroactively: VT-13 production attempt 1
+# (|a - b| = 0.0075 against 0.005) FAILED as registered and stays on record as residual RR-G0-3 (PR-03).
+id: VT-13p2
+version: 1
+design: "D384 C3, production mode, real Stage-A data, 640 steps, checkpoint every 50; for each data/seed index in {900, 901, 902}: run a (clean), run c (clean, second process), run b (kill -9 at step 137 mid-accumulation, resume from step 100)"
+statistic: "per seed: L_x = mean training loss over steps 630-639 for x in {a, b, c}"
+criterion: "PASS iff for every seed |L_a - L_b| <= max(0.005, 2 * |L_a - L_c|)"
+rationale: "VT-13 production v2 measured the clean-vs-clean noise floor |a - c| = 0.0042 on the criterion window (experiments/s0/vt13_production/result.json); a single a-vs-b comparison against 0.005 has no power to separate resume error from production non-determinism. Resume correctness itself is established bitwise in audit mode (VT-13 audit, k in {0, 3, 12})."
+gpu_h: "~2.2 (3 triples)"
