@@ -842,10 +842,17 @@ class Session:
         from torch.nn.attention.flex_attention import create_block_mask, flex_attention
         cfg = next(iter(models.values())).cfg
         Hh, Dh = cfg.n_attn_heads, cfg.attn_head_dim
-        fx = torch.compile(flex_attention, dynamic=False)
+        # Session-1 defect (fixed after the run): one compiled object reused across > 8 shapes hit Dynamo's
+        # recompile_limit (8) and silently fell back to eager flex_attention (dense scores -> OOM; default
+        # block mask built on the CPU inside graph capture).  Now: fresh compile per shape, and the decode
+        # block mask is built outside capture.
+        def fresh():
+            torch._dynamo.reset()
+            return torch.compile(flex_attention, dynamic=False)
         for B in PREFILL_BS:
             for T in TS:
                 def mk(B=B, T=T):
+                    fx = fresh()
                     q = torch.randn(B, Hh, T, Dh, device="cuda", dtype=torch.bfloat16)
                     k_, v_ = torch.randn_like(q), torch.randn_like(q)
                     bm = create_block_mask(lambda b, h, qi, ki: qi >= ki, None, None, T, T, device="cuda")
@@ -860,13 +867,15 @@ class Session:
         for B in (1, 8):
             for L in TS:
                 def mkd(B=B, L=L):
+                    fx = fresh()
                     q = torch.randn(B, Hh, 1, Dh, device="cuda", dtype=torch.bfloat16)
                     k_ = torch.randn(B, Hh, L, Dh, device="cuda", dtype=torch.bfloat16)
                     v_ = torch.randn_like(k_)
                     out = torch.empty_like(q)
+                    bm = create_block_mask(lambda b, h, qi, ki: ki >= 0, None, None, 1, L, device="cuda")  # full, no masking
 
                     def f():
-                        out.copy_(fx(q, k_, v_))
+                        out.copy_(fx(q, k_, v_, block_mask=bm))
                     f()
                     return H.graphed(f)
                 self._kernel(f"kernel|{scale}|attn_decode|flex|{B}|{L}", mkd, 4 * B * Hh * L * Dh,
@@ -974,6 +983,29 @@ def load_rows(out: Path) -> list[dict]:
     return list(rows.values())
 
 
+def compliance(out: Path, rows: list[dict]) -> dict:
+    """Per-row G-cost tier.  ``contended`` = any monitor poll with foreign SM > 0 in [t0 - 60 s, t1 + 5 s]
+    (protocol: no foreign activity >= 60 s before and during).  Kernel rows carry no t0/t1, so their
+    window is taken from the driver log (previous log line .. own log line)."""
+    recs = [json.loads(x) for x in (out / "gpu_monitor.jsonl").read_text().splitlines()]
+    act = [r["ts"] for r in recs if "error" not in r and r.get("foreign_sm_pct", 0) > 0]
+    day = time.strftime("%Y-%m-%d", time.localtime(recs[0]["ts"]))
+    logt, prev = {}, None
+    for line in (out / "run.log").read_text().splitlines():
+        if len(line) > 10 and line[0] == "[" and line[9] == "]" and line[3] == ":":
+            t = time.mktime(time.strptime(f"{day} {line[1:9]}", "%Y-%m-%d %H:%M:%S"))
+            if line[11:].startswith("kernel "):
+                logt[line[11:].split(":")[0].split()[1]] = (prev if prev is not None else t, t + 1)
+            prev = t
+    tier = {}
+    for r in rows:
+        if r.get("status") != "ok" or "n_kept" not in r:
+            continue
+        t0, t1 = (r["t0"], r["t1"]) if "t0" in r else logt.get(r["key"], (None, None))
+        tier[r["key"]] = None if t0 is None else any(t0 - 60 <= a <= t1 + 5 for a in act)
+    return dict(tier=tier, act=act, recs=recs)
+
+
 def _fmt(x, nd=2):
     if x is None or (isinstance(x, float) and math.isnan(x)):
         return "–"
@@ -992,6 +1024,12 @@ def cmd_summarise(a) -> int:
     ok = [r for r in rows if r.get("status") == "ok"]
     scales = [s for s in ("D384", "D512") if any(r.get("scale") == s for r in rows)]
     cfg_k = {n: ModelConfig.for_scale("D512", n).k for n in CONFIGS}
+
+    C = compliance(out, rows)
+    TIER = C["tier"]
+
+    def mk(r) -> str:
+        return " †" if TIER.get(r["key"]) else ""
 
     def get(phase, **kw):
         return [r for r in ok if r["phase"] == phase and all(r.get(k) == v for k, v in kw.items())]
@@ -1050,6 +1088,27 @@ def cmd_summarise(a) -> int:
     P(f"- error rows: {len(errs)}" + (f" e.g. {errs[0]['key']}: {errs[0]['error'][:200]}" if errs else ""))
     P("")
 
+    P("## G-cost compliance per timed series\n")
+    P("Activity reading: a series is **compliant** iff no 5 s monitor poll in [t0 − 60 s, t1 + 5 s] shows foreign SM > 0; "
+      "otherwise **contended** (marked † in every table; appendix-only).\n")
+    P("| Phase | Scale | compliant | contended | no window |")
+    P("|---|---|---|---|---|")
+    grp: dict = {}
+    for r in timed:
+        g = grp.setdefault((r["phase"], r["scale"]), [0, 0, 0])
+        t = TIER.get(r["key"])
+        g[0 if t is False else 1 if t else 2] += 1
+    for (ph, sc), g in sorted(grp.items()):
+        P(f"| {ph} | {sc} | {g[0]} | {g[1]} | {g[2]} |")
+    if C["act"]:
+        P(f"\nFirst foreign-activity poll: {time.strftime('%H:%M:%S', time.localtime(C['act'][0]))}; "
+          f"{len(C['act'])} of {len(C['recs'])} polls show foreign SM > 0.\n")
+    errs_ = [r for r in rows if r.get("status") in ("error", "skip")]
+    P("## Missing / failed cells\n")
+    for r in errs_:
+        P(f"- `{r['key']}`: {r['status']}: {(r.get('error') or r.get('reason'))[:140]}")
+    P("")
+
     # ---------------------------------------------------------------- vt14
     P("## Inference-state bytes: measured nbytes vs analytic (§3.4 / VT-14)\n")
     P("| Scale | Config | T | measured total B | analytic total B | equal | dtypes as stored |")
@@ -1084,7 +1143,7 @@ def cmd_summarise(a) -> int:
                     sk = [x for x in rows if x["key"] == f"prefill|{scale}|{n}|{B}|{T}|skip"]
                     cells.append("skip" if sk else "–")
                 else:
-                    cells.append(_fmt(r[stat] / 1e3, 2) if stat != "iqr" else f"{_fmt(r['median_us'] / 1e3, 2)} ({_fmt((r['iqr_us'] or 0) / 1e3, 3)})")
+                    cells.append((_fmt(r[stat] / 1e3, 2) if stat != "iqr" else f"{_fmt(r['median_us'] / 1e3, 2)} ({_fmt((r['iqr_us'] or 0) / 1e3, 3)})") + mk(r))
             P(f"| {n} | {cfg_k[n]} | " + " | ".join(cells) + " |")
         P("")
 
@@ -1121,7 +1180,7 @@ def cmd_summarise(a) -> int:
                         continue
                     fl = B * T * (flops_per_token(cfg, T) - 2 * cfg.d_model * cfg.vocab_size) + B * 2 * cfg.d_model * cfg.vocab_size
                     t = r["min_us"] * 1e-6
-                    P(f"| {n} | {B} | {_tsk(T)} | {_fmt(t * 1e3)} | {_fmt(B * T / t / 1e6)} | {_fmt(fl / t / 1e12)} | {_fmt(fl / t / PEAK_FLOPS, 3)} |")
+                    P(f"| {n} | {B} | {_tsk(T)} | {_fmt(t * 1e3)}{mk(r)} | {_fmt(B * T / t / 1e6)} | {_fmt(fl / t / 1e12)} | {_fmt(fl / t / PEAK_FLOPS, 3)} |")
         P("")
 
     # ---------------------------------------------------------------- decode
@@ -1141,9 +1200,9 @@ def cmd_summarise(a) -> int:
                         if r is None:
                             cells.append("–")
                         elif bclass == "max":
-                            cells.append(f"{_fmt(r['min_us'], 1)} (B={r['B']})")
+                            cells.append(f"{_fmt(r['min_us'], 1)} (B={r['B']})" + mk(r))
                         else:
-                            cells.append(_fmt(r["min_us"], 1))
+                            cells.append(_fmt(r["min_us"], 1) + mk(r))
                     P(f"| {n} | {cfg_k[n]} | " + " | ".join(cells) + " |")
                 P("")
         P(f"### {scale}: decode throughput, tokens/s = B / min latency (cuDNN, cold L2)\n")
@@ -1155,7 +1214,7 @@ def cmd_summarise(a) -> int:
                 for L in TS_ALL:
                     b = "cudnn" if n not in ("C0", "X-E0") else "none"
                     r = one("decode", scale=scale, config=n, L=L, bclass=bclass, backend=b, l2="cold")
-                    cells.append("–" if r is None else f"{r['B'] / (r['min_us'] * 1e-6):,.0f}")
+                    cells.append("–" if r is None else f"{r['B'] / (r['min_us'] * 1e-6):,.0f}" + mk(r))
                 P(f"| {n} | {cfg_k[n]} | {bclass if bclass != 'max' else 'B_max'} | " + " | ".join(cells) + " |")
         P("")
         P(f"### {scale}: decode median (IQR) µs, cuDNN cold, B = 1\n")
@@ -1166,7 +1225,7 @@ def cmd_summarise(a) -> int:
             for L in TS_ALL:
                 b = "cudnn" if n not in ("C0", "X-E0") else "none"
                 r = one("decode", scale=scale, config=n, L=L, bclass="1", backend=b, l2="cold")
-                cells.append("–" if r is None else f"{_fmt(r['median_us'], 1)} ({_fmt(r['iqr_us'], 1)})")
+                cells.append("–" if r is None else f"{_fmt(r['median_us'], 1)} ({_fmt(r['iqr_us'], 1)})" + mk(r))
             P(f"| {n} | " + " | ".join(cells) + " |")
         P("")
         P(f"### {scale}: whole-step decode roofline fraction (cuDNN, cold L2)\n")
@@ -1187,7 +1246,7 @@ def cmd_summarise(a) -> int:
                         continue
                     sb = state_bytes(cfg, L + 1)
                     by = 2 * Nt + r["B"] * (sb["kv"] + 2 * (sb["gdn_state"] + sb["conv"]))
-                    cells.append(_fmt(by / PEAK_BW / (r["min_us"] * 1e-6), 3))
+                    cells.append(_fmt(by / PEAK_BW / (r["min_us"] * 1e-6), 3) + mk(r))
                 P(f"| {n} | {bclass} | " + " | ".join(cells) + " |")
         P("")
 
@@ -1223,7 +1282,7 @@ def cmd_summarise(a) -> int:
         for r in [x for x in ok if x["phase"] == "kernel" and x["scale"] == scale]:
             var = r.get("backend") or r.get("geometry") or r.get("gemm")
             shape = ", ".join(f"{k}={r[k]}" for k in ("B", "T", "L", "M", "K", "N") if k in r)
-            P(f"| {r['kernel']} | {var} | {shape} | {_fmt(r['min_us'], 1)} | {_fmt(r['achieved_tflops'], 2)} | "
+            P(f"| {r['kernel']} | {var} | {shape} | {_fmt(r['min_us'], 1)}{mk(r)} | {_fmt(r['achieved_tflops'], 2)} | "
               f"{_fmt(r['achieved_gbs'], 0)} | {_fmt(r['roofline_fraction'], 3)} |")
         P("")
     return 0
