@@ -10,6 +10,7 @@
 | Workflow | Script | Run ID | State |
 |---|---|---|---|
 | S0 build, integrate, verify, gate report | s0-infrastructure-and-repro-wf_a4a629b1-75d.js | wf_743ec7bf-78f | resumed 2026-11-10 05:34; integrator (partial output committed 2fffe8f) → verify → gate report |
+| Reproduction execution R2/R3/R7 → R4 → R5 → audit | reproduction-execution-r2-r7-wf_fd2b916e-fb5.js | wf_fd2b916e-fb5 | launched 2026-11-10 ~06:10 |
 | Reproduction-program design | reproduction-program-design-wf_b6052608-ded.js | wf_b6052608-ded | DONE: reports/reproduction/reproduction_plan.md |
 
 ## Detached jobs
@@ -51,3 +52,14 @@
 **2026-11-10 05:34 IST**
 
 - The usage limit (reset 03:10) interrupted the integrator. Partial output, including the items in `experiments/items/` and `s0_integration.md`, is committed as 2fffe8f. The S0 workflow has been resumed. No detached jobs are running.
+
+**2026-11-10 ~06:10 IST**
+
+- The user gave the project the whole PC; CARLA is stopped.
+- An idle-GPU throughput benchmark was saved to `experiments/bench/train_step_idle_20261110*.json`.
+  - D384: Stage A 127–138K tok/s; Stage B at 32K, 107K / 98K / 78K for k = 0 / 3 / 12.
+  - D512: 97–99K, then 79K / 72K / 56K.
+  - Peak memory ≤ 5.8 GiB. This is about 1.3–2.4× faster than the contended budget rates.
+  - The first D384 pass was contended by our own tests and has been discarded; see the `_D384` file for the clean run.
+- Launched the reproduction-execution workflow. It runs in parallel with the S0 workflow.
+- **Pending after S0:** R6 (needs the integrated trainer), then gate G-RV, then S2 FEAS.
