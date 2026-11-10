@@ -404,10 +404,10 @@ def score_file(model: Any, item_path: str | Path, out_jsonl: str | Path, batch_s
             f.write(json.dumps(r, sort_keys=True, allow_nan=True) + "\n")
     if cell.get("task") in LM_TASKS:
         extra_meta = {**lm_source_counts(rows, cell.get("task")), **(extra_meta or {})}
-    hdr = _header(model, item_path, dict(cell=cell, n_rows=len(rows), batch_size=bs, frozen_batch_size=frozen,
-                                         batch_size_deviation=bs != frozen, scoring_path=_scoring_path(model),
-                                         autocast_bf16=use_ac and dev.type == "cuda", device=str(dev),
-                                         wall_time_s=time.time() - t0, out_jsonl=str(out), **(extra_meta or {})))
+    hdr = _header(model, item_path, {**dict(cell=cell, n_rows=len(rows), batch_size=bs, frozen_batch_size=frozen,
+                                            batch_size_deviation=bs != frozen, scoring_path=_scoring_path(model),
+                                            autocast_bf16=use_ac and dev.type == "cuda", device=str(dev),
+                                            wall_time_s=time.time() - t0, out_jsonl=str(out)), **(extra_meta or {})})
     _write_meta(out, hdr)
     return out
 
@@ -420,29 +420,69 @@ def rescore_subset(n_contexts: int, cell_key: str, frac: float = RESCORE_FRACTIO
     return sorted(int(i) for i in eval_rng("test", "rescore", cell_key).choice(n_contexts, size=k, replace=False))
 
 
+#: FEAS-PREC v2 P3: fp32 single-pass references at T >= this length use the R-ATT fp32 reference
+#: attention (MATH below; PI ruling D083).
+RATT_MIN_T = 16384
+
+
+def precision_flags() -> dict:
+    """TF32 / matmul-precision flags in force (recorded in every FEAS-PREC v2 record)."""
+    return dict(matmul_allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
+                cudnn_allow_tf32=bool(torch.backends.cudnn.allow_tf32),
+                float32_matmul_precision=torch.get_float32_matmul_precision())
+
+
 def rescore_check(model: torch.nn.Module, item_path: str | Path, rows_jsonl: str | Path,
-                  frac: float = RESCORE_FRACTION) -> dict:
+                  frac: float = RESCORE_FRACTION, ref: str = "bf16", ref_model: torch.nn.Module | None = None) -> dict:
     """Re-score a 5% subset with a single-pass forward (``ForwardOnlyAdapter``) and compare EM_tf.
 
-    Returns ``dict(n, flips, flip_rate, max_abs_dlogp)``; the protocol requires flip_rate < 1%.
+    ``ref="bf16"`` (default) is the frozen protocol §9.2 / I-29 check (FEAS-PREC v2 P2): the same
+    model (bf16-rounded weights) under the same bf16 autocast as the scored rows; the protocol requires
+    flip_rate < 1% and ``analysis.results.rescore_audit`` gates on this record. ``ref="fp32"`` is
+    FEAS-PREC v2 P3: ``ref_model`` (the checkpoint's fp32 weights; default ``model``), autocast off,
+    attention through R-ATT for T >= 16K (MATH below), TF32 flags as in force (recorded).
+
+    Returns ``dict(n, flips, flip_rate, max_abs_dlogp, contexts, ref, pass_id, ...precision fields)``.
     """
     from hybridlc.eval.adapter import ForwardOnlyAdapter
 
-    items, _ = load_items(item_path)
+    if ref not in ("bf16", "fp32"):
+        raise ValueError(f"rescore_check ref must be 'bf16' or 'fp32', got {ref!r}")
+    import contextlib
+
+    items, cell = load_items(item_path)
     name = Path(item_path).stem
     sub = rescore_subset(len(items), name, frac)
-    use_ac = _device(model).type == "cuda"
-    ref = score_items(ForwardOnlyAdapter(model), [items[i] for i in sub], 1, name, score_candidates=False,
-                      autocast=use_ac)
+    T = int(cell.get("T") or max(len(it["context_ids"]) for it in items))
+    if ref == "bf16":
+        m, use_ac, att = model, _device(model).type == "cuda", contextlib.nullcontext()
+        backend, weights = "as P0 (bf16 autocast on CUDA)", "as scored (P0 weights)"
+    else:
+        m = ref_model if ref_model is not None else model
+        use_ac = False
+        weights = "ref_model (fp32 weights)" if ref_model is not None else "as scored (P0 weights; no ref_model)"
+        if T >= RATT_MIN_T:
+            from hybridlc.models.attention import fp32_reference_attention
+
+            att, backend = fp32_reference_attention("tiled"), "R-ATT:tiled-fp32"
+        else:
+            att, backend = contextlib.nullcontext(), "MATH (fp32)"
+    with att:
+        ref_rows = score_items(ForwardOnlyAdapter(m), [items[i] for i in sub], 1, name, score_candidates=False,
+                               autocast=use_ac)
+    pass_meta = dict(ref=ref, pass_id="P2" if ref == "bf16" else "P3", autocast=bool(use_ac and _device(m).type == "cuda"),
+                     attention_backend=backend, weights=weights, **precision_flags())
     stored = {}
     with open(rows_jsonl) as f:
         for line in f:
             r = json.loads(line)
             stored[r["item_id"]] = r
     flips, dmax = 0, 0.0
-    for r in ref:
+    for r in ref_rows:
         s = stored[r["item_id"]]
         flips += int(s["EM_tf"] != r["EM_tf"])
         dmax = max(dmax, abs(s["logp_gold"] - r["logp_gold"]))
-    n = len(ref)
-    return dict(n=n, flips=flips, flip_rate=flips / max(n, 1), max_abs_dlogp=dmax, contexts=sub)
+    n = len(ref_rows)
+    rows = [dict(item_id=r["item_id"], EM_tf=bool(r["EM_tf"]), logp_gold=float(r["logp_gold"])) for r in ref_rows]
+    return dict(n=n, flips=flips, flip_rate=flips / max(n, 1), max_abs_dlogp=dmax, contexts=sub, rows=rows,
+                **pass_meta)

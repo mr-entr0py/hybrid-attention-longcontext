@@ -159,7 +159,7 @@ def suite_item_files(suite: str, items_root: str | Path = ITEMS_ROOT, only: str 
 
 def score_cell(model: torch.nn.Module, item_path: Path, out_jsonl: Path, *, n_contexts: int | None = None,
                batch_size: int | None = None, score_candidates: bool = True,
-               extra_meta: dict[str, Any] | None = None) -> Path:
+               extra_meta: dict[str, Any] | None = None, autocast: bool | None = None) -> Path:
     """Score one item file, optionally only its first ``n_contexts`` contexts (smoke / dev subsets).
 
     Full cells go through :func:`hybridlc.eval.scorer.score_file` unchanged. A subset uses the same
@@ -172,7 +172,7 @@ def score_cell(model: torch.nn.Module, item_path: Path, out_jsonl: Path, *, n_co
 
     if n_contexts is None:
         return scorer.score_file(model, item_path, out_jsonl, batch_size=batch_size,
-                                 score_candidates=score_candidates, extra_meta=extra_meta)
+                                 score_candidates=score_candidates, extra_meta=extra_meta, autocast=autocast)
     t0 = time.time()
     items, cell = load_items(item_path)
     items = items[:n_contexts]
@@ -182,7 +182,7 @@ def score_cell(model: torch.nn.Module, item_path: Path, out_jsonl: Path, *, n_co
     bs = int(batch_size or frozen)
     model.eval()
     dev = next(model.parameters()).device
-    use_ac = dev.type == "cuda"
+    use_ac = (dev.type == "cuda") if autocast is None else bool(autocast and dev.type == "cuda")
     if cell.get("task") in scorer.LM_TASKS:
         rows = scorer.score_lm_items(model, items, name, autocast=use_ac)
     else:
@@ -192,32 +192,47 @@ def score_cell(model: torch.nn.Module, item_path: Path, out_jsonl: Path, *, n_co
     with open(out, "x") as f:
         for r in rows:
             f.write(json.dumps(r, sort_keys=True, allow_nan=True) + "\n")
-    hdr = scorer._header(model, item_path, dict(  # noqa: SLF001 (same header as score_file)
+    hdr = scorer._header(model, item_path, {**dict(  # noqa: SLF001 (same header as score_file)
         cell=cell, n_rows=len(rows), batch_size=bs, frozen_batch_size=frozen, batch_size_deviation=bs != frozen,
         scoring_path=scorer._scoring_path(model), autocast_bf16=use_ac, device=str(dev),  # noqa: SLF001
-        wall_time_s=time.time() - t0, out_jsonl=str(out), subset=True, n_contexts_scored=len(items),
-        **(extra_meta or {})))
+        wall_time_s=time.time() - t0, out_jsonl=str(out), subset=True, n_contexts_scored=len(items)),
+        **(extra_meta or {})})
     scorer._write_meta(out, hdr)  # noqa: SLF001
     return out
 
 
-def rescore_subset_check(model: torch.nn.Module, item_path: Path, rows_jsonl: Path, n_contexts: int) -> dict:
+def rescore_subset_check(model: torch.nn.Module, item_path: Path, rows_jsonl: Path, n_contexts: int,
+                         ref: str = "bf16", ref_model: torch.nn.Module | None = None) -> dict:
     """§9.2 single-pass re-score restricted to the contexts a subset run actually scored: the frozen
-    5 % subset of the cell intersected with ``range(n_contexts)`` (or context 0 if that is empty)."""
+    5 % subset of the cell intersected with ``range(n_contexts)`` (or context 0 if that is empty).
+    ``ref`` / ``ref_model`` as in :func:`hybridlc.eval.scorer.rescore_check` (P2 bf16 / P3 fp32)."""
+    import contextlib
+
     from hybridlc.eval import scorer
     from hybridlc.eval.adapter import ForwardOnlyAdapter
     from hybridlc.eval.items import load_items
 
-    items, _ = load_items(item_path)
+    items, cell = load_items(item_path)
     name = item_path.stem
     sub = [i for i in scorer.rescore_subset(len(items), name) if i < n_contexts] or [0]
-    use_ac = next(model.parameters()).device.type == "cuda"
-    ref = scorer.score_items(ForwardOnlyAdapter(model), [items[i] for i in sub], 1, name,
-                             score_candidates=False, autocast=use_ac)
+    T = int(cell.get("T") or max(len(it["context_ids"]) for it in items))
+    m = model if ref == "bf16" or ref_model is None else ref_model
+    use_ac = next(model.parameters()).device.type == "cuda" if ref == "bf16" else False
+    att, backend = contextlib.nullcontext(), ("as P0 (bf16 autocast on CUDA)" if ref == "bf16" else "MATH (fp32)")
+    if ref == "fp32" and T >= scorer.RATT_MIN_T:
+        from hybridlc.models.attention import fp32_reference_attention
+
+        att, backend = fp32_reference_attention("tiled"), "R-ATT:tiled-fp32"
+    with att:
+        rr = scorer.score_items(ForwardOnlyAdapter(m), [items[i] for i in sub], 1, name,
+                                score_candidates=False, autocast=use_ac)
     stored = {r["item_id"]: r for r in map(json.loads, Path(rows_jsonl).read_text().splitlines())}
-    flips = sum(int(stored[r["item_id"]]["EM_tf"] != r["EM_tf"]) for r in ref)
-    dmax = max(abs(stored[r["item_id"]]["logp_gold"] - r["logp_gold"]) for r in ref)
-    return dict(n=len(ref), flips=flips, flip_rate=flips / len(ref), max_abs_dlogp=dmax, contexts=sub, subset=True)
+    flips = sum(int(stored[r["item_id"]]["EM_tf"] != r["EM_tf"]) for r in rr)
+    dmax = max(abs(stored[r["item_id"]]["logp_gold"] - r["logp_gold"]) for r in rr)
+    rows = [dict(item_id=r["item_id"], EM_tf=bool(r["EM_tf"]), logp_gold=float(r["logp_gold"])) for r in rr]
+    return dict(n=len(rr), flips=flips, flip_rate=flips / len(rr), max_abs_dlogp=dmax, contexts=sub, subset=True, rows=rows,
+                ref=ref, pass_id="P2" if ref == "bf16" else "P3", autocast=bool(use_ac), attention_backend=backend,
+                **scorer.precision_flags())
 
 
 RESCORE_SUITES: tuple[str, ...] = ("CS", "DG", "DC", "FD", "MS")
@@ -227,11 +242,46 @@ was added in verification round 2 (RESCORE-SCOPE-EXCLUDES-FD-MS) because the S2 
 audits CS/DG/DC cells for a passing record (pooled per checkpoint)."""
 
 
+#: FEAS-PREC v2 scoring passes (experiments/prereg/FEAS_precision.v2.yaml). P2 / P3 are the re-score
+#: records of a P0 run (``rescore_ref``); P1 and P4 are separate runs written under ``<label>-P1|-P4``.
+PASSES = {
+    "P0": dict(weights="bf16-rounded", autocast=True, reference_attention=None, candidates=True),
+    "P1": dict(weights="float32", autocast=True, reference_attention=None, candidates=False),
+    "P4": dict(weights="float32", autocast=False, reference_attention="tiled", candidates=False),
+}
+
+
+def _only_match(name: str, only: str | list[str] | None) -> bool:
+    if only is None:
+        return True
+    pats = [only] if isinstance(only, str) else list(only)
+    pats = [p for q in pats for p in str(q).split(",") if p]
+    return any(p in name for p in pats)
+
+
+def precision_meta(ck: "LoadedCheckpoint", pass_id: str, autocast: bool | None, reference_attention: str | None) -> dict:
+    """Precision fields recorded in every result ``_meta.json`` (FEAS-PREC v2 passes_in_code)."""
+    from hybridlc.eval.scorer import precision_flags
+    from hybridlc.models import attention as A
+
+    dev = next(ck.model.parameters()).device
+    ac = (dev.type == "cuda") if autocast is None else bool(autocast and dev.type == "cuda")
+    if reference_attention:
+        be = {"tiled": "R-ATT:tiled-fp32", "efficient": "R-ATT:sdpa-efficient-fp32"}[reference_attention]
+    else:
+        be = f"sdpa:{A.INFERENCE_HALF_BACKEND.name}" if ac else "sdpa:MATH (fp32)"
+    return dict(pass_id=pass_id, weights_dtype=getattr(ck, "eval_weights", None), autocast_bf16=ac,
+                attention_backend=be, **precision_flags())
+
+
 def evaluate_checkpoint(ck: LoadedCheckpoint, suites: Iterable[str], *, label: str | None = None,
                         items_root: str | Path = ITEMS_ROOT, results_root: str | Path = RESULTS_ROOT,
-                        n_contexts: int | None = None, only: str | None = None,
+                        n_contexts: int | None = None, only: str | list[str] | None = None,
                         score_candidates: bool = True, rescore: bool | None = None,
-                        log: Any = print) -> list[dict[str, Any]]:
+                        log: Any = print, pass_id: str = "P0", autocast: bool | None = None,
+                        reference_attention: str | None = None, rescore_ref: str = "bf16",
+                        ref_model: torch.nn.Module | None = None, blind: bool = False,
+                        infra: Any = None) -> list[dict[str, Any]]:
     """Score every cell of ``suites`` for one checkpoint; returns one record per cell written.
 
     ``rescore``: the §9.2 / I-29 single-pass re-score of 5% of items (EM flip rate < 1%). ``None``
@@ -242,34 +292,100 @@ def evaluate_checkpoint(ck: LoadedCheckpoint, suites: Iterable[str], *, label: s
     ``n_contexts`` (a subset of each cell) writes under the checkpoint label ``<label>-n<N>`` so a
     subset can never occupy the path of the full cell; the analysis skips such outputs
     (verification round 2, EVAL-SUBSET-SHADOWS-FULL).
-    """
-    from hybridlc.eval import scorer
 
+    FEAS-PREC v2 (PI ruling D083): ``pass_id`` P0 (default) / P1 / P4 with ``autocast`` and
+    ``reference_attention`` (R-ATT mode for every attention call of the pass); P1 and P4 write under
+    ``<label>-P1`` / ``<label>-P4``. ``rescore_ref`` = "bf16" (P2, the frozen check; default), "fp32"
+    (P3, single-pass with ``ref_model`` = fp32 weights) or "both"; every re-score record is also
+    written next to the result file as ``<stem>_rescore.json``. ``only`` takes a substring or a list
+    (comma-separated) of cell-name substrings.
+
+    Technical blinding (DTS10-AT v2): with ``blind`` the score values never reach the log or the
+    ``_eval_log.jsonl`` summary (re-score records are referenced by file only). ``infra`` (an
+    ``InfraTagger``) adds the R2-LIVE v2 infra block to every ``_eval_log.jsonl`` line and result meta.
+    """
+    import contextlib
+
+    from hybridlc.eval import scorer
+    from hybridlc.utils.infra import registry_fields
+
+    if rescore_ref not in ("bf16", "fp32", "both"):
+        raise ValueError(f"rescore_ref must be bf16|fp32|both, got {rescore_ref!r}")
     label = label or ckpt_label(ck.stage, ck.step)
+    if pass_id != "P0":
+        label = f"{label}-{pass_id}"
     if n_contexts is not None:
         label = f"{label}-n{int(n_contexts)}"
     results_root = Path(results_root)
+    pmeta = precision_meta(ck, pass_id, autocast, reference_attention)
     recs = []
     for suite in suites:
-        for f in suite_item_files(suite, items_root, only):
+        for f in suite_item_files(suite, items_root, None):
+            if not _only_match(f.name, only):
+                continue
             out = results_root / ck.run_id / label / suite / f"{result_name(f.stem)}.jsonl"
             t0 = time.time()
             extra = dict(run_id=ck.run_id, ckpt=label, ckpt_path=str(ck.path), ckpt_sha256=ck.sha256,
                          ckpt_step=ck.step, ckpt_dtype=ck.dtype, eval_weights=getattr(ck, "eval_weights", None),
                          config_hash=ck.config_hash,
-                         train_git_commit=ck.git_commit)
-            written = score_cell(ck.model, f, out, n_contexts=n_contexts, score_candidates=score_candidates,
-                                 extra_meta=extra)
+                         train_git_commit=ck.git_commit, **pmeta)
+            blk = None
+            if infra is not None:
+                blk = infra.snapshot()
+                extra["infra"] = blk
+            if reference_attention:
+                from hybridlc.models.attention import fp32_reference_attention
+
+                att = fp32_reference_attention(reference_attention)
+            else:
+                att = contextlib.nullcontext()
+            with att:
+                written = score_cell(ck.model, f, out, n_contexts=n_contexts, score_candidates=score_candidates,
+                                     extra_meta=extra, autocast=autocast)
             rec = dict(ts=time.time(), kind="eval", run_id=ck.run_id, ckpt=label, suite=suite, item_file=str(f),
-                       out=str(written), rerun=written != out, n_contexts=n_contexts, wall_s=time.time() - t0)
+                       out=str(written), rerun=written != out, n_contexts=n_contexts, wall_s=time.time() - t0,
+                       pass_id=pass_id, blinded=bool(blind))
+            if blk is not None:
+                rec["infra"] = {**registry_fields(blk), "classification": blk.get("classification"),
+                                "events": blk.get("events"), "journal_source": blk.get("journal_source")}
             do_rescore = (suite in RESCORE_SUITES) if rescore is None else bool(rescore)
+            res_recs: dict[str, dict] = {}
             if do_rescore and suite != "Tier0":
-                rec["rescore"] = (scorer.rescore_check(ck.model, f, written) if n_contexts is None
-                                  else rescore_subset_check(ck.model, f, written, n_contexts))
+                for ref in (("bf16", "fp32") if rescore_ref == "both" else (rescore_ref,)):
+                    t1 = time.time()
+                    rr = (scorer.rescore_check(ck.model, f, written, ref=ref, ref_model=ref_model) if n_contexts is None
+                          else rescore_subset_check(ck.model, f, written, n_contexts, ref=ref, ref_model=ref_model))
+                    rr["wall_s"] = time.time() - t1
+                    res_recs["P2" if ref == "bf16" else "P3"] = rr
+                rpath = written.with_name(written.stem + "_rescore.json")
+                rpath.write_text(json.dumps(res_recs, indent=1, sort_keys=True, default=str) + "\n")
+                rec["rescore_file"] = str(rpath)
+                if not blind:
+                    if "P2" in res_recs:
+                        rec["rescore"] = res_recs["P2"]
+                    if "P3" in res_recs:
+                        rec["rescore_fp32"] = res_recs["P3"]
             recs.append(rec)
             results_root.mkdir(parents=True, exist_ok=True)
             with open(results_root / "_eval_log.jsonl", "a") as fh:
                 fh.write(json.dumps(rec, sort_keys=True, default=str) + "\n")
             if log:
-                log(f"[eval] {ck.run_id}/{label}/{suite}/{written.name}  {rec['wall_s']:.1f}s")
+                msg = f"[eval] {ck.run_id}/{label}/{suite}/{written.name}  {rec['wall_s']:.1f}s"
+                if not blind:
+                    msg += "  " + _score_summary(written, res_recs)
+                log(msg)
     return recs
+
+
+def _score_summary(rows_path: Path, res_recs: dict[str, dict]) -> str:
+    """One-line score summary of a written cell (never used under technical blinding)."""
+    try:
+        rows = [json.loads(x) for x in Path(rows_path).read_text().splitlines()]
+    except OSError:
+        return ""
+    parts = []
+    if rows and "EM_tf" in rows[0]:
+        parts.append(f"EM={sum(bool(r['EM_tf']) for r in rows) / len(rows):.4f} (n={len(rows)})")
+    for k, v in res_recs.items():
+        parts.append(f"{k} flip={v.get('flip_rate', float('nan')):.4f}")
+    return " ".join(parts)

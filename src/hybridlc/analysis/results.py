@@ -387,7 +387,16 @@ def rescore_audit(results_root: str | Path, files: Iterable[str], suites: Iterab
                 if not line.strip():
                     continue
                 r = json.loads(line)
+                if r.get("rescore") is None and r.get("rescore_file") and r.get("out"):
+                    # blinded evaluation (DTS10-AT v2): the bf16 P2 record lives next to the result file
+                    try:
+                        sealed = json.loads(Path(r["rescore_file"]).read_text())
+                    except (OSError, json.JSONDecodeError):
+                        sealed = {}
+                    if sealed.get("P2") is not None:
+                        r["rescore"] = sealed["P2"]
                 if r.get("rescore") is not None and r.get("out"):
+                    # gates on the bf16 path (P2) only; the fp32 P3 record ("rescore_fp32") is FEAS-PREC v2's
                     recs[str(Path(r["out"]).resolve())] = r["rescore"]  # latest record wins
     ok, missing, unusable, subset_only, with_flips = [], [], [], [], []
     groups: dict[str, dict[str, int]] = {}

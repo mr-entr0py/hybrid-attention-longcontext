@@ -144,3 +144,34 @@ def test_positional_call_detected_by_spy(spies) -> None:
     cuda_device_or_skip()
     with pytest.raises(AssertionError, match="positional"):
         L.fused_recurrent_gated_delta_rule(torch.zeros(1))
+
+
+# ---------------------------------------------------------------------------------------------
+# R-ATT (FEAS-PREC v2, PI ruling D083): the explicitly selected fp32 reference mode leaves the
+# production pins untouched and never runs in half precision.
+# ---------------------------------------------------------------------------------------------
+@pytest.mark.gpu
+def test_production_pins_unchanged_around_reference_mode(spies) -> None:
+    dev = cuda_device_or_skip()
+    _, sdpa_log = spies
+    cfg = ModelConfig.for_scale("D384", "C3")
+    model = build_model(cfg, seed_index=902).to(dev).eval()
+    ids = torch.randint(8, cfg.vocab_size, (1, 96), device=dev)
+    with torch.no_grad():
+        with A.fp32_reference_attention("tiled"):
+            sdpa_log.clear()
+            _, cache = model.prefill(ids)
+            model.score_continuation(cache, ids[:, :7])
+            assert sdpa_log == []  # tiled fp32: no SDPA (MATH) call at all
+            with pytest.raises(RuntimeError, match="fp32 only"), torch.autocast("cuda", torch.bfloat16):
+                model.prefill(ids)
+        sdpa_log.clear()
+        with torch.autocast("cuda", torch.bfloat16):
+            _, cache = model.prefill(ids)
+            model.score_continuation(cache, ids[:, :7])
+    assert sdpa_log and all(s["flash"] and not s["mem_efficient"] and not s["math"] and not s["cudnn"]
+                            for s in sdpa_log)
+
+
+def test_reference_mode_off_by_default() -> None:
+    assert A.REFERENCE_FP32_MODE is None and A.INFERENCE_HALF_BACKEND == A.SDPBackend.FLASH_ATTENTION

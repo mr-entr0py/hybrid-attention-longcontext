@@ -156,7 +156,24 @@ class Faults:
     def after_micro(self, step: int, micro: int) -> None:
         if self._armed("kill_at") and list(self.spec["kill_at"]) == [step, micro]:
             self._fire("kill_at")
+            self._inject_journal()
             os.kill(os.getpid(), signal.SIGKILL)
+
+    def _inject_journal(self) -> None:
+        """``{"inject_journal": [lines]}`` (with ``kill_at``): append the lines, stamped now, to the test
+        journal source ``HYBRIDLC_JOURNAL_SOURCE`` just before the kill (R2-LIVE / VT-13r / FEAS-SMOKE
+        injections: the event lands inside this attempt's window only)."""
+        lines = self.spec.get("inject_journal")
+        src = os.environ.get("HYBRIDLC_JOURNAL_SOURCE")
+        if not lines or not src or src.startswith(":"):
+            return
+        ts = time.strftime("%Y-%m-%dT%H:%M:%S") + f".{int((time.time() % 1) * 1e6):06d}" + time.strftime("%z")
+        ts = ts[:-2] + ":" + ts[-2:]
+        with open(src, "a") as f:
+            for ln in lines:
+                f.write(f"{ts} host kernel: {ln}\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def loss_override(self, step: int) -> float | None:
         if self._armed("nan_at") and int(self.spec["nan_at"]) == step:

@@ -23,12 +23,23 @@ Kernel paths (every one is explicit; nothing auto-switches):
     MATH (fp32).
 Pinning uses ``sdpa_kernel([backend])``; if the pinned backend cannot run, SDPA raises instead of
 silently falling back (this is the runtime backend assertion of VT-08 / §10.2).
+
+R-ATT (FEAS-PREC v2, PI ruling D083): an *explicitly selected* fp32 reference attention for the
+full-sequence forward and for inference prefill / extend / decode, entered only through
+``fp32_reference_attention(mode)``. The MATH backend materialises an [H, T, T] fp32 score matrix
+(~25.8 GB per call at 32K with 6 heads), which cannot run under the 0.44 memory cap. Modes:
+  * ``"tiled"``     : exact query-tiled attention in fp32 (matmul + softmax over every allowed key, one
+                      query tile at a time; lower-right causal; per document under cu_seqlens);
+  * ``"efficient"`` : SDPA pinned to EFFICIENT_ATTENTION in fp32 (raises if it cannot run).
+In the reference mode every attention call must be fp32 (a half-precision call raises), and nothing
+auto-switches; the default (bf16 FLASH / cuDNN, fp32 MATH) paths are unchanged when the mode is off.
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
-from typing import Any
+from typing import Any, Iterator
 
 import torch
 import torch.nn as nn
@@ -58,6 +69,77 @@ FORCE_REFERENCE: bool = False
 
 #: Pointer to SDPA used by every inference call in this module (tests wrap it with a spy).
 _sdpa = F.scaled_dot_product_attention
+
+#: R-ATT mode (None = off). Set only through :func:`fp32_reference_attention`.
+REFERENCE_FP32_MODE: str | None = None
+REFERENCE_FP32_MODES = ("tiled", "efficient")
+#: fp32 bytes of one score tile [B, H, tile, Tk] in the tiled path (the softmax output doubles it).
+REFERENCE_TILE_BYTES: int = 1 << 30
+
+
+@contextlib.contextmanager
+def fp32_reference_attention(mode: str = "tiled") -> Iterator[str]:
+    """Select the R-ATT fp32 reference attention for the duration of the block (see module docstring)."""
+    global REFERENCE_FP32_MODE
+    if mode not in REFERENCE_FP32_MODES:
+        raise ValueError(f"R-ATT mode must be one of {REFERENCE_FP32_MODES}, got {mode!r}")
+    prev = REFERENCE_FP32_MODE
+    REFERENCE_FP32_MODE = mode
+    try:
+        yield mode
+    finally:
+        REFERENCE_FP32_MODE = prev
+
+
+def reference_backend_name() -> str:
+    """Attention backend label for result metadata (FEAS-PREC v2 ``_meta``)."""
+    if REFERENCE_FP32_MODE == "tiled":
+        return "R-ATT:tiled-fp32"
+    if REFERENCE_FP32_MODE == "efficient":
+        return "R-ATT:sdpa-efficient-fp32"
+    return f"sdpa:{INFERENCE_HALF_BACKEND.name} (half) / MATH (fp32)"
+
+
+def _check_reference_dtype(*ts: torch.Tensor) -> None:
+    bad = [t.dtype for t in ts if t.dtype != torch.float32]
+    if bad:
+        raise RuntimeError(f"R-ATT fp32 reference attention ({REFERENCE_FP32_MODE}) called with {bad}: the "
+                           "reference mode is fp32 only (no autocast); refusing instead of switching precision")
+
+
+def attn_reference_fp32(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: float,
+                        mode: str | None = None) -> torch.Tensor:
+    """fp32 reference attention of Tq queries over Tk keys, lower-right causal (query i sits at key
+    Tk-Tq+i; Tq == Tk is ordinary causal, Tq == 1 attends to every key). q: [B, H, Tq, D]."""
+    mode = mode or REFERENCE_FP32_MODE or "tiled"
+    _check_reference_dtype(q, k, v)
+    B, H, Tq, D = q.shape
+    Tk = k.shape[2]
+    if mode == "efficient":
+        with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
+            if Tq == Tk:
+                return _sdpa(q, k, v, is_causal=True, scale=scale)
+            if Tq == 1:
+                return _sdpa(q, k, v, scale=scale)
+            return _sdpa(q, k, v, attn_mask=causal_lower_right(Tq, Tk), scale=scale)
+    if mode != "tiled":
+        raise ValueError(f"unknown R-ATT mode {mode!r}")
+    off = Tk - Tq
+    out = torch.empty_like(q)
+    tile = max(1, min(Tq, REFERENCE_TILE_BYTES // max(1, 4 * B * H * Tk)))
+    for a in range(0, Tq, tile):
+        b = min(Tq, a + tile)
+        kend = off + b  # keys visible to the last query of the tile
+        s = torch.matmul(q[:, :, a:b], k[:, :, :kend].transpose(-1, -2)) * scale  # [B, H, t, kend]
+        if kend > off + a + 1:  # mask keys after each query's own position
+            qi = torch.arange(off + a, off + b, device=q.device)[:, None]
+            kj = torch.arange(kend, device=q.device)[None, :]
+            s.masked_fill_(kj > qi, float("-inf"))
+        p = torch.softmax(s, dim=-1)
+        del s
+        out[:, :, a:b] = torch.matmul(p, v[:, :, :kend])
+        del p
+    return out
 
 
 def _is_half(t: torch.Tensor) -> bool:
@@ -193,9 +275,25 @@ def _attn_reference_varlen(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu
     return out
 
 
+def _attn_reference_fp32_varlen(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu: torch.Tensor,
+                                scale: float) -> torch.Tensor:
+    """R-ATT per document of a packed row (document isolation as in the MATH reference)."""
+    out = torch.empty_like(q)
+    bounds = cu.tolist()
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        if b <= a:
+            continue
+        qs, ks, vs = (t[a:b].transpose(0, 1)[None] for t in (q, k, v))  # [1, H, T, D]
+        out[a:b] = attn_reference_fp32(qs, ks, vs, scale)[0].transpose(0, 1)
+    return out
+
+
 def attn_varlen_train(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, cu_seqlens: torch.Tensor,
                       max_seqlen: int, scale: float) -> torch.Tensor:
     """Causal attention within documents of a packed row.  q, k, v: [N, H, D]."""
+    if REFERENCE_FP32_MODE is not None:
+        _check_reference_dtype(q, k, v)
+        return _attn_reference_fp32_varlen(q, k, v, cu_seqlens, scale)
     if q.is_cuda and _is_half(q) and _varlen_attn is not None and not FORCE_REFERENCE:
         cu = cu_seqlens.to(torch.int32)
         return _varlen_attn(q, k, v, cu, cu, int(max_seqlen), int(max_seqlen), scale=scale, window_size=(-1, 0))
@@ -208,6 +306,8 @@ def attn_inference(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: flo
     q: [B, H, Tq, D]; k, v: [B, H, Tk, D].  The backend is pinned (FLASH for half on CUDA, MATH
     otherwise); a backend that cannot run raises.
     """
+    if REFERENCE_FP32_MODE is not None:
+        return attn_reference_fp32(q, k, v, scale)
     Tq, Tk = q.shape[2], k.shape[2]
     be = _pinned_backend(q)
     with sdpa_kernel([be]):

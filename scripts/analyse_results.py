@@ -34,6 +34,19 @@ from hybridlc.eval.constants import AFREQ_WINDOW_FLOOR
 from hybridlc.utils.provenance import sha256_file
 
 
+def s2_results_blinded(results_root: str | Path, registries: list[str]) -> list[str]:
+    """exp_stage S2 run directories under ``results_root`` while no DTS10-commit note exists (else [])."""
+    from hybridlc.integration.blinding import dts10_committed, is_blinded_stage
+
+    root = Path(results_root)
+    if not root.is_dir():
+        return []
+    s2 = sorted(d.name for d in root.iterdir() if d.is_dir() and is_blinded_stage(d.name))
+    if not s2 or dts10_committed([*registries, "experiments/registry.jsonl"]):
+        return []
+    return s2
+
+
 def _floor_mean(v):
     """Mean of a per-query heuristic column (bool or 0/0.5/1), None when the cell has none."""
     return float(v.dropna().astype(float).mean()) if v.notna().any() else None
@@ -63,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-incomplete", action="store_true",
                     help="run even if a CS/DG run/checkpoint lacks frozen cells or contexts (recorded as a warning)")
     a = ap.parse_args(argv)
+    if not a.synthetic:
+        bad = s2_results_blinded(a.results, [a.registry])
+        if bad:
+            print(f"analysis refused: {len(bad)} exp_stage S2 (FEAS) result run(s) under {a.results} (e.g. {bad[0]}) and "
+                  "no DTS10-commit note in the registry (DTS10-AT v2 technical blinding)", file=sys.stderr)
+            return 4
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
 
