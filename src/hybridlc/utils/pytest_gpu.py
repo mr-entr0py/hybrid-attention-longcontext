@@ -9,7 +9,7 @@
    started under the lock holder (``gpu_lock.py run -- pytest ...``) uses the inherited token. If the lock
    is busy the session exits with code 78 (``HYBRIDLC_GPU_LOCK_WAIT=<s>`` waits instead). A session whose
    marker expression excludes ``gpu`` (``-m "not gpu"``) hides the GPU (``CUDA_VISIBLE_DEVICES=``) before
-   collection, so it never creates a CUDA context and never locks.
+   collection, so it never creates a CUDA context and never locks; so does ``--collect-only``.
 3. **Outcome record (SUITE-PF; batch-2 README rule 7).** With ``--junitxml=<x>.xml`` (or
    ``HYBRIDLC_SUITE_OUTCOMES=<file>``) the session writes ``<x>_outcomes.json``: every test's outcome
    (passed, failed, skipped, xfailed, xpassed), the xfail reasons, and the values a test recorded with
@@ -48,7 +48,9 @@ def _excludes_gpu(markexpr: str) -> bool:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    if _excludes_gpu(config.getoption("markexpr", "") or ""):
+    # ``--collect-only`` (e.g. scripts/repro/list_suite_markers.py) never runs a test: hide the GPU so that
+    # importing fla at collection creates no CUDA context, and take no lock.
+    if _excludes_gpu(config.getoption("markexpr", "") or "") or config.getoption("collectonly", False):
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
         _STATE["gpu_hidden"] = True
 

@@ -35,6 +35,10 @@ ATTN_WIDTHS = (64, 128)
 TOL = {"gdn_logits": 1e-2, "gdn_grad": 2e-2, "attn_logits": 1e-5, "attn_grad": 1e-4}
 B, T, V = 8, 256, 8192
 MIXER = "backbone.layers.1.sequence_mixer.mixer."
+#: PI ruling D075 (PR-18) / SUITE-PF vt25_pin: Zoology's MQAR builder draws from the *global* torch RNG
+#: (zoology/data/multiquery_ar.py L137), so the global RNG is seeded immediately before the batch is built.
+#: The registered verdict run (1.82e-2 < 2e-2) used an unpinned batch; its verdict stands (SUITE-PF O-d).
+MQAR_PIN_SEED = 31337
 
 
 def _setup():
@@ -145,9 +149,10 @@ def zoology_bf16_casts(ours):
             h.remove()
 
 
-def _batches(dev):
+def _batches(dev, pin_seed: int = MQAR_PIN_SEED):
     from zoology.data.multiquery_ar import MQARConfig
 
+    torch.manual_seed(pin_seed)                       # D075: global RNG pinned right before the MQAR build
     seg = MQARConfig(vocab_size=V, input_seq_len=T, num_examples=B, num_kv_pairs=64, seed=31337).build(seed=31337)
     g = RC.torch_gen(25, 1)
     rx = torch.randint(0, V, (B, T), generator=g)
@@ -192,8 +197,14 @@ def _compare(family, d, m, zl, zg, ol, og, tol_l, tol_g):
     return row
 
 
+def gdn_worst_grad(rows: list[dict], batch: str | None = "mqar") -> float:
+    """Worst-tensor GDN gradient error (matched bf16 casts) over the GDN widths: SUITE-PF O-d's x."""
+    return max(r["grad_worst"] for r in rows if r.get("family") == "gated_delta_net"
+               and r.get("mode") == "matched_bf16_casts" and (batch is None or r.get("batch") == batch))
+
+
 @pytest.mark.gpu
-def test_vt25_zoology_vs_ours_weight_copy() -> None:
+def test_vt25_zoology_vs_ours_weight_copy(record_property) -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA (fla kernels)")
     mod = _setup()
@@ -237,6 +248,10 @@ def test_vt25_zoology_vs_ours_weight_copy() -> None:
             del zoo, ours
             torch.cuda.empty_cache()
     summary = {"n_gated": sum(1 for r in wr.rows if "pass" in r), "fails": fails,
-               "verdict": "PASS" if not fails else "FAIL"}
+               "verdict": "PASS" if not fails else "FAIL", "mqar_pin_seed": MQAR_PIN_SEED,
+               "gdn_grad_worst_mqar": gdn_worst_grad(wr.rows), "gdn_grad_worst_all": gdn_worst_grad(wr.rows, None)}
+    record_property("mqar_pin_seed", MQAR_PIN_SEED)
+    record_property("gdn_grad_worst_mqar", summary["gdn_grad_worst_mqar"])
+    record_property("gdn_grad_worst_all", summary["gdn_grad_worst_all"])
     wr.close(summary)
     assert not fails, fails

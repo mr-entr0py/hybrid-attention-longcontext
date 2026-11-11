@@ -69,9 +69,34 @@ def fla_install_info() -> dict[str, Any]:
         du = dist.read_text("direct_url.json")
         out["direct_url"] = json.loads(du) if du else None
         out["source"] = "direct_url" if du else "index (PyPI wheel)"
+        out.update(dist_info_hashes(dist))
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out
+
+
+def dist_info_listing(dist_info: Path) -> str:
+    """Canonical listing of a ``*.dist-info`` directory: one ``<relpath>\\t<size>\\t<sha256>`` line per file,
+    sorted by relpath (PI ruling D068 / PR-11; ``__pycache__`` excluded)."""
+    lines = []
+    for p in sorted(dist_info.rglob("*")):
+        if p.is_file() and "__pycache__" not in p.parts:
+            lines.append(f"{p.relative_to(dist_info).as_posix()}\t{p.stat().st_size}\t{sha256_file(p)}")
+    return "\n".join(lines) + "\n"
+
+
+def dist_info_hashes(dist: Any) -> dict[str, Any]:
+    """SHA-256 of the installed wheel's ``RECORD`` file and of its dist-info directory listing (D068: the fla
+    wheel is a logged DEVIATION; its exact install is pinned by these hashes in env_info and the G5 freeze row)."""
+    rec = Path(dist.locate_file(f"{dist._path.name}/RECORD")) if hasattr(dist, "_path") else None
+    if rec is None or not rec.is_file():
+        files = [f for f in (dist.files or []) if f.name == "RECORD" and f.parent.name.endswith(".dist-info")]
+        rec = Path(dist.locate_file(files[0])) if files else None
+    if rec is None or not rec.is_file():
+        return {"record_sha256": None, "dist_info_listing_sha256": None, "dist_info": None}
+    di = rec.parent
+    return {"dist_info": str(di), "record_sha256": sha256_file(rec),
+            "dist_info_listing_sha256": hashlib.sha256(dist_info_listing(di).encode()).hexdigest()}
 
 
 def data_provenance() -> dict[str, Any]:

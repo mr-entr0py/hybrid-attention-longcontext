@@ -66,14 +66,19 @@ def _perturb_others(x, cu, keep: int, seed=11):
     return x2
 
 
+RELAXED = pytest.mark.relaxed_guard(reason="VT-03 GDN fp32 packed-vs-alone rel RMS <= 3e-3 (registered: max abs 0.0)")
+
+
 @pytest.mark.gpu
 @pytest.mark.parametrize("kind", ["-", "E", "N", "G"])
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("dtype", [torch.bfloat16, pytest.param(torch.float32, marks=RELAXED)])
 def test_linear_mixer_isolation_exact(kind: str, dtype: torch.dtype) -> None:
     """bf16 (training dtype; where 05 §2.2 measured exactness): packed == alone, max abs diff 0.0.
-    fp32: packed vs alone differs only by GEMM-shape (M = N vs M = n_doc, TF32) rounding, so it is
-    held to the GDN relative-RMS bound (3e-3); exact isolation is then asserted with identical
-    shapes -- perturbing all *other* documents leaves a document's output bit-identical."""
+    fp32: **regression guard, not the registered criterion** (PI ruling D059 / RR-G0-5; the registered
+    criterion is ``test_vt03_registered_gdn_fp32_max_abs_zero``): packed vs alone differs only by
+    GEMM-shape (M = N vs M = n_doc, TF32) rounding, so it is held to the GDN relative-RMS bound (3e-3);
+    exact isolation is then asserted with identical shapes -- perturbing all *other* documents leaves a
+    document's output bit-identical."""
     dev = cuda_device_or_skip()
     m = _mixer(kind, dev, dtype)
     x, cu, pos = _packed(dev, dtype)
@@ -90,6 +95,24 @@ def test_linear_mixer_isolation_exact(kind: str, dtype: torch.dtype) -> None:
             y2 = m(_perturb_others(x, cu, j, seed=20 + j), cu, pos)
             a, b = cu[j].item(), cu[j + 1].item()
             assert torch.equal(y2[:, a:b], y[:, a:b]), (kind, dtype, j)
+
+
+@pytest.mark.gpu
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-G0-5; PI ruling D059; criterion unchanged")
+def test_vt03_registered_gdn_fp32_max_abs_zero(record_property) -> None:
+    """Registered criterion (protocol §16 VT-03, no dtype qualifier): GDN-family mixers packed with
+    cu_seqlens vs each document alone, max abs diff 0.0 -- here in fp32 (the bf16 case is asserted above).
+    Measured 9.4e-5 at S0 (GEMM-shape TF32). XFAIL expected; an XPASS is recorded, never a PASS of VT-03."""
+    dev = cuda_device_or_skip()
+    diffs = {}
+    for kind in ("-", "E", "N", "G"):
+        m = _mixer(kind, dev, torch.float32)
+        x, cu, pos = _packed(dev, torch.float32)
+        with torch.no_grad():
+            diffs[kind] = (m(x, cu, pos) - _alone(m, x, cu)).abs().max().item()
+    record_property("vt03_gdn_fp32_max_abs", diffs)
+    print(f"VT-03 registered (fp32, max abs 0.0): {diffs}")
+    assert all(v == 0.0 for v in diffs.values()), diffs
 
 
 @pytest.mark.gpu

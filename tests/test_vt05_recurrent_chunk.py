@@ -51,13 +51,17 @@ BF16_STATE_PER_SEED_CEIL = 1e-2
 N_SEEDS = {torch.float32: 2, torch.bfloat16: 8}
 
 
-@pytest.mark.gpu
-@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("geo", [(4, 64, 128), (3, 64, 128), (1, 256, 512), (1, 192, 384)],
-                         ids=lambda g: f"{g[0]}x{g[1]}-{g[2]}")
-def test_op_token_by_token_vs_chunk(geo, dtype) -> None:
-    import statistics
+GEOS = [(4, 64, 128), (3, 64, 128), (1, 256, 512), (1, 192, 384)]
+RELAXED = pytest.mark.relaxed_guard(reason="VT-05 bf16 final state: median <= 8e-3 and per-seed <= 1e-2 (registered: every seed-case <= 8e-3)")
+_OP_CACHE: dict = {}
 
+
+def _op_case(geo, dtype):
+    """(out rel-RMS per seed, final-state rel-max per seed, recurrent-vs-fp64 per seed); computed once per
+    (geo, dtype) and shared by the regression guard and the registered-criterion test."""
+    key = (tuple(geo), dtype)
+    if key in _OP_CACHE:
+        return _OP_CACHE[key]
     import torch.nn.functional as F
 
     from hybridlc.models.testing import naive_gated_delta_fp64
@@ -85,6 +89,20 @@ def test_op_token_by_token_vs_chunk(geo, dtype) -> None:
         _, href = naive_gated_delta_fp64(F.normalize(q.double(), dim=-1), F.normalize(k.double(), dim=-1), v, g,
                                          torch.sigmoid(b.double()))
         rec_vs_fp64.append(rel_max(state, href.transpose(-1, -2)))
+    _OP_CACHE[key] = (out_errs, st_errs, rec_vs_fp64)
+    return _OP_CACHE[key]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("dtype", [torch.float32, pytest.param(torch.bfloat16, marks=RELAXED)])
+@pytest.mark.parametrize("geo", GEOS, ids=lambda g: f"{g[0]}x{g[1]}-{g[2]}")
+def test_op_token_by_token_vs_chunk(geo, dtype) -> None:
+    """fp32: the registered criteria. bf16: outputs and the recurrent kernel at the registered bounds; the
+    final-state part is a **regression guard, not the registered criterion** (median over 8 seeds <= 8e-3,
+    per-seed ceiling 1e-2; PI ruling D059 / RR-G0-1; registered: ``test_vt05_registered_bf16_state_every_case``)."""
+    import statistics
+
+    out_errs, st_errs, rec_vs_fp64 = _op_case(geo, dtype)
     print(f"VT-05 {geo} {dtype}: out rel-RMS max {max(out_errs):.2e}; state rel-max per seed "
           f"{[f'{e:.2e}' for e in st_errs]}; recurrent-vs-fp64 max {max(rec_vs_fp64):.2e}")
     assert max(out_errs) <= OUT_TOL[dtype], out_errs
@@ -94,6 +112,21 @@ def test_op_token_by_token_vs_chunk(geo, dtype) -> None:
     else:
         assert statistics.median(st_errs) <= STATE_TOL[dtype], st_errs
         assert max(st_errs) <= BF16_STATE_PER_SEED_CEIL, st_errs
+
+
+@pytest.mark.gpu
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-G0-1; PI ruling D059; criterion unchanged")
+def test_vt05_registered_bf16_state_every_case(record_property) -> None:
+    """Registered criterion (protocol §16 VT-05): bf16 final state relative max <= 8e-3 for **every** seed-case
+    (4 geometries x 8 seeds = 32). S0 measured 2 of 32 above 8e-3 (max 8.47e-3). XFAIL expected; an XPASS is
+    recorded, never a PASS of VT-05."""
+    per = {f"{g[0]}x{g[1]}-{g[2]}": _op_case(g, torch.bfloat16)[1] for g in GEOS}
+    worst = max(max(v) for v in per.values())
+    n_over = sum(e > STATE_TOL[torch.bfloat16] for v in per.values() for e in v)
+    record_property("vt05_bf16_state_rel_max_worst", worst)
+    record_property("vt05_bf16_seed_cases_over_8e-3", n_over)
+    print(f"VT-05 registered (bf16 state <= 8e-3 every case): worst {worst:.3e}, {n_over}/32 over")
+    assert n_over == 0, per
 
 
 @pytest.mark.gpu

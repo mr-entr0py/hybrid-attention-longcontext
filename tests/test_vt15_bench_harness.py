@@ -101,11 +101,16 @@ def test_cold_l2_flush_effective() -> None:
     assert ratios["cudnn"] >= 1.5, ratios    # cuDNN is the primary decode backend (§10.2)
 
 
-def test_reproduces_appendix_a_within_15pct() -> None:
+_TIMINGS: dict = {}
+
+
+def _appendix_a_timings() -> dict:
+    """min-of-N timing of every Appendix A cell (us); measured once, shared by the guard and the registered test."""
+    if _TIMINGS:
+        return _TIMINGS
     from hybridlc.bench.harness import decode_attention_case, gdn_layer_case, prefill_attention_case, time_replays
 
     cuda_device_or_skip()
-    got, bad = {}, []
     for key, ref in APPENDIX_A_US.items():
         kind = key[0]
         if kind == "prefill":
@@ -115,12 +120,31 @@ def test_reproduces_appendix_a_within_15pct() -> None:
         else:
             f, cold = decode_attention_case(key[2], key[3], BE[key[1]]), kind == "decode_cold"
         m = time_replays(f, cold_l2=cold)["min_us"]
-        got[key] = m
-        rel = m / ref - 1
-        print(f"{key}: {m:9.1f} us vs Appendix A {ref:9.1f} us ({100 * rel:+.0f}%)")
-        if abs(rel) > TOL and key not in INFORMATIONAL:
-            bad.append((key, round(m, 1), ref, round(100 * rel)))
+        _TIMINGS[key] = m
+        print(f"{key}: {m:9.1f} us vs Appendix A {ref:9.1f} us ({100 * (m / ref - 1):+.0f}%)")
         torch.cuda.empty_cache()
+    return _TIMINGS
+
+
+@pytest.mark.relaxed_guard(reason="VT-15 Appendix A within 15% on 8 of 11 cells (registered: all 11)")
+def test_reproduces_appendix_a_within_15pct() -> None:
+    """**Regression guard, not the registered criterion** (PI ruling D059 / RR-G0-4): the 8 asserted cells; the
+    3 INFORMATIONAL cells are printed only. Registered (all 11 cells): ``test_vt15_registered_all_11_cells``."""
+    got = _appendix_a_timings()
+    bad = [(key, round(m, 1), APPENDIX_A_US[key], round(100 * (m / APPENDIX_A_US[key] - 1)))
+           for key, m in got.items() if abs(m / APPENDIX_A_US[key] - 1) > TOL and key not in INFORMATIONAL]
+    assert not bad, bad
+
+
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-G0-4; PI ruling D059; criterion unchanged")
+def test_vt15_registered_all_11_cells(record_property) -> None:
+    """Registered criterion (protocol §16 VT-15 / §10.2): Appendix A reproduced within 15% on all 11 cells.
+    Non-strict because the B = 1 hot-L2 and eager 4K GDN cells are bimodal; an XPASS is recorded, never a PASS."""
+    got = _appendix_a_timings()
+    rel = {"/".join(str(x) for x in k): round(m / APPENDIX_A_US[k] - 1, 4) for k, m in got.items()}
+    record_property("vt15_rel_dev", rel)
+    bad = {k: v for k, v in rel.items() if abs(v) > TOL}
+    print(f"VT-15 registered (all 11 within 15%): out of bound {bad}")
     assert not bad, bad
 
 

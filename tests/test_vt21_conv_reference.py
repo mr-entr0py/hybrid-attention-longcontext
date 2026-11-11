@@ -182,6 +182,7 @@ def _run_case(dev, D: int, T: int, packed: bool, use_h0: bool, act: str | None, 
 
 @pytest.mark.gpu
 @pytest.mark.slow
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-VT21; PI ruling D071; criterion unchanged")
 def test_vt21_fla_conv_vs_reference() -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")

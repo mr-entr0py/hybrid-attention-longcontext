@@ -43,9 +43,16 @@ def _summ(lp: torch.Tensor, am: torch.Tensor, q: torch.Tensor):
     return lp[:, ans].sum(-1), (am[:, ans] == q[:, ans]).all(-1)
 
 
-@pytest.mark.gpu
-@pytest.mark.parametrize("name", ["C0", "C3", "C12", "X-gc12"])
-def test_branched_vs_separate(name: str) -> None:
+NAMES = ["C0", "C3", "C12", "X-gc12"]
+RELAXED = pytest.mark.relaxed_guard(reason="VT-07 branched vs single-pass |dlogp| <= 2e-2 (registered: < 1e-3)")
+_CACHE: dict = {}
+
+
+def _measure(name: str) -> tuple[float, float]:
+    """(worst |dlogp| branched vs separate passes, worst |dlogp| branched vs single pass); asserts the bitwise
+    cache invariance and EM identity. Computed once per config, shared by the guard and the registered test."""
+    if name in _CACHE:
+        return _CACHE[name]
     model, ctx, queries = _setup(name)
     _, cache = model.prefill(ctx)
     snap = cache.clone()
@@ -66,6 +73,29 @@ def test_branched_vs_separate(name: str) -> None:
         lp_f, em_f = _summ(lp_full, full[:, P - 1:-1].argmax(-1), q)
         worst_b = max(worst_b, (lp_b - lp_f).abs().max().item())
         assert torch.equal(em_b, em_f)
+    _CACHE[name] = (worst_a, worst_b)
+    return _CACHE[name]
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("name", [pytest.param(n, marks=RELAXED) for n in NAMES])
+def test_branched_vs_separate(name: str) -> None:
+    """Branched vs separate canonical passes: the registered < 1e-3. Branched vs single-pass: **regression
+    guard, not the registered criterion** (VT-06 logit bound 2e-2; PI ruling D059 / RR-G0-2; registered:
+    ``test_vt07_registered_single_pass_below_1em3``)."""
+    worst_a, worst_b = _measure(name)
     print(f"VT-07 {name}: |Δlogp_gold| branched vs separate={worst_a:.2e}; vs single-pass={worst_b:.2e}")
     assert worst_a < 1e-3
     assert worst_b <= 2e-2
+
+
+@pytest.mark.gpu
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-G0-2; PI ruling D059; criterion unchanged")
+def test_vt07_registered_single_pass_below_1em3(record_property) -> None:
+    """Registered criterion (protocol §16 VT-07, fp32): branched vs single-pass forward |Δ logp_gold| < 1e-3 for
+    C0, C3, C12 and X-gc12. S0 measured 2.4-3.8e-3 (TF32 chunk vs IEEE fused_recurrent). XFAIL expected; an
+    XPASS is recorded, never a PASS of VT-07."""
+    worst = {n: _measure(n)[1] for n in NAMES}
+    record_property("vt07_single_pass_dlogp", worst)
+    print(f"VT-07 registered (single-pass < 1e-3): {worst}")
+    assert all(v < 1e-3 for v in worst.values()), worst

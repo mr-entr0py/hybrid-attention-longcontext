@@ -131,6 +131,7 @@ def compare(run_dir: Path, ckpt_dir: Path, ref_dir: Path) -> dict:
 
 @pytest.mark.gpu
 @pytest.mark.slow
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-VT23; PI ruling D073; criterion unchanged")
 def test_vt23_trainer_vs_reference_loop() -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")

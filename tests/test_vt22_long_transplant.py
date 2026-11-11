@@ -150,6 +150,7 @@ def _judge(row: dict, T: int, bf16: bool) -> bool:
 
 @pytest.mark.gpu
 @pytest.mark.slow
+@pytest.mark.xfail(strict=False, raises=AssertionError, reason="FAIL-as-registered; accepted residual RR-VT22; PI ruling D072; criterion unchanged")
 def test_vt22_long_transplant() -> None:
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")

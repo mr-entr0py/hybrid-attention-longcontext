@@ -106,7 +106,8 @@ def load_registry(path: str | Path) -> dict[str, RunInfo]:
         config = row.get("config_name") or cfg_field or (parsed.config if parsed else None)
         seed = row.get("seed_index", row.get("seed", parsed.seed if parsed else None))
         if config is None or seed is None:
-            warnings.warn(f"registry row {rid!r} has no config/seed; skipped", stacklevel=2)
+            if row.get("status") != "note":  # PI/process notes (e.g. DTS10-commit) are not runs
+                warnings.warn(f"registry row {rid!r} has no config/seed; skipped", stacklevel=2)
             continue
         k = row.get("k", config_k(str(config)))
         out[rid] = RunInfo(run_id=rid, config=str(config), seed=int(seed),
