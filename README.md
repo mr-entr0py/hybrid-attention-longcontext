@@ -36,6 +36,10 @@ The study varies that ratio directly. We train a family of small language models
 
 The intended output is a capability-vs-cost frontier. It answers how much long-context accuracy is lost per byte of inference memory saved, and whether a small number of full-attention layers recovers most of what full attention provides. We discuss what this means for long-running AI agents, which depend on long context.
 
+<p align="center"><img src="docs/figures/architecture.png" width="100%" alt="Hybrid model architecture and the k-of-12 layer configurations"></p>
+
+*Figure 1. The model family. Every model has the same 12 pre-norm blocks. The **only** per-layer difference is the token mixer: full softmax attention (F) or Gated DeltaNet linear attention (Λ). The full-attention layers are spaced evenly, and k is the number of them.*
+
 ## Research questions and hypotheses
 
 | | Question | How we measure it |
@@ -78,6 +82,10 @@ Five specialist research agents read the papers, configs and code. The full revi
   - Small-scale all-attention models are sometimes handicapped.
   - Kernel maturity differs (FA2 at ≈ 81% of peak vs the Gated DeltaNet kernel at ≈ 10%).
   - Natural-language benchmarks score at the floor for 20–60M models.
+<p align="center"><img src="docs/figures/prior_evidence.png" width="90%" alt="Prior evidence: Waleffe loss U-curve and Wang recall vs ratio"></p>
+
+*Figure 2. What earlier controlled sweeps found (values transcribed from the papers; Waleffe's are read off a figure and are approximate). Loss barely cares about the ratio once a few attention layers exist, but long-context recall keeps improving. That gap between loss and recall is the motivation for this study.*
+
 - **Gap we address.**
   - A full 0→12 sweep in one controlled, seed-replicated design.
   - Results per task family, length-resolved with every length inside the training length.
@@ -140,11 +148,45 @@ The frozen protocol is [`reports/experimental_protocol.md`](reports/experimental
 - Four guards against falsely declaring H1 falsified.
 - Quantitative go/no-go gates (G0, G-RP, G-RV, FEAS, G-LR, G5, G-FULL, G-REF).
 
+```mermaid
+flowchart LR
+    S0[S0 infrastructure<br/>VT-01…25] -->|G0| S1[S1 reproductions<br/>R1–R10]
+    S1 -->|G-RP, G-RV| S2[S2 FEAS pilots<br/>scale, Stage-B budget,<br/>SSMax, TEF mix]
+    S2 -->|FEAS rules| S3[S3 LR sweep]
+    S3 -->|G-LR| G5[[G5 freeze<br/>items · code · configs]]
+    G5 --> S4[S4 core runs<br/>k ∈ 0,1,3,12 × seeds]
+    S4 -->|G-FULL, G-REF| S5[S5 controls<br/>conv, NoPE, dose]
+    S5 --> S6[S6 evaluation<br/>+ cost benchmarks]
+    S6 -->|Tier-A decision| S7[S7 Tier B<br/>k = 2, 6 · placement · GDN-E]
+    S7 --> R[Analysis & report]
+    style S0 fill:#cde2fb
+    style S1 fill:#cde2fb
+```
+*Figure 3. Staged plan. Each arrow is a quantitative go/no-go gate fixed before the stage runs. The shaded stages are complete.*
+
 **Budget.** About 86 GPU-h for the essential tier at D384, or about 144 at D512. On an idle GPU, measured throughput is 1.3–2.4× higher than the planning rates.
 
 ## How the research was run
 
 The project is run as a small "research organisation" of AI agents (Claude Opus 5.5) orchestrated from Claude Code. The repository is its external memory.
+
+```mermaid
+flowchart LR
+    U([Project owner]) --> O[Orchestrator / PI<br/>Claude Opus 5.5]
+    O --> R1[Nemotron-H<br/>deep read]
+    O --> R2[Architecture<br/>researcher]
+    O --> R3[Evaluation<br/>researcher]
+    O --> R4[Methodology &<br/>reproducibility]
+    O --> R5[Implementation<br/>researcher]
+    R1 & R2 & R3 & R4 & R5 --> P[PI consolidation<br/>initial proposal]
+    P --> RA[Reviewer A<br/>scientific validity]
+    P --> RB[Reviewer B<br/>engineering validity]
+    RA <-->|cross-critique| RB
+    RA & RB --> M[Debate moderator] --> F[[Frozen protocol v1.0]]
+    F --> B[Parallel builders] --> V{{Independent<br/>adversarial verifiers}}
+    V -->|defects| B
+    V --> G[Gate reports] --> X[Reproductions<br/>R1–R7] --> AU{{Independent audit}}
+```
 
 1. **Specialist research agents**, five in parallel: a Nemotron-H deep read, attention architectures, long-context evaluation, methodology and reproducibility, and implementation/repositories.
 2. **PI consolidation** into an initial proposal.
@@ -191,6 +233,10 @@ The full log, with commits, is [`docs/TIMELINE.md`](docs/TIMELINE.md).
 | R2 | Environment integrity | Kernel profile **PASS**; single-queue rule not passed as registered | Longest 32K kernel is 25.2 ms (limit 1 s). A GPU lock and kernel-event tagging are now implemented |
 | R3 | Exactness tests against independent references (VT-21…25) | VT-25 **PASS**; VT-21…24 not passed as registered | All four diagnosed as uncalibrated tolerances, not code defects. Example: fp32 conv gradients 1.4e-4 against a 1e-4 absolute bound at \|dw\| ≈ 10³, which is 1–2 ulp. VT-24 exposed a genuine generator flaw (7 of 39,800 value-prefix collisions), fixed and regenerated (VT-24r) |
 
+<p align="center"><img src="docs/figures/mqar_reproduction.png" width="85%" alt="MQAR reproduction: Zoology vs our implementation"></p>
+
+*Figure 4. Reproducing the recall vs state-size trade-off on Zoology's multi-query associative recall task. Solid lines are Zoology's own code; dashed lines are our layers inside the same harness. At d = 64 (mean of 3 seeds) Gated DeltaNet's fixed-size state saturates as the number of key-value pairs grows, while attention stays at 1.0. Our implementation tracks the reference in every cell. This checks that our mixers behave like the published ones before they are used in the main study.*
+
 ### Infrastructure verification (S0, gate G0)
 - **447/447** tests for VT-01…VT-20 pass. The full suite has 456 tests.
 - Our full-attention model matches a transplanted `Qwen3ForCausalLM` to within **7e-7** relative logit error. Our GDN model matches `fla`'s `GatedDeltaNetForCausalLM` to within **4.6e-4**.
@@ -204,12 +250,24 @@ The full log, with commits, is [`docs/TIMELINE.md`](docs/TIMELINE.md).
 
 ### Operational measurements
 
+<p align="center"><img src="docs/figures/training_throughput.png" width="85%" alt="Training throughput by k and scale"></p>
+
+*Figure 5. Measured training throughput. At 4K, attention is cheap, so k barely matters (or helps). At 32K, every extra attention layer costs throughput: −27% (D384) and −29% (D512) going from k = 0 to k = 12. This sets the GPU-hour budget per configuration.*
+
 **Training throughput, idle GPU, tokens/s:**
 
 | Scale | Stage A (4K) | Stage B (32K), k = 0 / 3 / 12 | Peak memory |
 |---|---|---|---|
 | D384 | 127–138K | 107K / 98K / 78K | ≤ 6.0 GiB |
 | D512 | 97–99K | 79K / 72K / 56K | ≤ 6.0 GiB |
+
+<p align="center"><img src="docs/figures/inference_cost.png" width="100%" alt="Inference memory, prefill, decode and max batch vs k"></p>
+
+*Figure 6. The cost side of the trade-off, before any capability result exists.*
+- *Left:* exact inference-state memory. With k = 0 it is constant (≈ 1.3 MiB per sequence, whatever the length). Every full-attention layer adds a KV cache that grows linearly with context, reaching 576 MiB at 32K for k = 12.
+- *Middle:* measured prefill and decode latency.
+- *Right:* how many 32K sequences fit in 8 GiB: 5,185 (k = 0) vs 56 (k = 3) vs 14 (k = 12).
+- *The open question is how much long-context accuracy each step up this cost curve buys. That is what S2–S6 will measure.*
 
 **Inference cost, session 1 of 2.** These are *untrained* models (speed doesn't depend on training), D384, activity-compliant rows, at 32K. Source: [`reports/cost_benchmarks_session1.md`](reports/cost_benchmarks_session1.md).
 
@@ -257,7 +315,8 @@ Live state: [`reports/STATUS.md`](reports/STATUS.md). History: [`reports/status_
 ├── README.md                     ← this file
 ├── docs/
 │   ├── TIMELINE.md               chronological log of everything done, with commits
-│   └── METHODOLOGY.md            step-by-step methodology (condensed protocol)
+│   ├── METHODOLOGY.md            step-by-step methodology (condensed protocol)
+│   └── figures/                  README figures (PNG + SVG), built by scripts/make_readme_figures.py
 ├── pyproject.toml                package `hybridlc` (installed editable from src/)
 ├── requirements-lock.txt         exact versions of the working environment (torch 2.11 cu128, fla 0.6.0, …)
 │
@@ -275,6 +334,7 @@ Live state: [`reports/STATUS.md`](reports/STATUS.md). History: [`reports/status_
 ├── scripts/
 │   ├── train.py  evaluate.py  runner.py  analyse_results.py  feas_decide.py
 │   ├── make_items.py  benchmark_inference.py  bench_train_step.py  g0_throughput.py
+│   ├── make_readme_figures.py    regenerates docs/figures/ from raw experiment data
 │   ├── data_download.py  data_tokenizer.py  data_pretokenize.py  data_manifest.py
 │   ├── s1_zoology/               Zoology MQAR reproduction harness (R1, R4, R5)
 │   ├── repro/                    reproduction drivers (R2–R7), gpu_lock.py, kernel-event scanner
@@ -354,6 +414,8 @@ python scripts/runner.py enqueue configs/experiments/feas/*.yaml && python scrip
 uv pip install -e third_party/zoology --no-deps --no-build-isolation   # zoology @1ad20d1
 bash scripts/s1_zoology/launch.sh
 ```
+
+Regenerate every figure in this README from the raw data with `python scripts/make_readme_figures.py`.
 
 Every GPU job goes through `scripts/repro/gpu_lock.py` (one job at a time). Every run records its config hash, git commit, library versions and seed streams in `experiments/registry.jsonl`.
 
