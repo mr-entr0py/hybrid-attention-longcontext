@@ -132,7 +132,7 @@ def fig_mqar():
           256: _per_cfg(r4["our_gdn-d256-lr1.0e-03"])}
     att = _per_cfg(s1["attention-d64-lr1.0e-02"])
 
-    fig, ax = plt.subplots(figsize=(TW, 2.45))
+    fig, ax = plt.subplots(figsize=(TW, 2.05))
     x = list(range(len(CFG_ORDER)))
     widths = {64: SEQ[1], 128: SEQ[4], 256: SEQ[12]}
     ax.plot(x, att, color=ORANGE, marker="D", ms=3.8, **mk(0))
@@ -271,7 +271,53 @@ def fig_cost():
               f"Bmax@32K = {bm.get(f'C{k}', {}).get(32768)}")
 
 
+def fig_cost2():
+    """Compact two-panel cost figure for the short report: state memory and largest batch."""
+    from hybridlc.models.analytic import state_bytes
+    from hybridlc.models.config import ModelConfig
+    from hybridlc.models.patterns import centred
+    rows = jsonl(os.path.join(ROOT, "experiments/bench/cost_session1/rows.jsonl"))
+    ks = [0, 1, 3, 6, 12]
+    fig, axs = plt.subplots(1, 3, figsize=(TW, 1.85))
+    Ts = [2 ** i for i in range(10, 16)]
+    tk = ([1, 4, 16, 32], ["1K", "4K", "16K", "32K"])
+    ax = axs[0]
+    for k in ks:
+        cfg = ModelConfig.for_scale("D384", centred(k))
+        ax.plot([t / 1024 for t in Ts], [state_bytes(cfg, t)["total"] / 2 ** 20 for t in Ts],
+                color=SEQ[k], marker="o", ms=2.6, label=f"$k={k}$", **mk(0))
+    ax.set_yscale("log"); ax.set_ylabel("state / sequence (MiB)")
+    ax.set_title("(a) inference state (exact)", pad=3)
+    ax = axs[1]
+    for k in ks:
+        p = sorted((r["L"], r["min_us"]) for r in rows if r.get("phase") == "decode" and r.get("status") == "ok"
+                   and r.get("scale") == "D384" and r.get("k") == k and r.get("config") == f"C{k}"
+                   and r["B"] == 1 and r["backend"] in ("cudnn", "none") and r["l2"] == "cold")
+        ax.plot([t / 1024 for t, _ in p], [v / 1e3 for _, v in p], color=SEQ[k], marker="o", ms=2.6, **mk(0))
+    ax.set_ylabel("decode (ms / token)")
+    ax.set_title("(b) decode latency, batch 1", pad=3)
+    ax = axs[2]
+    bm = defaultdict(dict)
+    for r in rows:
+        if r.get("phase") == "bmax" and r.get("scale") == "D384" and r.get("B_max_verified"):
+            bm[r["config"]][r["L"]] = r["B_max_verified"]
+    for k in ks:
+        d = bm.get(f"C{k}", {})
+        Ls = sorted(d)
+        ax.plot([l / 1024 for l in Ls], [d[l] for l in Ls], color=SEQ[k], marker="o", ms=2.6, **mk(0))
+    ax.set_yscale("log"); ax.set_ylabel("sequences in 8 GiB")
+    ax.set_title("(c) largest batch (verified)", pad=3)
+    for ax in axs:
+        ax.set_xscale("log", base=2); ax.set_xticks(tk[0]); ax.set_xticklabels(tk[1]); ax.minorticks_off()
+        ax.set_xlabel("context length")
+    h, l = axs[0].get_legend_handles_labels()
+    fig.legend(h, l, loc="upper center", ncol=5, bbox_to_anchor=(0.5, 1.08), handlelength=1.8)
+    fig.tight_layout(w_pad=1.0, rect=(0, 0, 1, 0.93))
+    save(fig, "fig_cost2")
+
+
 if __name__ == "__main__":
+    fig_cost2()
     fig_prior()
     fig_mqar()
     fig_throughput()

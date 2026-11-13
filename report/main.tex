@@ -1,18 +1,15 @@
 % =====================================================================================
-%  How Much Full Attention Does Long Context Need?  --  IE624 pre-project report
+%  How Much Full Attention Does Long Context Need?  --  IE624 pre-project report (short)
 %  Build:  tectonic -X compile main.tex      (or: latexmk -xelatex main.tex)
-%  Figures: figures/make_report_figures.py regenerates every data figure from raw data.
+%  The longer draft with extra figures is report_long.tex.
 % =====================================================================================
 \documentclass[10pt,a4paper]{article}
 \usepackage{iereport}
-
 \title{How Much Full Attention Does Long Context Need?}
 \author{Punit Ranawat \and Tanish Kharbanda \and Rajdeep Agarwal}
 \date{November 2026}
-
 \begin{document}
 
-% ------------------------------------------------------------------------- cover page
 \begin{titlepage}
 \newgeometry{top=1.0in,bottom=1.0in,left=1.25in,right=1.25in}
 \centering
@@ -43,366 +40,141 @@
 \restoregeometry
 \end{titlepage}
 
-% ------------------------------------------------------------------------- abstract
+\setcounter{page}{1}
 \begin{center}
-{\fontsize{16}{20}\selectfont\bfseries How Much Full Attention Does Long Context Need?\par}
-\vspace{0.35cm}
-{\normalsize Punit Ranawat \quad Tanish Kharbanda \quad Rajdeep Agarwal\par}
-\vspace{0.05cm}
+{\fontsize{15}{19}\selectfont\bfseries How Much Full Attention Does Long Context Need?\par}
+\vspace{0.25cm}
+{Punit Ranawat \quad Tanish Kharbanda \quad Rajdeep Agarwal\par}
 {\small IE624: Generative and Agentic AI, IIT Bombay\par}
 \end{center}
-\vspace{0.3cm}
+\vspace{0.1cm}
 \begin{center}{\large\bfseries Abstract}\end{center}
-\vspace{-0.15cm}
+\vspace{-0.25cm}
 \begin{list}{}{\setlength{\leftmargin}{0.5in}\setlength{\rightmargin}{0.5in}}\item[]
-Long context has become a defining capability of large language models, and in particular of agents
-that must carry an entire working history through many steps. The cost of that capability is set by
-the attention mechanism: full softmax attention keeps a key--value cache that grows with every token,
-whereas linear and recurrent alternatives compress the past into a state of fixed size.
-Most recent long-context architectures are therefore hybrids that interleave a few full-attention
-layers with many linear ones, at ratios such as 3:1 or 7:1. We find that these ratios are generally
-inherited from earlier models rather than derived from long-context evidence, and that no published
-study isolates how the \emph{amount} of full attention governs long-context behaviour as a function of
-task type and input length. This project studies that question directly. We train a family of
-12-layer language models from scratch in which the only change between models is the number $k$ of
-token-mixing layers that use full attention; the remaining $12-k$ layers use Gated DeltaNet.
-Parameters, data, data order and the training recipe are held fixed. The models will be evaluated
-on retrieval, multi-hop and aggregation tasks at 1K--32K tokens, all inside the training length,
-and their inference memory and latency will be measured on the same implementation. The deliverable
-is a capability--cost frontier with pre-registered tests of whether a small number of full-attention
-layers recovers most of the long-context ability of an all-attention model. This report describes the
-motivation, the theory, the design and the engineering and validation work completed so far. That
-work includes a verified training and evaluation stack and the reproduction of published reference
-results on a single 16\,GB RTX~5080. No main-study model has been trained yet, so the report makes
-no claims about the hypotheses.
+Long-context language models, and the agents built on them, pay for memory with attention. Full
+attention keeps a key--value cache that grows with every token, while linear attention compresses the
+past into a fixed-size state. Most recent long-context architectures are hybrids that keep a few full
+attention layers among many linear ones, but their ratios are often inherited or chosen without a published sweep.
+We study the choice directly. We train 12-layer language models from scratch that differ \emph{only} in the number $k$ of
+full-attention layers, with the remaining $12-k$ layers using Gated DeltaNet. Parameters, data and recipe are held fixed. We will evaluate
+retrieval, multi-hop and aggregation at 1K--32K tokens and measure inference cost on one implementation.
+This report presents the motivation, theory and pre-registered design. It also presents the completed
+engineering and validation work on a single 16\,GB RTX~5080, including the reproduction of published
+recall results. No main-study model has been trained yet, so we make no claims about the hypotheses.
 \end{list}
-\vspace{0.3cm}
 
 % =====================================================================================
-\section{Introduction}\label{sec:intro}
+\section{Introduction}
+For a long-running agent the context window is working memory. What the model can recover from early
+in its context bounds what it can reason about later, and the cost of holding that context bounds how
+long it can run and how many users it can serve. Both are set by the token-mixing layer. Full attention
+\citep{vaswani2017attention} can retrieve any earlier token exactly, but its key--value (KV) cache grows
+linearly with context and its prefill cost quadratically. Linear-attention and state-space layers
+\citep{katharopoulos2020transformers,dao2024transformers,yang2025gated} keep a state of fixed size. That
+makes them cheap, but it is a lossy memory, and both theory and experiment show such models struggle with exact
+recall and copying \citep{arora2023zoology,jelassi2024repeat,wen2024rnns}.
 
-Language models are increasingly asked to read and act on very long inputs: whole codebases,
-book-length documents, multi-hour transcripts and, most demandingly, the accumulated history of an
-agent that plans, calls tools and observes their results over many steps. For such systems the
-context window is working memory. What the model can recover from early in its context bounds what
-it can reason about later, and the cost of keeping that context available bounds how long it can run
-and how many users it can serve at once.
+Hybrids such as Jamba \citep{lieber2024jamba}, Nemotron-H \citep{nvidia2025nemotronh}, MiniMax-01
+\citep{minimax2025minimax01}, Qwen3-Next \citep{qwen2025qwen3next} and Kimi Linear \citep{kimi2025linear}
+keep one full-attention layer in every four to eight. They thereby answer, implicitly, the question \emph{how
+much full attention is enough?} The answers are rarely tested. Nemotron-H, for instance, sets about
+8\% attention layers ``as suggested by prior work'' \citep{waleffe2024empirical}, and neither MiniMax-01 nor
+Qwen3-Next publishes the sweep behind its ratio. We therefore ask, under controlled conditions,
+\emph{how retrieval, multi-hop composition and aggregation over long inputs change as the number of
+full-attention layers varies with everything else fixed, and what each layer costs at inference}.
 
-Both properties are determined largely by the token-mixing layer. In a Transformer
-\citep{vaswani2017attention} every layer attends over all previous tokens, so it can in principle
-retrieve any earlier token exactly. The price is a key--value (KV) cache that grows linearly with the
-context and a prefill cost that grows quadratically. Linear-attention and state-space layers
-\citep{katharopoulos2020transformers,gu2023mamba,dao2024transformers,yang2025gated} reverse the trade:
-they summarise the past in a recurrent state of fixed size, so memory and per-token decoding cost
-do not depend on the context length. But a fixed-size state is a lossy memory, and a growing body of
-theory and experiment shows that such models struggle with precisely the operations long context is
-meant to enable, namely exact recall and copying from far back in the input
-\citep{arora2023zoology,jelassi2024repeat,wen2024rnns}.
-
-Hybrid architectures attempt to get the best of both. Jamba \citep{lieber2024jamba},
-Griffin \citep{de2024griffin}, Nemotron-H \citep{nvidia2025nemotronh}, MiniMax-01
-\citep{minimax2025minimax01}, Qwen3-Next \citep{qwen2025qwen3next} and Kimi Linear
-\citep{kimi2025linear} all keep a small number of full-attention layers and make the rest linear or
-recurrent, typically in a fixed ratio such as one attention layer in four or one in eight.
-The design question these models answer implicitly is \emph{how much full attention is enough}.
-When we traced where their ratios come from, we found that the answer is usually inherited. Nemotron-H,
-for example, adopts its attention fraction from an earlier NVIDIA study rather than testing it, and
-neither MiniMax-01 nor Qwen3-Next publishes the sweep behind its choice (\cref{sec:related}). The
-controlled sweeps that do exist mostly measure language-modelling loss, which turns out to be nearly
-insensitive to the ratio once a few attention layers are present, while the one sweep that reports
-long-context recall averages it over tasks and lengths.
-
-This project asks the question directly and under controlled conditions:
-\emph{as the number of full-attention layers in a hybrid model is varied, with everything else held
-fixed, how do retrieval, multi-hop reasoning and aggregation over long inputs change, and what does
-each additional full-attention layer cost at inference time?} The aim is a capability--cost
-frontier rather than a single recommended ratio. The frontier should tell us whether a small amount
-of full attention recovers most of what full attention provides, whether the answer depends on the
-kind of long-context operation, and how it changes with input length.
-
-\paragraph{Why small models trained from scratch.}
-The question concerns language models in general, and its practical stakes lie with large models.
-Answering it causally, however, requires many models that differ in exactly one architectural
-factor and are otherwise identical: same parameter count, same data in the same order, same
-optimiser and schedule, with several random seeds each. Retrofitting or distilling existing large
-checkpoints cannot provide this, because the converted model inherits representations learned under
-a different architecture. We therefore train models of about 28M--49M parameters from scratch on a
-single NVIDIA RTX~5080 with 16\,GB of memory. Scale is the price we pay for control, and every
-conclusion will be scoped accordingly. The mechanisms under study, however, are scale-independent in
-form: KV-cache growth, fixed-state interference and the attention/recurrence trade-off. Controlled
-small-scale evidence is how such mechanisms have repeatedly been characterised first
-\citep{arora2023zoology,waleffe2024empirical,wang2025systematic}.
-
-\paragraph{Contribution and current status.}
-The intended contribution is a controlled, seed-replicated, length- and task-resolved measurement of
-the composition effect, together with inference costs measured on one implementation. This is an
-extension and partial replication of existing ratio studies, not the first of its kind
-(\cref{sec:related}). At the time of writing the study is at its pre-pilot stage. The literature
-review, the experimental protocol and its independent review, the full training and evaluation
-infrastructure, a battery of verification tests and the reproduction of published reference results
-are complete. The main training runs have not started. \Cref{sec:validation} reports the completed
-engineering work and \cref{sec:plan} the remaining plan.\enlargethispage{2\baselineskip}
+The question concerns LLMs generally, but answering it causally requires many models that differ in
+exactly one factor, with several seeds each. Converting large pretrained checkpoints cannot provide this.
+We therefore train models of 28--49M parameters from scratch. The cost mechanisms, KV-cache growth and
+fixed-state interference, have the same form at any scale, and controlled small-model studies have been a
+main source of evidence on them \citep{arora2023zoology,waleffe2024empirical}. Their capability consequences
+may change with scale, so every conclusion will be scoped to the scale studied.
 
 % =====================================================================================
-\section{Background}\label{sec:background}
-
-Throughout, a sequence of $T$ tokens is represented in each layer by vectors
-$\vect{x}_1,\dots,\vect{x}_T\in\R^{d}$. Each layer has a \emph{token mixer}, which moves information
-between positions, followed by a position-wise feed-forward network. The architectures discussed
-here differ only in the mixer.
-
-\subsection{Full softmax attention and the KV cache}
-A causal attention head with dimension $d_h$ projects each token to a query, key and value,
-$\vect{q}_t=W_Q\vect{x}_t$, $\vect{k}_t=W_K\vect{x}_t$, $\vect{v}_t=W_V\vect{x}_t$, and outputs
-\begin{equation}\label{eq:attn}
-  \vect{o}_t \;=\; \sum_{i\le t}
-  \frac{\exp\!\big(\vect{q}_t^{\T}\vect{k}_i/\sqrt{d_h}\big)}
-       {\sum_{j\le t}\exp\!\big(\vect{q}_t^{\T}\vect{k}_j/\sqrt{d_h}\big)}\;\vect{v}_i .
-\end{equation}
-Every output is a convex combination of \emph{all} earlier values, with weights chosen by
-content. This is what gives attention its retrieval ability: a query that matches one key much more
-strongly than the others returns that key's value almost exactly, however far back it occurred and
-however many other tokens intervene.
-
-The cost follows from the same structure. During training or prefill over $T$ tokens, the score
-matrix has $T^2/2$ entries per head, so time grows as $O(T^2 d)$. Memory-efficient kernels such as
-FlashAttention \citep{dao2022flashattention,dao2023flashattention2} avoid materialising this matrix,
-but they do not change the arithmetic. During autoregressive decoding, \cref{eq:attn} requires every
-past key and value, which are kept in the KV cache. For a layer of width $d$ stored in 16-bit
-precision the cache occupies
+\section{Background}
+\paragraph{Full attention.} A head with dimension $d_h$ outputs
+$\vect{o}_t=\sum_{i\le t}\softmax_i(\vect{q}_t^{\T}\vect{k}_i/\sqrt{d_h})\,\vect{v}_i$, a content-weighted
+average over \emph{all} earlier values. A query that matches one key sharply retrieves its value almost
+exactly, however distant. Prefill costs $O(T^2d)$ and decoding must read a cache of
 \begin{equation}\label{eq:kv}
-  M_{\Full}(T) \;=\; 2\cdot T\cdot d\cdot 2\ \text{bytes} \;=\; 4\,T d\ \text{bytes},
+  M_{\Full}(T)=2\cdot T\cdot d\cdot 2\ \text{bytes}=4Td\ \text{bytes}
 \end{equation}
-and each decoding step must read all of it. At long context, decoding is therefore limited by memory
-bandwidth and the number of concurrent sequences is limited by memory capacity, both in proportion
-to $T$. In our D384 model, for instance, one full-attention layer holds 1.5\,KB per token, or 48\,MiB
-for a single 32K-token sequence.
+per layer in 16-bit precision (heads spanning the full width, no key--value sharing), so decode bandwidth and the number of concurrent sequences both scale with $T$.
 
-\subsection{Linear attention as a recurrent associative memory}
-Linear attention replaces the exponential kernel in \cref{eq:attn} by a dot product of feature maps,
-$\exp(\vect{q}^{\T}\vect{k})\approx\phi(\vect{q})^{\T}\phi(\vect{k})$
-\citep{katharopoulos2020transformers}. Re-associating the sum then turns attention into a recurrence
-on a matrix-valued state $S_t\in\R^{d_v\times d_k}$:
-\begin{equation}\label{eq:linattn}
-  S_t \;=\; S_{t-1} + \vect{v}_t\,\phi(\vect{k}_t)^{\T},
-  \qquad
-  \vect{o}_t \;=\; S_t\,\phi(\vect{q}_t)
+\paragraph{Linear attention as associative memory.} Replacing the exponential kernel by a feature-map
+product \citep{katharopoulos2020transformers} turns attention into a recurrence on a matrix state:
+\begin{equation}\label{eq:lin}
+  S_t=S_{t-1}+\vect{v}_t\phi(\vect{k}_t)^{\T},\qquad \vect{o}_t=S_t\phi(\vect{q}_t).
 \end{equation}
-(up to a normaliser that modern variants usually drop). The state has the same size at every step,
-so decoding costs $O(d_k d_v)$ per head per token and memory is independent of $T$. Training remains
-parallel through chunkwise algorithms that combine intra-chunk attention with inter-chunk recurrence
-\citep{yang2024gla}.
+Memory is constant in $T$. However, a read $S\vect{q}=\sum_i\vect{v}_i(\phi(\vect{k}_i)^{\T}\phi(\vect{q}))$ returns one
+stored value cleanly only if the other stored keys are orthogonal to the query, and a $d_k$-dimensional state holds at most $d_k$ orthogonal keys. Beyond that, stored
+associations interfere \citep{schlag2021linear}.
 
-\Cref{eq:linattn} is best read as an associative memory. Each token writes the outer product of
-its value and key into $S$, and a query reads $S\vect{q}=\sum_i\vect{v}_i(\vect{k}_i^{\T}\vect{q})$.
-Retrieval is exact only if the stored keys are orthogonal to the query's target. A $d_k$-dimensional
-key space holds at most $d_k$ mutually orthogonal keys, so once more associations are written they
-interfere, and the more of them a sequence contains, the noisier every read becomes
-\citep{schlag2021linear}. Much of the recent progress on linear attention can be understood as
-better strategies for managing this finite memory. These include forgetting through data-dependent
-decay \citep{yang2024gla,dao2024transformers} and overwriting rather than merely accumulating
-\citep{schlag2021linear,yang2024deltanet}.
-
-\subsection{The delta rule and Gated DeltaNet}\label{sec:gdn}
-The delta rule treats each step as an online regression that makes the state map the current key to
-the current value \citep{schlag2021linear}. A gradient step of size $\beta_t\in(0,1)$ on the
-loss $\tfrac12\lVert S\vect{k}_t-\vect{v}_t\rVert^2$ gives
-\begin{equation}\label{eq:delta}
-  S_t \;=\; S_{t-1} - \beta_t\big(S_{t-1}\vect{k}_t-\vect{v}_t\big)\vect{k}_t^{\T}
-      \;=\; S_{t-1}\big(I-\beta_t\vect{k}_t\vect{k}_t^{\T}\big) + \beta_t\vect{v}_t\vect{k}_t^{\T}.
-\end{equation}
-Unlike \cref{eq:linattn}, which only adds, the delta rule first removes the value currently associated
-with $\vect{k}_t$ and then writes the new one, so a key that is updated is overwritten rather than
-blurred. DeltaNet \citep{yang2024deltanet} made this rule efficient to train in parallel, and
-Gated DeltaNet \citep{yang2025gated} adds a data-dependent decay $\alpha_t\in(0,1)$ that can clear
-the memory when the context changes:
+\paragraph{Delta rule and Gated DeltaNet.} The delta rule takes one gradient step of size $\beta_t$ on
+$\tfrac12\lVert S\vect{k}_t-\vect{v}_t\rVert^2$, which replaces a fraction $\beta_t$ of the value currently retrieved by $\vect{k}_t$ instead
+of adding to it (a full overwrite when $\beta_t=1$ and keys have unit norm) \citep{schlag2021linear,yang2024deltanet}. Gated DeltaNet \citep{yang2025gated} adds a
+data-dependent decay $\alpha_t\in(0,1)$:
 \begin{equation}\label{eq:gdn}
-  S_t \;=\; S_{t-1}\,\alpha_t\big(I-\beta_t\vect{k}_t\vect{k}_t^{\T}\big) + \beta_t\vect{v}_t\vect{k}_t^{\T},
-  \qquad \vect{o}_t = S_t\vect{q}_t .
+  S_t=S_{t-1}\,\alpha_t\big(I-\beta_t\vect{k}_t\vect{k}_t^{\T}\big)+\beta_t\vect{v}_t\vect{k}_t^{\T},
+  \qquad \vect{o}_t=S_t\vect{q}_t ,
 \end{equation}
-Here $\vect{q}_t$ and $\vect{k}_t$ are L2-normalised, and $\alpha_t$ and $\beta_t$ are produced from
-$\vect{x}_t$ by small learned projections. A short causal convolution precedes the projections, and
-the output passes through a normalisation and a learned gate. The decay lets the layer forget
-selectively, and the delta update lets it edit specific associations. In published comparisons this
-combination outperforms both Mamba-2 and DeltaNet on recall-intensive tasks at equal size
-\citep{yang2025gated}. It is also the linear layer of Qwen3-Next. We adopt it as our linear mixer for
-these reasons, and because it has mature Triton kernels \citep{fla2024} that run on our GPU
-(\cref{sec:env}).
+with L2-normalised $\vect{q},\vect{k}$ (each projection passes through a short causal convolution) and an output gate. It can both forget and edit
+selectively. It is the linear layer of Qwen3-Next and has mature kernels that run on our GPU
+\citep{fla2024}, so we adopt it as our linear mixer.
 
-\subsection{Hybrid models and the cost of each full-attention layer}\label{sec:hybridcost}
-A hybrid model assigns to each layer $l$ one of the two mixers. Let $k$ of its $L$ layers use full
-attention. Using \cref{eq:kv} and the fixed size $S_{\Lin}$ of a linear layer's state, the inference
-state of one sequence of length $T$ is
+\paragraph{Cost of a hybrid.} With $k$ of $L$ layers using full attention and a fixed linear state
+$S_{\Lin}$ per layer, the inference state of a length-$T$ sequence is
 \begin{equation}\label{eq:state}
-  M(k,T) \;=\; k\cdot 4Td \;+\; (L-k)\cdot S_{\Lin}\quad\text{bytes},
+  M(k,T)=k\cdot 4Td+(L-k)\,S_{\Lin}\ \text{bytes}.
 \end{equation}
-which grows linearly in $T$ with slope proportional to $k$, and is constant in $T$ only when $k=0$.
-In our D384 configuration each Gated DeltaNet layer stores 3 heads of $64\times128$ fp32 values plus
-a convolution cache, $S_{\Lin}=110{,}592$ bytes, while a full-attention layer stores 1,536 bytes per
-token. A single full-attention layer therefore overtakes a linear layer's entire memory after only
-72 tokens, and at 32K tokens the twelve-layer model needs 1.3\,MiB with $k=0$ but 576\,MiB with
-$k=12$. Prefill compute behaves similarly. Each full-attention layer adds a term quadratic in $T$,
-while the linear layers stay linear. Decoding latency adds a per-step read of the KV cache that
-grows with $T$.
-
-These are the costs a hybrid saves. The open question is what it gives up. Because the linear layers'
-state is fixed, a hybrid's ability to retrieve something from far back depends on whether the few
-full-attention layers can do the retrieving, and whether the surrounding linear layers deliver
-representations they can use. That depends on the number and placement of those layers, on the kind
-of long-context operation, and potentially on the length of the input. These are exactly the
-variables this study manipulates.
+In our D384 model $S_{\Lin}=110{,}592$\,B while one attention layer adds 1,536\,B per token. A single
+attention layer therefore outweighs a whole linear layer after 72 tokens, and at 32K the 12-layer model
+needs 1.3\,MiB with $k=0$ but 576\,MiB with $k=12$. The open question is what each of these layers buys.
 
 % =====================================================================================
-\section{What is known, and what is not}\label{sec:related}
-
-\paragraph{Production hybrids.}
-The models that define current practice report their ratios but rarely their reasons. Jamba
-\citep{lieber2024jamba} compared two ratios (1:3 and 1:7 attention to Mamba) and found virtually no
-difference in language-modelling metrics. Nemotron-H \citep{nvidia2025nemotronh} sets its attention layers to roughly 8\% of the network
-(4 of 52 in the 8B model) ``as suggested by prior work'', namely the study of
-\citet{waleffe2024empirical}, rather than by a new ablation. Its comparison against a Transformer trained on the same data also changes depth and
-positional encoding, so it is not a controlled ratio comparison. MiniMax-01 \citep{minimax2025minimax01}
-(one softmax layer in eight) and Qwen3-Next \citep{qwen2025qwen3next} (one in four) publish no sweep
-behind their choices. Kimi Linear's ablation \citep{kimi2025linear} varies the ratio but reports
-perplexity only.
-
-\paragraph{Controlled sweeps measure loss, and loss is nearly flat.}
-Several studies vary the ratio with model size fixed
-\citep{waleffe2024empirical,dao2024transformers,bae2025hybrid,wang2025systematic,kimi2025linear}.
-Their loss results agree closely. Once roughly 5--10\% of layers use attention, validation loss
-is flat or U-shaped in the ratio, the first attention layer captures most of the gain, and an
-all-attention model is often worse than the best hybrid (\cref{fig:prior}a).
-
-\paragraph{Recall is not flat.}
-The only controlled sweep we found that reports a long-context recall metric is that of
-\citet{wang2025systematic}. In their study, recall averaged over four linear mechanisms rises from
-0.256 for purely linear models to 0.397 with one attention layer in four, while language-modelling
-metrics barely move (\cref{fig:prior}b). The Gated DeltaNet hybrids start higher, because the delta
-rule is itself a comparatively good recall mechanism, and they improve markedly only once attention
-reaches one layer in seven. This dissociation between loss and recall is the empirical starting
-point of our study. It is consistent with the theory of fixed-state models: recall from a fixed
-state degrades with the number of stored associations \citep{arora2023zoology,arora2024simple},
-copying requires state that grows with the copied length \citep{jelassi2024repeat}, and recurrent
-models need attention-like components to solve associative retrieval efficiently
-\citep{wen2024rnns}. Wang et al. report recall only as an average over RULER tasks
-\citep{hsieh2024ruler} at a single context length, and found recall at 340M parameters too weak to
-report. That already signals the measurement problem a small-model study must solve
-(\cref{sec:eval}).
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\textwidth]{figures/fig_prior.pdf}
-  \caption{Prior controlled evidence (values transcribed from the cited papers).
-  (a) In a 130M-parameter hybrid, validation loss falls sharply with the first attention layer and
-  then rises slowly; the all-attention model is the worst \citep[Fig.~4; values read off the
-  figure, approximate]{waleffe2024empirical}. (b) RULER recall rises with the share of full
-  attention, both averaged over four linear mechanisms and for Gated DeltaNet hybrids, while
-  language-modelling metrics stay within 0.47--0.48 \citep[Tables 6--7]{wang2025systematic}. Our study asks how this pattern depends on the kind of
-  long-context operation and on input length, under tighter controls.}
-  \label{fig:prior}
-\end{figure}
-
-\paragraph{Length and task are almost untested.}
-We found only one experiment that crosses the amount of full attention with input length.
-In Nemotron-Flash \citep{fu2025nemotronflash}, keeping one full-attention layer instead of three in a
-3B model leaves short-context recall unchanged but lowers needle retrieval at 32K tokens from 0.69 to
-0.32. That experiment uses sliding-window rather than linear layers and continued pre-training
-rather than training from scratch. Other long-context comparisons confound the architecture with
-positional extrapolation beyond the training length. Evidence that different long-context operations
-need different amounts of attention is indirect, coming from per-task tables of single hybrid models
-and from retrofitting studies. Placement has been studied from scratch only on loss, where its effect
-is negligible \citep{bae2025hybrid}.
-
-\paragraph{Confounds that a controlled study must handle.}
-The literature also identifies variables that can masquerade as composition effects. Positional
-encoding is the most important: removing rotary embeddings \citep{su2024roformer} from the attention
-layers of hybrids can improve long-context retrieval substantially \citep{qiao2026nope}, and several
-production hybrids do so. Small all-attention models are sometimes handicapped relative to hybrids,
-so the reference model itself must be checked for competence. The implementation also matters:
-FlashAttention reaches a much larger fraction of the hardware's peak than current linear-attention
-kernels, so measured latencies compare kernel maturity as well as algorithms.
-
-\paragraph{The gap.}
-No study we located combines a full sweep from all-linear to all-attention under matched parameters,
-data and recipe, with replicate seeds; results separated by task family and resolved by length, with
-every length inside the training range; placement trained from scratch and measured on retrieval;
-and inference cost measured on a single implementation. Our study is designed to supply this
-combination at small scale. We expect to \emph{reproduce} two known regularities, flat loss and
-saturating recall. What is new is the controlled, length- and task-resolved shape of the recall
-curve and its relation to measured cost.
+\section{What is known}
+Controlled ratio sweeps
+\citep{waleffe2024empirical,dao2024transformers,bae2025hybrid,wang2025systematic,kimi2025linear} agree
+on language-modelling loss. Once roughly 5--10\% of layers use attention, loss is flat or U-shaped in the
+ratio, and an all-attention model is often worse than the best hybrid. Recall behaves differently. In the
+only controlled sweep that tabulates it \citep{wang2025systematic}, RULER recall averaged over four linear
+mechanisms rises from 0.256 (no attention) to 0.397 (one layer in four), while language-modelling metrics
+stay within 0.47--0.48. That recall is averaged over tasks and measured at a single, short (2K--4K) training length. The only experiment that
+crosses the amount of full attention with length, from Nemotron-Flash \citep{fu2025nemotronflash},
+finds that keeping one full-attention layer instead of three leaves short-context recall unchanged but lowers retrieval on RULER's hardest single-needle task at 32K
+from 0.69 to 0.32. That experiment uses sliding-window layers and continued pretraining.
+Positional encoding is a known confound, since removing it from the attention layers of hybrids can
+improve long-context retrieval \citep{qiao2026nope}. No study we located combines a full $0\to L$ sweep
+under matched parameters, data and recipe, with seeds; results by task family and by length, all within
+the training length; and costs measured on one implementation. We expect to \emph{reproduce} flat
+loss and saturating recall. What is new is the controlled, length- and task-resolved recall curve and
+its relation to cost.
 
 % =====================================================================================
-\section{Research questions and hypotheses}\label{sec:rq}
-
-Let each model have $L=12$ layers, and let the architecture vector
-$\vect{a}=(a_0,\dots,a_{11})\in\{\Full,\Lin\}^{12}$ record which layers use full attention ($\Full$)
-and which use Gated DeltaNet ($\Lin$). The composition is $k=\sum_l\mathbb{1}[a_l=\Full]$, with
-full-attention fraction $r=k/12$. For a task family $f$ and evaluation length $T$, let
-$S_f(k,T)$ be the per-seed accuracy. We summarise how much of the all-attention advantage a hybrid
-recovers by
-\begin{equation}\label{eq:recovery}
-  G_f(T) = S_f(12,T)-S_f(0,T),\qquad
-  R_f(k,T) = \frac{S_f(k,T)-S_f(0,T)}{G_f(T)},
+\section{Research questions and hypotheses}
+Each model has $L=12$ layers with mixers $\vect{a}\in\{\Full,\Lin\}^{12}$, and $k=\sum_l\mathbb{1}[a_l=\Full]$.
+For task family $f$ and length $T$ let $S_f(k,T)$ be the per-seed accuracy, and define the recovered
+fraction of the all-attention advantage
+\begin{equation}\label{eq:rec}
+  R_f(k,T)=\frac{S_f(k,T)-S_f(0,T)}{S_f(12,T)-S_f(0,T)} .
 \end{equation}
-so that $R=0$ means no better than the all-linear model and $R=1$ means as good as the all-attention
-one. The study is organised around four questions:
-\begin{description}[leftmargin=1.2em,style=unboxed,itemsep=2pt,font=\normalfont\bfseries]
-\item[RQ-A Composition.] How does long-context performance depend on $k$ when everything else is held fixed?
-\item[RQ-B Placement.] At a fixed $k$, does it matter whether the full-attention layers are early, central or late?
-\item[RQ-C Task dependence.] Do retrieval, multi-hop composition and aggregation need different amounts of full attention?
-\item[RQ-D Cost.] How do capability differences relate to inference memory, prefill latency and decoding throughput?
-\end{description}
-
-\Cref{tab:hyp} lists the hypotheses. They were written down, together with their tests and
-falsification rules, before any model was trained. They are hypotheses to be tested, not
-expectations to be confirmed. The central one, H1, is operationalised as a recovery of at least
-80\%. Equivalently, the contrast $L_3=S(3)-0.2\,S(0)-0.8\,S(12)$ is positive. It is tested at the
-longest evaluation lengths, 16K and 32K, on retrieval.
-
-\begin{table}[t]
-\centering\tablefont
-\caption{Pre-registered hypotheses. ``Confirmatory'' hypotheses enter a Holm-corrected family
-\citep{holm1979simple}; the others are reported with explicit estimates but not as verdicts.}
-\label{tab:hyp}
-\begin{tabularx}{\textwidth}{@{}l X l l@{}}
-\toprule
-& Hypothesis & Operationalisation & Role \\
-\midrule
-H1 & A small proportion of full attention recovers most long-context performance & $R_{\text{ret}}(3)\ge0.8$ at 16K/32K & confirmatory \\
-H1$_{\min}$ & One full-attention layer suffices & $R_{\text{ret}}(1)\ge0.8$ & confirmatory \\
-H2 & Returns diminish as $k$ grows & shape of $S(k)$ (isotonic, saturating fit) & descriptive \\
-H3 & Required $k$ depends on the task & $R_{\text{ret}}(3)-R_{\text{hop}}(3)>0$ & confirmatory \\
-H4 & Placement matters at fixed $k$ & early/middle/late contrasts & secondary \\
-H5 & Benefit of attention grows with length & slope of $G(T)$ on $\log_2T$ & confirmatory \\
-H6 & Hybrids reach a cost--capability region neither extreme reaches & frontier and hull margin & descriptive \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-We also recorded predictions in advance, which are not used in any test. They are that one
-full-attention layer recovers little retrieval, that three recover between 60\% and 110\%, that
-multi-hop recovers less than retrieval, and that the gap between the extremes widens with length.
-Writing them down protects the analysis from post-hoc narratives in either direction.
+We ask how performance depends on $k$ (\textbf{RQ-A}), on the placement of the attention layers
+(\textbf{RQ-B}), and on the task (\textbf{RQ-C}), and how it relates to measured cost (\textbf{RQ-D}). The
+hypotheses below, with their tests, were fixed before any training. The central one is
+\textbf{H1}: three attention layers recover more than 80\% of the advantage on retrieval at 16K--32K (using only
+lengths where the all-attention reference passes a pre-registered adequacy check, with an 8K fallback labelled as such). Since
+$S(3)-0.2\,S(0)-0.8\,S(12)=G\,(R-0.8)$ with gap $G=S(12)-S(0)>0$, it is tested as a one-sided paired $t$-test of
+$L_3=S(3)-0.2\,S(0)-0.8\,S(12)>0$. The other hypotheses are as follows.
+\textbf{H1$_{\min}$}: one layer suffices.
+\textbf{H2}: diminishing returns in $k$ (descriptive).
+\textbf{H3}: multi-hop needs more attention than retrieval, $R_{\text{ret}}(3)-R_{\text{hop}}(3)>0$.
+\textbf{H4}: placement matters at fixed $k$.
+\textbf{H5}: the gap $S(12)-S(0)$ grows with $\log T$.
+\textbf{H6}: hybrids reach a cost--capability region that neither extreme reaches (descriptive).
+H1, H1$_{\min}$, H3 and H5 form a Holm-corrected family \citep{holm1979simple}.
 
 % =====================================================================================
-\section{Study design}\label{sec:design}
-
-\subsection{The model family}\label{sec:models}
-Every model is a stack of 12 pre-norm blocks with tied input and output embeddings and no bias terms
-(\cref{fig:arch}). Each block applies RMSNorm \citep{zhang2019rmsnorm}, the layer's mixer and a
-residual connection, then RMSNorm, a SwiGLU feed-forward network \citep{shazeer2020glu} and a second
-residual connection. Only the mixer differs between layers, and only the mixer differs between
-models.
-
-The full-attention mixer $\Full$ is multi-head attention with 64-dimensional heads, per-head
-normalisation of queries and keys \citep{henry2020qknorm}, rotary position embeddings with base $5\times10^5$, the value
-used by Llama~3 for contexts up to 32K tokens \citep{dubey2024llama3}, and a head-wise sigmoid output
-gate \citep{qiu2025gated}. Positions restart at each document boundary. The linear mixer $\Lin$ is
-Gated DeltaNet (\cref{eq:gdn}) as implemented in the \code{fla} library (version~0.6.0;
-\citealp{fla2024}), with 64-dimensional keys, 128-dimensional values, a width-4 short convolution and
-an output gate. The full-attention layers are spaced evenly, at positions
-$p_j=\lfloor(j+\tfrac12)\cdot12/k\rfloor$ for $j=0,\dots,k-1$.
-
+\section{Study design}
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}[font=\footnotesize]
@@ -427,23 +199,23 @@ $p_j=\lfloor(j+\tfrac12)\cdot12/k\rfloor$ for $j=0,\dots,k-1$.
   \end{scope}
   % ---- (b) the two mixers
   \begin{scope}[xshift=3.75cm]
-    \node[box,draw=fullc,line width=0.6pt,text width=3.95cm,align=left,anchor=north west,font=\scriptsize] (F) at (0,5.55) {%
+    \node[box,draw=fullc,line width=0.6pt,text width=3.85cm,align=left,anchor=north west,font=\scriptsize] (F) at (0,5.55) {%
       {\footnotesize\textbf{$\Full$: full softmax attention}}\\[1.5pt]
       64-dim heads (6 heads at D384)\\
       per-head QK-RMSNorm\\
-      RoPE ($\theta=5\cdot10^5$), reset per document\\
+      RoPE, $\theta=5\cdot10^5$, reset per doc.\\
       head-wise sigmoid output gate\\[1.5pt]
       \textit{state: KV cache, $4d$ bytes per token}};
-    \node[box,draw=fullc!60,line width=0.6pt,fill=linc!35,text width=3.95cm,align=left,anchor=north west,font=\scriptsize] (L) at ($(F.south west)+(0,-0.35)$) {%
+    \node[box,draw=fullc!60,line width=0.6pt,fill=linc!35,text width=3.85cm,align=left,anchor=north west,font=\scriptsize] (L) at ($(F.south west)+(0,-0.35)$) {%
       {\footnotesize\textbf{$\Lin$: Gated DeltaNet}}\\[1.5pt]
       $S_t=S_{t-1}\alpha_t(I-\beta_t\vect{k}_t\vect{k}_t^{\T})+\beta_t\vect{v}_t\vect{k}_t^{\T}$\\
-      $d_k{=}64$, $d_v{=}128$, short conv of width 4\\
+      $d_k{=}64$, $d_v{=}128$, conv width 4\\
       output normalisation and gate\\[1.5pt]
       \textit{state: fixed, 108\,KiB per layer (D384)}};
     \node[lab,anchor=south] at ($(F.north)+(0,0.12)$) {(b) the two token mixers};
   \end{scope}
   % ---- (c) configurations
-  \begin{scope}[xshift=9.25cm,yshift=0.25cm]
+  \begin{scope}[xshift=9.05cm,yshift=0.25cm]
     \def\cw{0.275}\def\ch{0.36}
     \foreach \k/\pos [count=\row from 0] in {0/{},1/{6},2/{3,9},3/{2,6,10},6/{1,3,5,7,9,11},12/{0,1,2,3,4,5,6,7,8,9,10,11}} {
       \pgfmathsetmacro{\yy}{4.75-\row*0.56}
@@ -458,385 +230,134 @@ $p_j=\lfloor(j+\tfrac12)\cdot12/k\rfloor$ for $j=0,\dots,k-1$.
     \fill[linc] (1.85,0.72) rectangle ++(0.25,0.2); \node[lab,anchor=west] at (2.15,0.82) {GDN ($\Lin$)};
   \end{scope}
 \end{tikzpicture}
-\caption{The model family. All models share the same 12 pre-norm blocks (left); the only per-layer
-difference is the token mixer (centre). A configuration C$k$ places $k$ full-attention layers at
-evenly spaced positions and makes the rest Gated DeltaNet (right). Parameter counts differ by at
-most 0.14\% across $k$ (\cref{tab:configs}).}
+\caption{The model family. (a) All models share 12 pre-norm blocks. (b) The only per-layer difference is the
+token mixer. (c) Configuration C$k$ places $k$ full-attention layers at evenly spaced positions. Across
+$k$, non-embedding parameter counts differ by at most 0.14\% (21.31M vs.\ 21.28M at D384; 41.01M vs.\ 40.97M at D512).}
 \label{fig:arch}
 \end{figure}
 
-The two mixers were dimensioned to have almost exactly the same number of parameters, so that
-changing $k$ does not change model capacity (\cref{tab:configs}). Two scales are prepared. A pilot
-rule (\cref{sec:plan}) selects one for the main study; it uses the smaller D384 scale if its
-all-attention model is competent at 32K tokens, and the D512 scale otherwise. The main sweep uses
-$k\in\{0,1,3,12\}$, with $k\in\{2,6\}$ added to resolve the shape of the curve. Placement is tested
-by moving the full-attention layers to the early or late part of the stack at a fixed $k$.
+\paragraph{Models.} Every model is a stack of 12 pre-norm blocks (RMSNorm, mixer, residual, RMSNorm,
+SwiGLU MLP, residual) with tied embeddings (\cref{fig:arch}). The full mixer is multi-head attention
+with 64-dimensional heads, QK-normalisation \citep{henry2020qknorm}, RoPE with base $5\times10^5$
+\citep{su2024roformer,dubey2024llama3} reset at each document, and a head-wise output gate
+\citep{qiu2025gated}. The linear mixer is Gated DeltaNet (\cref{eq:gdn}) from \code{fla}~0.6.0. Two
+scales are prepared, D384 (27.6M parameters) and D512 (49.4M), and a pilot rule picks one. The main sweep is
+$k\in\{0,1,3,12\}$, with $k\in\{2,6\}$ and early/late placement as a second tier. Three controls
+address known confounds: the same short convolution added to attention \citep{olsson2022induction},
+attention without positional encoding \citep{kazemnejad2023nope}, and a single-head linear layer with roughly three to four times the state.
 
-\begin{table}[t]
-\centering\tablefont
-\caption{Model scales and the parameter matching across compositions. Counts are exact (verified by
-instantiating every configuration); inference state is per sequence at 32K tokens, from
-\cref{eq:state}.}
-\label{tab:configs}
-\begin{tabular}{@{}l r r r r r r r@{}}
-\toprule
-& & & & \multicolumn{2}{c}{Non-embedding params} & \multicolumn{2}{c}{State at 32K} \\
-\cmidrule(lr){5-6}\cmidrule(l){7-8}
-Scale & $d$ & $d_{\text{ff}}$ & Vocab & $k=0$ & $k=12$ & $k=0$ & $k=12$ \\
-\midrule
-D384 & 384 & 1{,}024 & 16{,}384 & 21{,}309{,}384 & 21{,}280{,}128 & 1.27\,MiB & 576\,MiB \\
-D512 & 512 & 1{,}536 & 16{,}384 & 41{,}007{,}200 & 40{,}968{,}704 & 1.69\,MiB & 768\,MiB \\
-\bottomrule
-\end{tabular}
-\par\smallskip
-\begin{minipage}{0.97\textwidth}\footnotesize\color{ink2}
-Totals including the tied embedding are about 27.6M (D384) and 49.4M (D512). Across $k$ the
-non-embedding count changes by $-2{,}438k$ (D384) and $-3{,}208k$ (D512) parameters, a spread of at
-most 0.137\%.
-\end{minipage}
-\end{table}
+\paragraph{Data and training.} We train on FineWeb-Edu \citep{penedo2024fineweb} and PG19 books
+\citep{rae2020compressive}, pinned to exact revisions, with a 16K-entry BPE tokenizer that splits digits.
+Books are essential: only about 2\% of FineWeb-Edu tokens lie in documents of 32K tokens or more,
+against 97\% for PG19. Every configuration follows one recipe. Stage~A trains at 4K tokens on 0.6--0.8B tokens.
+Stage~B extends to 32K tokens, so every evaluation length lies inside the training length. A short,
+identical task-exposure fine-tune on synthetic tasks follows, with disjoint words and templates, because models of
+this size are expected to score at the floor zero-shot (Wang et al.\ found recall insignificant even at 340M). Training uses AdamW \citep{loshchilov2019adamw},
+bf16 and a learning rate chosen on held-out loss, never on task metrics.
 
-Three controls address the confounds of \cref{sec:related}. Gated DeltaNet has a short convolution
-that standard attention lacks, and such convolutions are known to help attention form induction
-circuits \citep{olsson2022induction}. A control therefore adds the same convolution to the attention
-layers. A second control removes positional encoding from the attention layers
-\citep{kazemnejad2023nope}. A third replaces Gated DeltaNet by a variant with a four-times larger
-per-head state, which asks whether a larger recurrent state can substitute for a KV cache at a
-fraction of its memory.
+\paragraph{Evaluation and cost.} Natural-language long-context benchmarks score at the floor at this
+scale \citep{hsieh2024ruler}. We therefore use cloze tasks scored by teacher-forced exact match, built in
+token space to exactly $T$ tokens with filler from held-out documents. \emph{Retrieval} hides facts among
+distractors and loads up to 1,024 associations, probing the capacity of a fixed state. \emph{Multi-hop} follows
+shuffled chains of up to four references. \emph{Aggregation} compares word frequencies across the input. Each
+cell has 200--300 contexts at $T\in\{1\text{K},\dots,32\text{K}\}$. Costs are reported analytically (\cref{eq:state},
+FLOPs, bytes moved) and as measured prefill and decode latency under CUDA graphs on an idle GPU.
 
-\subsection{Data and training}\label{sec:training}
-Training data are FineWeb-Edu \citep{penedo2024fineweb} and the PG19 corpus of books
-\citep{rae2020compressive}, both pinned to exact dataset revisions. The books are needed because
-web documents are short: in our tokenisation only about 2\% of FineWeb-Edu tokens lie in documents of
-32K tokens or more, against 97\% for PG19. We trained our own 16,384-entry byte-level BPE tokenizer
-with each digit as a separate token, so that numeric answers have a fixed, unambiguous tokenisation.
-A small vocabulary also keeps the embedding from dominating the parameter budget. Documents are
-packed with separators, and both mixers are masked so that no information flows across document
-boundaries.
-
-Every configuration follows the same three-phase recipe (\cref{fig:pipeline}). Stage~A trains at 4K
-tokens on 0.6B (D384) or 0.8B (D512) tokens, mostly web text with 15\% book windows. Stage~B extends
-to 32K tokens with a book-heavy mixture and a decaying learning rate, so that every evaluation length
-lies inside the training length and no comparison depends on extrapolation. A short task-exposure
-fine-tune (TEF) follows, identical for every configuration, on synthetic long-context tasks drawn from
-disjoint vocabularies and templates. It is needed because models of this size cannot express
-long-context retrieval zero-shot through prompts. The fine-tune elicits the ability, and the frozen
-evaluation measures how far each architecture can realise it. Zero-shot measurements taken before
-the fine-tune are reported alongside, so that elicited and spontaneous ability are not conflated.
-All runs use AdamW \citep{loshchilov2019adamw} with $\beta=(0.9,0.95)$, weight decay 0.1, gradient
-clipping at 1.0, a z-loss and bf16 autocast. The learning rate is chosen by a small sweep at
-$k\in\{0,3,12\}$ scored on held-out language-modelling loss, never on task metrics.
-
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}[font=\footnotesize,
-  stage/.style={box,minimum height=1.1cm,text width=1.78cm},
-  arr/.style={->,black!70,line width=0.5pt}]
-  \node[stage] (data) {\textbf{Data}\\[1pt]\scriptsize FineWeb-Edu,\\ PG19; 16K BPE};
-  \node[stage,right=3.2mm of data] (A) {\textbf{Stage A}\\[1pt]\scriptsize 4K context\\ 0.6--0.8B tokens};
-  \node[stage,right=3.2mm of A] (B) {\textbf{Stage B}\\[1pt]\scriptsize 32K context\\ 30--300M tokens};
-  \node[stage,right=3.2mm of B] (tef) {\textbf{TEF}\\[1pt]\scriptsize synthetic tasks,\\ 0.5K--32K};
-  \node[stage,fill=fillg,draw=black,line width=0.8pt,right=3.2mm of tef] (ev) {\textbf{Evaluation}\\[1pt]\scriptsize frozen items,\\ 1K--32K};
-  \node[stage,right=3.2mm of ev] (an) {\textbf{Analysis}\\[1pt]\scriptsize pre-registered\\ tests};
-  \foreach \u/\v in {data/A,A/B,B/tef,tef/ev,ev/an} {\draw[arr] (\u) -- (\v);}
-  \node[stage,below=6mm of tef] (zs) {\textbf{Zero-shot}\\[1pt]\scriptsize per-position loss,\\ copy after a gap};
-  \node[stage,below=6mm of ev] (cost) {\textbf{Cost}\\[1pt]\scriptsize memory, prefill,\\ decode};
-  \draw[arr,dashed] (B.south) |- (zs.west);
-  \draw[arr] (zs) -- (cost);
-  \draw[arr] (cost.east) -| (an.south);
-  \draw[decorate,decoration={brace,amplitude=3.5pt},black!60] ($(A.north west)+(0,0.12)$) -- ($(B.north east)+(0,0.12)$)
-     node[midway,above=4pt,lab] {identical for every $k$ (data order, seeds, schedule)};
-\end{tikzpicture}
-\caption{Training and evaluation pipeline, applied identically to every configuration. Stage~B
-extends training to 32K tokens so that every evaluation length lies inside the training length.
-The branch point between Stages A and B is shared, so longer Stage-B budgets can be tested without
-retraining Stage A. Zero-shot measurements are taken before the task-exposure fine-tune (TEF);
-cost is measured on separate runs because speed does not depend on trained weights.}
-\label{fig:pipeline}
-\end{figure}
-
-\subsection{Evaluation}\label{sec:eval}
-Standard long-context benchmarks are unsuitable at this scale. Natural-language suites such as
-LongBench or RULER's instruction-style prompts \citep{hsieh2024ruler} score at the floor for models
-of a few tens of millions of parameters, so they could not discriminate between architectures. We
-therefore use cloze-style synthetic tasks, scored by teacher-forced exact match of a short answer.
-Each task controls exactly what must be retrieved and from where (\cref{fig:items}). Every item is
-constructed in token space to be exactly $T$ tokens long, with filler drawn from held-out documents,
-and the item files are frozen and hashed before evaluation.
-
-\begin{figure}[t]
-\centering
-\resizebox{\textwidth}{!}{%
-\begin{tikzpicture}[font=\scriptsize,x=1cm,y=1cm]
-  \def\W{12.2}
-  \foreach \name/\y in {{Retrieval (R1, R-load)}/2.2,{Multi-hop (M-hop)}/1.1,{Aggregation (A-freq)}/0.0} {
-    \fill[todo] (0,\y) rectangle (\W,\y+0.48);
-    \node[anchor=east] at (-0.1,\y+0.24) {\name};
-    \fill[done] (\W-0.62,\y) rectangle (\W,\y+0.48);
-  }
-  % retrieval
-  \foreach \x in {1.3,3.6,6.9,9.3} {\fill[fullc!35] (\x,2.2) rectangle ++(0.42,0.48);}
-  \fill[fullc] (5.1,2.2) rectangle ++(0.42,0.48);
-  \node[anchor=south,text=ink2] at (5.31,2.7) {``The code for \emph{quiet harbor} is 4821.''};
-  \node[anchor=north,text=ink2] at (\W-0.31,2.17) {query};
-  % multi-hop
-  \fill[fullc] (2.0,1.1) rectangle ++(0.42,0.48); \node[anchor=south,text=ink2] at (2.21,1.6) {$k_0\!\to\!v$};
-  \fill[fullc] (8.4,1.1) rectangle ++(0.42,0.48); \node[anchor=south,text=ink2] at (8.61,1.6) {$k_1\!\to\!k_0$};
-  \fill[fullc] (4.7,1.1) rectangle ++(0.42,0.48); \node[anchor=south,text=ink2] at (4.91,1.6) {$k_2\!\to\!k_1$};
-  \foreach \x in {3.3,6.4,10.2} {\fill[fullc!35] (\x,1.1) rectangle ++(0.42,0.48);}
-  \draw[->,ink2,thin] (\W-0.62,1.45) to[bend right=12] (4.92,1.58);
-  % aggregation
-  \foreach \x in {0.5,1.6,2.4,3.9,5.0,5.7,7.1,8.2,9.6,10.8} {\fill[fullc!80] (\x,0) rectangle ++(0.14,0.48);}
-  \foreach \x in {1.1,4.4,6.6,9.1} {\fill[black!35] (\x,0) rectangle ++(0.14,0.48);}
-  \node[anchor=north,text=ink2] at (6.1,-0.04) {which of two words occurs more often in the list?};
-  \draw[ink2,|-|] (0,-0.62) -- (\W,-0.62) node[midway,fill=white,inner sep=1.5pt] {exactly $T$ tokens, $T\in\{1\text{K},\dots,32\text{K}\}$};
-\end{tikzpicture}}
-\caption{The three task families (schematic). Retrieval places facts of a fixed template among
-distractor facts (light) at controlled depths; R-load raises the number of stored facts up to 1,024.
-Multi-hop requires following a chain of references whose links are shuffled and spread through the
-context, so it cannot be solved by reading forward. Aggregation requires comparing word frequencies
-across the whole input. Answers are four single-digit tokens (or one word) scored by teacher-forced
-exact match.}
-\label{fig:items}
-\end{figure}
-
-The retrieval family varies the number of distractors and, in R-load, the number of stored
-associations. It thereby probes the capacity limit of a fixed state directly (\cref{sec:gdn}).
-Multi-hop chains of up to four links test whether retrieved information can be composed.
-Aggregation tests whether information spread over the whole context can be combined. Each
-confirmatory cell has 200--300 contexts with four queries each, enough that the
-item-level standard error is small compared with variation between training seeds. A diagnostic
-suite separates distance from distractor load, measures overwriting and recency, places the
-relevant facts immediately before the query to test long input without long distance, and records
-attention mass on the needles. Gold-answer log-probability and candidate-rank accuracy are kept as
-secondary metrics because they degrade more gracefully than exact match.
-
-\subsection{Cost measurement}
-Inference cost is reported in two complementary forms. The primary measures are analytic: exact
-state bytes from \cref{eq:state}, FLOPs per token, bytes moved per decoding step and a roofline
-latency bound. These do not depend on kernel quality. The secondary measures are measured: prefill
-latency, per-token decoding latency and the largest batch that fits a fixed memory budget, at 1K to
-32K tokens. They are taken with exact-shape CUDA graphs, pinned attention back-ends, cold and warm
-caches, at least 30 timed replays reported as the minimum, and only while no other process is using
-the GPU. Measured latencies are explicitly scoped to ``this implementation on this GPU'', because
-the attention and linear-attention kernels differ in maturity.
-
-\subsection{Statistical plan and integrity rules}\label{sec:stats}
-The unit of inference is the training run. Each configuration is trained with four to five seeds,
-and seeds are paired across configurations: the same seed index gives the same data order and the
-same initialisation of all shared modules. Paired per-seed contrasts therefore remove most
-seed-to-seed variation. H1 is tested by a one-sided paired $t$-test on $L_3$, inside a Holm-corrected
-family with H1$_{\min}$, H3 and H5. A hierarchical paired bootstrap over seeds and items and a
-pooled-variance model serve as sensitivity analyses; if either disagrees in sign, the verdict is
-downgraded to ``suggestive''. Seeds may be added only by a rule that looks at residual variance,
-never at the effect. ``Falsified'' requires that the reference model be demonstrably competent and
-that the verdict survive both a longer fine-tune and a doubled Stage~B, so that an under-trained
-model cannot produce a false negative.
-
-The project's working rules follow from the same concern. Every threshold, test and gate is
-written down and hashed before the experiment it governs. A criterion is never restated after its
-test has run. A failed check is recorded as \emph{not passed as registered}, together with either
-a named residual risk or a new pre-registered check. Every design choice is logged with its
-evidence, the alternatives rejected, and the observation that would reopen it.
-\Cref{tab:rivals} lists the most consequential alternative explanations and the experiment that
-distinguishes each from the hypothesis.
-
-\begin{table}[t]
-\centering\tablefont
-\caption{Rival explanations the design must rule out, and how.}
-\label{tab:rivals}
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.3cm} X >{\raggedright\arraybackslash}p{3.9cm}@{}}
-\toprule
-Observation & Rival explanation & Discriminating evidence \\
-\midrule
-Few attention layers suffice & The all-attention reference is weak at long length (position encoding, too little long training) & reference-competence gate; NoPE control; doubled Stage B \\
-Few attention layers suffice & The convolution in Gated DeltaNet, not recurrence, does the work & attention-with-convolution control \\
-Few attention layers suffice & The task fits inside the fixed state & load ladder up to 1,024 facts; capacity fits \\
-Many layers needed & Linear models learn the task more slowly & longer fine-tune (dose guard) \\
-Benefit grows with length & Distance and distractor load are confounded & distance $\times$ filler diagnostic \\
-Multi-hop needs more & Multi-hop is simply harder & difficulty-equated level pairs \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\paragraph{How the study is being run.}
-In keeping with the course theme, the research process is itself agent-assisted. LLM-based agents
-carry out delegated roles under a written protocol. Specialist literature agents read and annotated
-the primary sources. Two independent adversarial reviewers critiqued the initial proposal, each wrote
-a competing design, and they then debated the differences; this process resolved 29 issues before
-the protocol was frozen. Separate builder agents wrote each software module, and independent verifier
-agents, who never review their own code, tested it and returned defects for repair. The repository is
-the shared memory: every decision, review, pre-registration and result is a versioned file.
-The arrangement made it practical to apply checks that a small team could not otherwise afford,
-such as three independent scorers for one benchmark. It also made role separation and
-pre-registration essential, because a confident but wrong agent is the characteristic failure of
-such systems.
+\paragraph{Statistics and integrity.} The unit of inference is the training run: four to five seeds per
+configuration, paired across $k$ through a shared data order and initialisation. ``Falsified'' requires
+a competent all-attention reference and robustness to longer fine-tuning and a doubled Stage~B. Every
+threshold is hashed before its experiment, a failed check is recorded as \emph{not passed as registered}
+rather than relabelled, and every decision is logged with the evidence that would reopen it. In keeping
+with the course theme, the work is agent-assisted. LLM agents carried out literature reading, two
+independent adversarial reviews of the design, module construction and verification, with role
+separation so that no agent verified its own code.
 
 % =====================================================================================
-\section{Engineering, validation and preliminary measurements}\label{sec:validation}
+\section{Completed engineering and validation}
+\paragraph{Environment.} All work runs on one NVIDIA RTX~5080 (Blackwell, 16\,GB) with 62\,GB RAM, PyTorch~2.11
+(CUDA~12.8), Triton~3.6 and \code{flash-linear-attention}~0.6.0. Official Mamba kernels and external
+FlashAttention wheels are unavailable for this stack, and attention uses PyTorch's built-in
+FlashAttention-2 path. Each process is capped at about 7\,GiB, and 32K-token steps use activation
+checkpointing (3.1\,GiB peak; 6.0\,GiB is the highest peak of any stage). The GPU also drives the display, whose
+7-second driver watchdog is active, and seven watchdog faults (Xid~8) occurred during early runs. Our longest
+32K kernel takes 25\,ms, so long kernels are not the cause; a pre-registered soak test will localise it.
 
-This section reports completed work. None of it bears on the hypotheses. It establishes that the
-instrument is sound before it is used.
-
-\subsection{Compute environment and constraints}\label{sec:env}
-All work runs on a single workstation with one NVIDIA GeForce RTX~5080 (Blackwell, compute capability
-12.0, 16\,GB GDDR7), 24 CPU cores and 62\,GB of RAM, under Ubuntu~24.04. The software stack is
-PyTorch~2.11 (CUDA~12.8 build), Triton~3.6, \code{flash-linear-attention}~0.6.0 and
-\code{transformers}~5.22, with exact versions locked in the repository. Being a new architecture,
-sm\_120 constrained the design. Gated DeltaNet's Triton kernels run on it, forward and backward,
-including variable-length packing. The official Mamba kernels and external FlashAttention wheels do
-not exist for this PyTorch version, which is one reason a Mamba arm is out of scope. Attention uses
-PyTorch's built-in variable-length FlashAttention-2 path.
-
-Three further constraints shape the plan. First, memory: each process is capped at about 7\,GiB so
-that experiments can coexist with other users of the machine. A 32K-token training step therefore
-uses activation checkpointing; the measured peak is 6.0\,GiB. Second, the GPU also drives the
-workstation's display, whose driver watchdog terminates long kernels. Seven such faults (Xid~8) were
-recorded during early reproduction runs. Profiling showed that our longest 32K-token kernel takes
-25\,ms, far below the watchdog limit, so the cause is still being localised by a pre-registered soak
-test before any expensive run. Third, timing measurements require exclusive use of the GPU, which
-is available only in scheduled windows. The essential tier of the study is budgeted at roughly 86
-GPU-hours at the D384 scale and 144 at D512.
-
-\subsection{Infrastructure verification}
-The training and evaluation stack (models, deterministic data pipeline, item generators, scorer,
-trainer and pre-registered analysis) was checked against 20 families of verification tests with
-numeric thresholds fixed in advance. All 447 tests in these families pass. Three checks carry the
-most weight. When the weights of our all-attention model are transplanted into the reference
-\code{Qwen3ForCausalLM} implementation, the logits agree to a relative error of $7\times10^{-7}$.
-The same check for our all-Gated-DeltaNet model against the reference \code{fla} model gives
-$4.6\times10^{-4}$, within the $10^{-3}$ bound. Inference state measured on the device equals
-\cref{eq:state} to the byte for every configuration. Cached decoding reproduces a full forward pass,
-causal masking and document isolation hold in both mixers, and batches are a pure function of seed
-and step, so interrupted runs resume exactly.
-
-Independent verification paid for itself. The verifiers found that the no-filler control for the
-multi-hop task had been generated unshuffled, which made it trivially solvable and would have biased
-the comparison towards linear layers. They found that replay data in the task-exposure stage let
-attention and recurrent state cross document boundaries, and that a pre-registered rule had not been
-implemented. They also found that about 12.7K held-out documents duplicated training text; these were
-removed. Four tests passed only under an interpretation of their thresholds that was made after the
-fact. Following the integrity rule, the gate was therefore recorded as \emph{not passed as
-registered}, with each residual risk named, rather than relabelled as a pass.
-
-\subsection{Reproduction of published results}
-Before trusting our components we reproduced published results, first with the original authors'
-code and then with ours substituted one component at a time (\cref{tab:repro}).
+\paragraph{Verification.} Of the 451 tests in 20 families of infrastructure checks with pre-fixed
+thresholds, 447 pass and 4 are skipped. Our all-attention model matches the reference \code{Qwen3ForCausalLM} to a relative
+logit error of $7\times10^{-7}$, and our all-GDN model matches the reference \code{fla} model to $4.6\times10^{-4}$.
+Inference state equals \cref{eq:state} to the byte, and cached decoding reproduces a full forward pass in fp32.
+Independent verifiers found and fixed real defects: an unshuffled multi-hop control solvable by a positional heuristic, replay data
+crossing document boundaries, and about 25.7K held-out documents duplicating training text. Six sub-items, for
+example a precision bound and one D512 throughput measurement, missed their literal criteria without isolating a
+code defect, so the gate is recorded as \emph{not passed as registered}, with a named residual risk for each.
 
 \begin{table}[t]
-\centering\tablefont
-\caption{Reproductions completed so far. Pass criteria were fixed before each run.}
+\centering\small
+\caption{Reproductions of published results. Pass criteria were fixed before each run.}
 \label{tab:repro}
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.2cm} X l@{}}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.3cm} X l@{}}
 \toprule
-Reproduction & Result & Verdict \\
+Reproduction & Result & Verdict\\
 \midrule
-MQAR, Zoology's own code \citep{arora2023zoology} & attention $\ge$0.9997; GDN 0.989 ($d$=128), 0.994 ($d$=256) & pass \\
-Our mixers in Zoology's harness & within 0.0004 of the reference in all cells & pass \\
-MQAR below ceiling ($d$=64), 3 seeds & recall/state trade-off reproduced (0.30 $\to$ 0.93 $\to$ 0.96); ours vs.\ reference $\Delta=-0.018$ & pass \\
-LAMBADA, GDN-340M of \citet{wang2025systematic} & 0.3435 vs.\ published 0.348 & pass \\
-LAMBADA, Pythia-160M/70M \citep{biderman2023pythia} & 0.354/0.227 in fp32; 0.330/0.185 with fp16 weights (published 0.328/0.185) & not passed as registered \\
-Exactness vs.\ independent references (5 tests) & 1 pass; 4 miss tolerances that were never calibrated; 1 genuine generator flaw found and fixed & not passed as registered \\
+MQAR, Zoology code \citep{arora2023zoology} & overall accuracy: attention $\ge$0.9997; GDN 0.989 ($d$=128), 0.994 ($d$=256) & pass\\
+Our mixers in Zoology's harness & within 0.0004 of the reference in all cells & pass\\
+MQAR below ceiling ($d$=64, 3 seeds) & hardest cell, $d$=64/128/256: 0.30$\to$0.93$\to$0.96; ours vs.\ reference at $d$=64: $-0.018$ & pass\\
+LAMBADA, GDN-340M \citep{wang2025systematic} & 0.3435 vs.\ published 0.348 & pass\\
+LAMBADA, Pythia-160M/70M \citep{biderman2023pythia} & fp32 0.354/0.227; fp16 0.330/0.185 (published 0.328/0.185) & not as registered\\
+Exactness vs.\ independent references & 1/5 pass; 3 uncalibrated tolerances; 1 generator flaw (fixed, re-check pending) & not as registered\\
 \bottomrule
 \end{tabularx}
 \end{table}
-
-The most informative reproduction is multi-query associative recall
-(MQAR; \citealp{arora2023zoology}), the canonical small-scale demonstration that a fixed-state model's
-recall degrades as more key--value pairs must be held, while attention does not (\cref{fig:mqar}).
-With Zoology's own code on our hardware, attention solves every test configuration and Gated DeltaNet
-falls behind only on the most heavily loaded one, improving with width. Substituting our
-implementations into the same harness changes overall accuracy by at most 0.0004. At width 64,
-where Gated DeltaNet's state is small enough that recall falls to 0.30 on the hardest configuration,
-our implementation matches the reference within seed noise, $-0.018$ against a pre-registered
-threshold of 0.115. The phenomenon our study builds on is therefore present, measurable and
-faithfully implemented in our stack.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{figures/fig_mqar.pdf}
-  \caption{Reproduction of the recall--state trade-off on MQAR \citep{arora2023zoology}. Solid lines:
-  Zoology's reference code; dashed: our layers in the same harness. As the number of key--value
-  pairs grows, Gated DeltaNet's fixed state saturates (most visibly at width 64, mean of three seeds)
-  while attention stays at 1.0. Our implementation tracks the reference in every configuration.}
+  \caption{Reproduction of the recall--state trade-off on MQAR \citep{arora2023zoology}. Solid lines are Zoology's code
+  and dashed lines are our layers in the same harness. Gated DeltaNet's fixed state saturates as key--value pairs
+  grow (most visibly at width 64, three seeds) while attention stays at 1.0. Our layers show no large deviation from the reference.}
   \label{fig:mqar}
 \end{figure}
 
-The LAMBADA reproductions \citep{paperno2016lambada} test the scorer end to end. On the public
-Gated DeltaNet checkpoint of \citet{wang2025systematic} our scorer reproduces the published accuracy,
-which also confirms that the \code{fla} version we use preserves the semantics the model was trained
-with. The Pythia anchors failed as registered, and the failure was instructive. Our scorer,
-\code{lm-evaluation-harness} and a third scorer written independently by an auditor agree item for
-item across 10,306 items. The discrepancy arises because the published numbers were produced with
-half-precision weights, and with fp16 weights we reproduce them to within 0.0014. The scorer is
-correct, and the registered tolerance had assumed that precision would not matter. The exactness
-tests behaved similarly. Three failures came from tolerances that had been fixed without
-calibration, and an independent audit confirmed that each lies at the level of floating-point
-rounding, for example one or two units in the last place of fp32 gradients of magnitude $10^3$.
-The fourth exposed a real defect: in 7 of 39,800 queries, two facts' values shared a prefix. The
-generator has been fixed, and its re-check is pre-registered.
-
-\subsection{Preliminary performance measurements}
-Throughput and inference cost do not depend on trained weights, so we measured them while waiting
-for the pilots. These measurements calibrate the budget and illustrate the cost side of the
-frontier. They are not results about capability.
+\paragraph{Reproductions.} We reproduced published results with the original code first and then with our
+components substituted (\cref{tab:repro}). On multi-query associative recall (MQAR), the canonical
+demonstration that fixed-state recall degrades with load \citep{arora2023zoology}, our layers match the
+reference within 0.0004 overall. At width 64 they are within $-0.018$ of it, although this pre-registered test can
+exclude only a handicap larger than about 0.11 (\cref{fig:mqar}). The recall--state trade-off our study builds on is
+therefore present and measurable in our stack. On LAMBADA \citep{paperno2016lambada} our scorer reproduces the public GDN
+checkpoint. The Pythia anchors failed as registered: three independent scorers agree item for item, and
+the published numbers turn out to come from half-precision weights, which we reproduce to within 0.0014.
+Three of the exactness failures are floating-point rounding against uncalibrated bounds. The fourth exposed
+value-prefix collisions in 7 of 39,800 queries; the generator has been fixed and the items regenerated, but the
+pre-registered re-check has not yet run.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\textwidth]{figures/fig_throughput.pdf}
-  \caption{Training throughput on the RTX~5080 (idle GPU, median of 20 steps, production code path).
-  At 4K tokens the number of attention layers barely matters; at 32K each additional layer costs
-  throughput, about $-27$\% (D384) and $-29$\% (D512) from $k=0$ to $k=12$. Compute per token is
-  therefore not matched across configurations, a stated limitation of the design.}
-  \label{fig:throughput}
-\end{figure}
-
-Training throughput (\cref{fig:throughput}) shows that full attention costs little at 4K tokens.
-There the multilayer perceptrons and projections dominate, and the attention kernels are more
-efficient than the recurrent ones. Its quadratic term becomes visible at 32K. The resulting budget is
-modest: a complete D384 run of all three phases takes roughly two GPU-hours.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\textwidth]{figures/fig_cost.pdf}
-  \caption{The cost side of the trade-off, D384, untrained weights (session 1 of 2). (a) Inference
-  state per sequence, from \cref{eq:state} and verified on the device: constant for $k=0$, linear in
-  length otherwise. (b, c) Measured prefill and per-token decoding latency (minimum of $\ge$30
-  CUDA-graph replays, cold cache). (d) Largest batch of sequences whose state fits in 8\,GiB.}
+  \includegraphics[width=\textwidth]{figures/fig_cost2.pdf}
+  \caption{Cost side of the trade-off at D384, measured on untrained weights (session 1 of 2). (a) Exact state per
+  sequence, from \cref{eq:state} and verified on the device. (b) Per-token decode latency, minimum of $\ge$30
+  CUDA-graph replays. (c) Largest batch whose state and decoding activations fit in an 8\,GiB budget.}
   \label{fig:cost}
 \end{figure}
 
-The first of two planned inference-cost sessions (\cref{fig:cost}) covered nine configurations at
-both scales, with 1,678 timed series. At 32K tokens the all-linear D384 model holds 1.3\,MiB of state
-per sequence and so fits more than five thousand concurrent sequences in 8\,GiB. With three
-full-attention layers the state is 145\,MiB and 56 sequences fit; with twelve it is 576\,MiB and only
-14 fit. Prefill at 32K takes 52\,ms, 77\,ms and 154\,ms respectively. Decoding latency for the
-all-linear model is flat at 0.87\,ms per token from 1K to 32K tokens, whereas with twelve attention
-layers it rises from 1.17 to 1.84\,ms. These numbers show concretely what is being traded. The
-study's purpose is to measure what each step along this cost curve buys in long-context capability.
+\paragraph{Preliminary measurements.} Speed does not depend on trained weights, so it was measured
+early. These are engineering numbers, not findings. Training throughput at 4K tokens is nearly independent of $k$,
+at 127--138K tokens/s for D384. At 32K it falls from 107K ($k=0$) to 78K ($k=12$) tokens/s, so compute per token is not matched across
+configurations. A complete D384 run takes about two GPU-hours. At inference (\cref{fig:cost}) the all-linear model
+decodes at a flat 0.87\,ms per token from 1K to 32K and fits 5,185 concurrent 32K sequences in 8\,GiB
+(limited by activations, not state), whereas
+$k=3$ fits 56 and $k=12$ fits 14. Prefill at 32K takes 52, 77 and 154\,ms respectively.
 
 % =====================================================================================
-\section{Plan, risks and timeline}\label{sec:plan}
-
-The study proceeds through stages separated by quantitative go/no-go gates, each fixed before the
-stage it governs (\cref{fig:roadmap}). The project is at the reproduction gate. Its remaining items
-are an independent audit, the soak test that localises the display-watchdog faults, and a
-full-pipeline check that our trainer and scorer recover a known answer on a small model. Pilot
-runs then fix four quantities that the protocol deliberately leaves to rules rather than to
-judgement: the model scale, the length of Stage~B, the composition of the task-exposure stage and
-the number of evaluation contexts per cell. The learning-rate sweep follows. Everything is then
-frozen, including items, configurations, analysis code and the compiled-kernel cache, before the
-first main run.
-
+\section{Plan and risks}
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}[font=\scriptsize,
   st/.style={box,font=\scriptsize,minimum height=0.95cm,text width=1.62cm,inner sep=2pt},
-  g/.style={font=\tiny,text=black,fill=white,inner sep=0.8pt},
+  g/.style={font=\scriptsize,text=black,fill=white,inner sep=0.8pt},
   arr/.style={->,black!70,line width=0.5pt}]
   \node[st,fill=done,text=white,draw=done] (s0) {\textbf{S0}\\ build and verify};
   \node[st,fill=done,text=white,draw=done,right=6.5mm of s0] (s1) {\textbf{S1}\\ reproductions};
-  \node[st,fill=wip,right=6.5mm of s1] (rv) {\textbf{G-RV}\\ soak test, audit};
+  \node[st,fill=wip,right=6.5mm of s1] (rv) {\textbf{G-RV}\\ re-checks, soak, audit};
   \node[st,right=6.5mm of rv] (s2) {\textbf{S2}\\ pilots: scale and budgets};
   \node[st,right=6.5mm of s2] (s3) {\textbf{S3}\\ learning-rate sweep};
   \node[st,right=6.5mm of s3] (g5) {\textbf{G5}\\ freeze items, code};
@@ -862,59 +383,25 @@ first main run.
     \tikz\filldraw[fill=white,draw=black!70,line width=0.3pt] (0,0) rectangle (0.26,0.18);~planned
     \end{tabular}};
 \end{tikzpicture}
-\caption{Staged plan. Each labelled arrow is a quantitative gate fixed before the stage runs; for
-example, G-FULL requires the all-attention model to be competent at 32K before any composition
-contrast is interpreted. The project is currently at the reproduction gate (G-RV).}
-\label{fig:roadmap}
+\caption{Staged plan with quantitative gates fixed in advance. G0 was recorded as not passed as registered, with
+named residual risks; the project is at gate G-RV.}
+\label{fig:road}
 \end{figure}
+The project is at gate G-RV, which closes the reproduction programme (\cref{fig:road}). Its remaining items are
+finishing the implementation of the review rulings, the watchdog soak test, four pre-registered re-checks, a
+known-answer run through our own trainer and scorer, and an independent audit. Pilots then fix the scale, the
+Stage-B length, the attention scaling and the fine-tune mix by pre-registered rules. A learning-rate sweep follows, after which items, code and configurations are frozen
+before the core runs. The essential tier is budgeted at about 86 GPU-hours at D384 (144 at D512), roughly
+four days on our GPU.
 
-The core runs train the four anchor compositions with four to five seeds each. The controls and the
-dose and budget branches follow, and then frozen evaluation, at which point the confirmatory
-hypotheses are decided. The second tier adds $k=2$ and $k=6$ to resolve the curve, together with the
-placement arms and the larger-state linear variant. Weeks are planned around the throughput measured
-above: the essential tier fits in about four days of GPU time at D384, and the desirable tier adds
-about a day and a half.
+The main scientific risk is an all-attention reference that is itself weak at 32K, which would leave
+nothing to recover. The pilots test for this, and the study pauses for re-scoping if it fails at 16K and 32K.
+Independent audits also estimate seed variation on hard recall cells at about twice the planned value,
+so H1 may well end inconclusive. The multiple-testing structure and seed budget are therefore being
+revised before the freeze, at no GPU cost. Conclusions will be scoped to 28--49M parameters, Gated DeltaNet and this
+recipe, and compute per token is not matched across $k$. Within that scope the study will give a controlled
+measurement of a design choice that current long-context models make largely on precedent.
 
-\paragraph{Risks and how they are handled.}
-The most serious scientific risk is that the all-attention reference is itself poor at 32K tokens.
-In that case no hybrid could be measured against it. The pilots test for this explicitly, and if the
-reference fails at both 16K and 32K at both scales, the study pauses and is re-scoped either to
-shorter contexts or to a larger model. A second risk is statistical power. Independent audits of the
-frozen design estimate that seed-to-seed variation on below-ceiling recall may be about twice what
-was planned for, which would make an ``inconclusive'' outcome for H1 considerably more likely than
-the protocol assumed. A revision of the multiple-testing structure and of the seed budget is
-therefore being decided before the freeze, at no GPU cost. The engineering risks are the watchdog
-faults and the shared GPU, handled respectively by the soak test with automatic resumption and by
-exclusive timing windows.
-
-\paragraph{Scope.}
-All conclusions will be stated for this package: about 28--49M parameters, Gated DeltaNet as the
-linear layer, gated softmax attention as the full layer, this data and recipe, and capability
-elicited by an identical synthetic exposure. Compute per token is not matched across compositions,
-so the study cannot separate the value of unbounded memory from the value of extra computation.
-Sliding-window attention, other linear mechanisms beyond an optional arm, and contexts longer than
-32K are out of scope. Effects may differ at scale, as has been reported for multi-hop behaviour in
-large hybrids, so we will treat agreement or disagreement with large-model reports as
-corroboration, not proof.
-
-% =====================================================================================
-\section{Concluding remarks}
-
-The ratio of full to linear attention is one of the most consequential and least examined
-choices in current long-context architectures. Its consequences for memory are easy to compute. Its
-consequences for what a model can actually do with long context are not. This project measures
-the second against the first in the most controlled setting we can afford. A family of models
-identical except for their mixers is trained under one recipe and evaluated on tasks that separate
-retrieval, composition and aggregation, at every length up to the training length, with costs
-measured on the same implementation. The groundwork is in place: the question is sharpened by the
-literature, the protocol has been independently reviewed and frozen, the instrument has been verified
-against reference implementations, and the central phenomenon has been reproduced on our hardware.
-What remains is to train the models and let the pre-registered tests decide.
-
-% =====================================================================================
-\raggedbottom
-\phantomsection\addcontentsline{toc}{section}{References}
 \bibliographystyle{plainnat}
-\bibliography{refs}
-
+{\small\bibliography{refs}}
 \end{document}
