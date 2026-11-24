@@ -47,7 +47,7 @@ Crossover token length T* where ONE full-attention layer's KV cache equals the W
 - **Linear state grows with d^2, KV cache with d.** The first full-attention layer costs ~39x the all-linear state at D384
   (49 vs 1.3 MiB per 32K sequence) but ~15x at d4096 (547 vs 36 MiB): the *relative* price of one attention layer falls with size,
   and the break-even length T* (one attention layer vs the whole linear stack) rises from ~0.8K to ~2.2K tokens.
-- **Full attention still dominates memory at long context at every size** (k = L is 16-450x the k = 0 state at 32K), so the
+- **Full attention still dominates memory at long context at every size** (k = L needs ~455x the k = 0 state at 32K, at every size), so the
   hybrid question stays a cost question at scale; whether recall needs k = 3 or k = 8 at that size is the empirical gap the study addresses.
 - **FLOPs/token barely move with k** (attention adds 2*T*d per layer); the benefit of fewer attention layers is mostly memory/bandwidth.
 
