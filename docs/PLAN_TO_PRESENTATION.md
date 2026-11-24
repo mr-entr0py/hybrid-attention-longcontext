@@ -11,10 +11,11 @@ cost benchmarks 3.0) plus 4-9 h of gate checks. The 5080 is free from ~Tue 16:30
 | Tue 16:30-22:00 | Gate checks VT-22b, VT-23b, VT-13r, R6, R2e-X; G-RV audit in parallel (CPU) |
 | Tue night - Wed 10:00 | S2 FEAS pilots (9.8 h): scale, Stage-B budget, SSMax, TEF mix |
 | Wed 10:00-14:00 | LR sweep (4.2 h), then the freeze (items, code, configs) |
-| Wed 14:00 - Fri 06:00 | Core runs in seed blocks (all four k per seed); 3 seeds ~23 h, then seeds 4-5 as time allows |
+| Wed 14:00 - Fri 06:00 | Core runs in seed blocks (all four k per seed); 3 seeds ~23 h (the target); a 4th seed (~8 h more) only if time allows |
 | in parallel | Optional second worker (RTX 4060 laptop or a teammate's NVIDIA GPU): one whole seed block, only after the gates are re-run on that hardware and a decision row allows mixed hardware |
 | as blocks land | Frozen evaluations on the 5080; controls/branches/D768 scale check only if time remains |
 
+**Seed decision (team, 2026-11-24):** 3 seeds is the target; a 4th is welcome but there is no hard cap. Protocol text says 4-5 seeds, so record 3 as a logged deviation and report the reduced power honestly.
 **Minimum for the talk:** 3 complete seed blocks, frozen evaluations, the cost frontier and the reproductions.
 **Hardware notes:** Apple-silicon machines cannot run the Triton/fla kernels (use for analysis and slides only). Mixed hardware
 changes kernels, so each machine takes whole seed blocks (paired contrasts stay within a machine) and the gates are re-checked there.

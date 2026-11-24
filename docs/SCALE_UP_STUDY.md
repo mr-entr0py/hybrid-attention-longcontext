@@ -25,7 +25,7 @@ A single seed over k in {0, 3, 12} is ~28 h. An LR sweep at this scale would cos
 learning rate scaled by width and records that as a deviation.
 
 ## Proposed use, in priority order
-1. **Analytic scaling study (no GPU, do first).** Extend `scripts/planning/flops_state.py` to d = 768, 1024, 2048 and layer counts
+1. **Analytic scaling study (no GPU, DONE: see docs/SCALING_STUDY.md).** Extend `scripts/planning/flops_state.py` to d = 768, 1024, 2048 and layer counts
    of 12/24/32: inference-state memory M(k, T) = k*4Td + (L-k)*S_lambda, FLOPs/token, and the largest batch at 32K in a fixed
    memory budget. Report where the full-attention KV cache overtakes the linear state at each size.
 2. **FEAS-level scale probe (~7 h):** D768, C0 and C12, one seed, 0.3B tokens. It answers the main scientific risk in the
