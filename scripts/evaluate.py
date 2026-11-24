@@ -43,7 +43,7 @@ os.environ.setdefault("TRITON_CACHE_DIR", str(REPO / ".cache" / "triton"))
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpt", required=True, help="final.pt / step_*.pt / milestones/*_bf16.pt")
-    ap.add_argument("--suite", nargs="+", required=True, choices=["CS", "MS", "DG", "DC", "FD", "Tier0"])
+    ap.add_argument("--suite", nargs="+", required=True, choices=["CS", "MS", "DG", "DC", "FD", "Tier0", "R6"])
     ap.add_argument("--label", default=None, help="checkpoint label (default tef<step> / B<step> / A<step>)")
     ap.add_argument("--items-root", default=str(REPO / "experiments" / "items"))
     ap.add_argument("--results-root", default=str(REPO / "experiments" / "results"))

@@ -218,7 +218,23 @@ def tier0() -> list[Cell]:
     return out
 
 
-SUITES = {"CS": confirmatory, "MS": mechanism, "DG": dev_gate, "DC": dev_checkpoint, "FD": feas_dev, "Tier0": tier0}
+def r6() -> list[Cell]:
+    """R6 known-answer recall (experiments/prereg/R6.v2.yaml), dev namespace: R1 D in {3, 15}, R-load N in {8, 32}
+    at T = 1,024 and their C0 (nofill) versions; 200 contexts x 4 queries per cell = 6,400 queries."""
+    ns, s = "dev", "R6"
+    out: list[Cell] = []
+    for D in (3, 15):
+        out.append(_c(ns, s, "R1", {"D": D}, 1 * K, 200))
+    for N in (8, 32):
+        out.append(_c(ns, s, "R-load", {"N": N}, 1 * K, 200))
+    for D in (3, 15):
+        out.append(_c(ns, s, "R1", {"D": D}, None, 200, "C0"))
+    for N in (8, 32):
+        out.append(_c(ns, s, "R-load", {"N": N}, None, 200, "C0"))
+    return out
+
+
+SUITES = {"CS": confirmatory, "MS": mechanism, "DG": dev_gate, "DC": dev_checkpoint, "FD": feas_dev, "Tier0": tier0, "R6": r6}
 
 
 def suite_cells(name: str, **kw: Any) -> list[Cell]:
