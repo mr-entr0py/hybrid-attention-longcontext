@@ -96,7 +96,7 @@ def wait_idle(settle_s: float = 300.0, poll_s: float = 30.0) -> None:
     since, last_msg = None, 0.0
     while True:
         bad, util = foreign_disallowed(), gpu_util()
-        if not bad and util < 10:
+        if not bad and util < 40:  # desktop (Xorg) alone can show ~20%; compute processes are checked via foreign_disallowed()
             since = since or time.time()
             if time.time() - since >= settle_s:
                 return
