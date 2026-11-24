@@ -1,0 +1,23 @@
+# R6 v2 known-answer recall (experiments/prereg/R6.v2.yaml, plan 2.6): 100% synthetic TEF at T = 1,024,
+# 65,536 tokens/step = 1 x 32K x 2 accumulation, 100-step warm-up to 1e-3 then constant. 2,289 steps = 150M tokens;
+# looks at 763 (50M) and 1,526 (100M) are bf16 milestones, 2,289 is the final. D050 answer_norm block.
+inherits: base.yaml
+stage: TEF
+schedule:
+  kind: warmup_constant
+  warmup_steps: 100
+  peak_lr: 1.0e-3
+  steps: 2289
+data:
+  stream: tef
+  stage: TEF
+  seq_len: 32768
+  micro_batch: 1
+  accum: 2
+  kwargs: {answer_norm: block, synthetic_share: 1.0, buckets: [1024]}
+runtime:
+  activation_checkpointing: true
+validation:
+  every: 0
+checkpoint:
+  milestone_steps: [763, 1526]

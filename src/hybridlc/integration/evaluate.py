@@ -37,7 +37,7 @@ from hybridlc.utils.provenance import REPO_ROOT, sha256_file
 #: Suite -> item namespace (protocol §9.3-9.6: CS/MS/Tier0 use the test generator, the dev suites
 #: DG/DC/FD use generator seed 77).
 SUITE_NAMESPACE: dict[str, str] = {"CS": "test", "MS": "test", "Tier0": "test",
-                                   "DG": "dev", "DC": "dev", "FD": "dev"}
+                                   "DG": "dev", "DC": "dev", "FD": "dev", "R6": "dev"}
 ITEMS_ROOT = REPO_ROOT / "experiments" / "items"
 RESULTS_ROOT = REPO_ROOT / "experiments" / "results"
 
