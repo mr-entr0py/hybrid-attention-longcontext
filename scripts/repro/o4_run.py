@@ -76,8 +76,8 @@ def save_state(st: dict) -> None:
 def foreign_disallowed() -> list[str]:
     bad = []
     for a in compute_apps():
-        if "error" in a or is_project_process(a["pid"], a["name"]) or _allowed_foreign(a["name"]):
-            continue
+        if "error" in a or a["name"].startswith("[") or is_project_process(a["pid"], a["name"]) or _allowed_foreign(a["name"]):
+            continue  # nvidia-smi placeholders such as "[No data]" appear right after a GPU reset (Xid); not a foreign process
         bad.append(a["name"].split("/")[-1])
     return bad
 
