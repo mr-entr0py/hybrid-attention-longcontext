@@ -1,12 +1,12 @@
 # O4 soak progress (auto-generated)
-_updated 2026-11-24 13:33:30 IST_
+_updated 2026-11-24 14:13:32 IST_
 
 | part | end reason | kernel events | duration | window |
 |---|---|---|---|---|
 | Z | timebox_equivalent(blocked_foreign_false_positive) | 6 | 2385.6s | ok |
 | B | event_stop | 2 | 3535.1s | ok |
 | A1 | completed | 0 | 35.2s | ok |
-| S1 | pending | | | |
+| S1 | timebox | 0 | 1802.7s | ok |
 | S2 | pending | | | |
 | S3 | pending | | | |
 | S4 | pending | | | |
