@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from hybridlc.analysis.results import rescore_audit
 from hybridlc.integration import evaluate as E
@@ -37,14 +38,14 @@ def test_evaluate_rescore_default(tmp_path, monkeypatch, flag, expect):
         out.write_text("")
         return out
 
-    def fake_rescore(model, f, written):
+    def fake_rescore(model, f, written, **kw):
         called.append(Path(written).parent.name)
         return dict(n=10, flips=0, flip_rate=0.0, max_abs_dlogp=0.0)
 
     from hybridlc.eval import scorer
     monkeypatch.setattr(E, "score_cell", fake_score_cell)
     monkeypatch.setattr(scorer, "rescore_check", fake_rescore)
-    ck = SimpleNamespace(model=None, run_id="S4T-D384-C3-s0-x", stage="TEF", step=1000, path=Path("p"), sha256="0",
+    ck = SimpleNamespace(model=torch.nn.Linear(1, 1), run_id="S4T-D384-C3-s0-x", stage="TEF", step=1000, path=Path("p"), sha256="0",
                          dtype="float32", config_hash="h", git_commit="g")
     E.evaluate_checkpoint(ck, ["CS", "MS", "DC", "FD"], items_root=items, results_root=tmp_path / "res",
                           rescore=flag, log=None)

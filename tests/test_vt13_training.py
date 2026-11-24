@@ -563,7 +563,7 @@ def test_runner_marks_stale_running_interrupted_and_resumes(tmp_path):
                        timeout=600)
     assert r.returncode == 0, r.stdout[-3000:]
     st = [x["status"] for x in Registry(tmp_path / "registry.jsonl").records()]
-    assert st == ["queued", "running", "interrupted", "running", "completed"], st
+    assert st == ["queued", "running", "interrupted", "running", "completed", "attempt_end"], st  # R2-LIVE v2 L2: attempt_end after every attempt
 
 
 # ----------------------------------------------------------------------------------------------

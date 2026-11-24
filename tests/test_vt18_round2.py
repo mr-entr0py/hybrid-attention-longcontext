@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from hybridlc.analysis import protocol as P
 from hybridlc.analysis import stats as S
@@ -225,7 +226,7 @@ def test_subset_outputs_never_shadow_full_cells(tmp_path, monkeypatch):
         return out
 
     monkeypatch.setattr(E, "score_cell", fake_score_cell)
-    ck = SimpleNamespace(model=None, run_id="S4T-D384-C3-s0-0123abcd", stage="TEF", step=1000, path=Path("p"),
+    ck = SimpleNamespace(model=torch.nn.Linear(1, 1), run_id="S4T-D384-C3-s0-0123abcd", stage="TEF", step=1000, path=Path("p"),
                          sha256="0", dtype="float32", config_hash="h", git_commit="g")
     E.evaluate_checkpoint(ck, ["CS"], items_root=tmp_path / "items", results_root=tmp_path / "res", n_contexts=10,
                           rescore=False, log=None)
