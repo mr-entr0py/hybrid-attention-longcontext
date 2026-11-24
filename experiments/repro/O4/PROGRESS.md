@@ -1,11 +1,11 @@
 # O4 soak progress (auto-generated)
-_updated 2026-11-24 12:23:28 IST_
+_updated 2026-11-24 13:33:30 IST_
 
 | part | end reason | kernel events | duration | window |
 |---|---|---|---|---|
 | Z | timebox_equivalent(blocked_foreign_false_positive) | 6 | 2385.6s | ok |
-| B | pending | | | |
-| A1 | pending | | | |
+| B | event_stop | 2 | 3535.1s | ok |
+| A1 | completed | 0 | 35.2s | ok |
 | S1 | pending | | | |
 | S2 | pending | | | |
 | S3 | pending | | | |
@@ -15,6 +15,8 @@ _updated 2026-11-24 12:23:28 IST_
 ## Alerts
 - Z: 6 kernel-log event(s) (Xid/RC watchdog/OOM) - see Z/Z.infra.json
 - Z: CUDA error text in child log
+- B: 2 kernel-log event(s) (Xid/RC watchdog/OOM) - see B/B.infra.json
+- B: CUDA error text in child log
 
 ## O4-Z result
 ```json
