@@ -3,8 +3,7 @@
 
 Launch (one GPU lock for the whole run; the train/eval children inherit the token):
     python scripts/repro/gpu_lock.py run --label R6 --wait-exclusive -- python scripts/repro/r6.py run [--attempt N]
-Other subcommands:  items (CPU: generate the 8 R6 item files),  chain --ckpt P --label L (R6-R5/R9 chain check),
-                    verdict (CPU: recompute r6_results.json from the files on disk).
+Other subcommands:  items (CPU: generate the 8 R6 item files + K1 oracle check),  chain --ckpt P ... (R6-R5/R9 chain check).
 
 Design: AA (2 layers) trains once to 2,289 steps (150M tokens) on 100% synthetic TEF at T = 1,024, LR 1e-3 constant after a
 100-step warm-up. At step 763 / 1,526 the bf16 milestone is scored through scripts/evaluate.py (production path); the
