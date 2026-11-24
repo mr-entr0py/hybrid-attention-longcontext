@@ -158,12 +158,13 @@ def evaluate(steps: int) -> dict:
                          "n_crashed": sum(1 for r in hist if r["status"] == "crashed")}
     res["registry"] = infra_rows
     r2, r3 = infra_rows["r2"], infra_rows["r3"]
-    r2_resumed = r2.get("statuses", []).count("running") >= 2 and r2.get("statuses", [""])[-1] in ("completed", "done")
+    r2_resumed = r2.get("statuses", []).count("running") >= 2 and "completed" in r2.get("statuses", [])  # last row is attempt_end
     r1_clean = "error" in infra_rows["r1"] or infra_rows["r1"].get("n_infra_failed_attempt", 0) == 0  # trainer-only run: no infra class
     res["criteria"]["R2"] = bool(r2.get("n_infra_failed_attempt", 0) >= 1 and r2_resumed
                                  and r3.get("n_infra_failed_attempt", 0) == 0 and r1_clean)
     fc2, fc3 = failure_counts(OUT / "r2"), failure_counts(OUT / "r3")
-    c2, c3 = next(iter(fc2.values())) if fc2 else {}, next(iter(fc3.values())) if fc3 else {}
+    c2 = next(iter(fc2.get("runs", {}).values()), {})  # failure_counts() -> {"runs": {run_id: counts}, "per_k": ...}
+    c3 = next(iter(fc3.get("runs", {}).values()), {})
     res["failure_counts"] = {"r2": c2, "r3": c3}
     res["criteria"]["R3"] = bool(c2.get("counted_failures") == 0 and c2.get("infra_failed_attempt") == 1
                                  and r3.get("n_crashed") == 1 and c3.get("counted_failures") == 0)
