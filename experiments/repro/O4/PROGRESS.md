@@ -1,5 +1,5 @@
 # O4 soak progress (auto-generated)
-_updated 2026-11-24 14:13:32 IST_
+_updated 2026-11-24 14:53:35 IST_
 
 | part | end reason | kernel events | duration | window |
 |---|---|---|---|---|
@@ -7,7 +7,7 @@ _updated 2026-11-24 14:13:32 IST_
 | B | event_stop | 2 | 3535.1s | ok |
 | A1 | completed | 0 | 35.2s | ok |
 | S1 | timebox | 0 | 1802.7s | ok |
-| S2 | pending | | | |
+| S2 | timebox | 0 | 1803.7s | ok |
 | S3 | pending | | | |
 | S4 | pending | | | |
 | A3 | pending | | | |
