@@ -69,9 +69,10 @@ def short_overrides(n: str) -> dict:
     out = {"schedule.steps": s, "checkpoint.every": ck, "checkpoint.milestone_steps": ms,
            "checkpoint.milestone_tokens": [], "validation.every": val}
     if n.endswith("_B090"):
-        # both branches are shortened to the same step count, so they would share one run id; this alert-only
-        # reference value (throughput_alert after 3600 s; no effect on training) keeps the two lineages distinct
-        out["runtime.g0_tok_s"] = 1.0
+        # both branches are shortened to the same step count, so they would share one run id. The G-div fallback LR is
+        # part of the run identity and is used only if G-div restarts a run (none of these runs may restart: every run
+        # must exit as specified), so a 1e-7 offset separates the two lineages without changing what is trained
+        out["gdiv.fallback_lr"] = 0.0014001
     return out
 
 
