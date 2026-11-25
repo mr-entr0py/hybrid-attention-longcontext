@@ -181,6 +181,16 @@ def phase_fakes() -> dict:
 
 
 # ------------------------------------------------------------------ GPU chain
+def item_files(cells: list[str]) -> str:
+    """evaluate.py --only matches ITEM file names; map result-cell names to item files (all must resolve)."""
+    from hybridlc.integration.evaluate import result_name
+
+    by_result = {result_name(f.stem): f.name for f in (REPO / "experiments" / "items" / "dev" / "FD").glob("*.npz")}
+    missing = [c for c in cells if c not in by_result]
+    assert not missing, f"no FD item file for result cells {missing}"
+    return ",".join(by_result[c] for c in cells)
+
+
 def fresh_cache() -> Path:
     if CACHE_ROOT.exists():
         shutil.rmtree(CACHE_ROOT)
@@ -270,7 +280,7 @@ def phase_gpu(ids: dict) -> dict:
 
     # evaluation: P0 (+P2/P3 re-score) and P1 on all FD cells, P4 on the ladder verdict cells
     results = OUT / "results"
-    p4_cells = ",".join(FE.required_cells("P4", "D384"))
+    p4_cells = item_files(FE.required_cells("P4", "D384"))
     tefs = [TEF_FAULT] + CHAIN_T
     rcs, leaks, meta_bad = {}, [], []
     for n in tefs:
@@ -278,8 +288,8 @@ def phase_gpu(ids: dict) -> dict:
         ck = sorted((OUT / "ckpt" / rid / "milestones").glob("step_0000020*_bf16.pt"))[0]
         for pid, extra in (("P0", ["--rescore", "--rescore-ref", "both"]), ("P1", ["--pass", "P1"]),
                            ("P4", ["--pass", "P4", "--only", p4_cells])):
-            label = "tef20" if pid == "P0" else f"tef20-{pid}"
-            rc, text, wall = evaluate(ck, ["--suite", "FD", "--label", label, "--n-contexts", "2", *extra], env,
+            # evaluate.py appends -P1 / -P4 and -n2 to the base label itself
+            rc, text, wall = evaluate(ck, ["--suite", "FD", "--label", "tef20", "--n-contexts", "2", *extra], env,
                                       f"eval_{n}_{pid}.log", results)
             rcs[f"{n}/{pid}"] = rc
             timings["eval"][f"{n}/{pid}"] = round(wall, 1)
@@ -289,6 +299,10 @@ def phase_gpu(ids: dict) -> dict:
                 log(f"eval {n} {pid} FAILED (recorded; eval_exit will FAIL); see logs/eval_{n}_{pid}.log")
             if time.time() - t0 > 0.3 * 3600:
                 raise SystemExit("FEAS-SMOKE: attempt passed 0.3 GPU-h; stopped as registered")
+        n_p4 = len(list((results / rid / "tef20-P4-n2" / "FD").glob("*.jsonl")))
+        if n_p4 < len(FE.required_cells("P4", "D384")):
+            rcs[f"{n}/P4-cells"] = 1
+            log(f"eval {n} P4 scored {n_p4} cells, expected {len(FE.required_cells('P4', 'D384'))}")
         metas = list((results / rid).rglob("_meta.json"))
         for mp in metas:
             blob = mp.read_text()
@@ -305,7 +319,7 @@ def phase_gpu(ids: dict) -> dict:
     cmd_res = OUT / "results_control"
     shutil.rmtree(cmd_res, ignore_errors=True)
     rc, text, _ = evaluate(ctl, ["--suite", "FD", "--label", "ctl", "--n-contexts", "2", "--only",
-                                 FE.required_cells("P4", "D384")[0], "--runs-root",
+                                 item_files(FE.required_cells("P4", "D384")[:1]), "--runs-root",
                                  str(REPO / "experiments" / "s0" / "smoke" / "runs")], env, "eval_control.log", cmd_res)
     res["blinding"] = {"s2_leaks": leaks[:10], "n_s2_leaks": len(leaks), "control_exit": rc,
                        "control_prints_scores": bool(SCORE_RE.search(text)),
@@ -382,6 +396,36 @@ def decision_code(ids: dict, results: Path) -> dict:
     return {"decide_refuses_incomplete": a, "decide_full_trace_on_fixture": b}
 
 
+def phase_diag(ids: dict) -> dict:
+    """DIAGNOSTIC ONLY (never part of a verdict): P4 and the blinding control on the last attempt's checkpoints."""
+    from hybridlc.analysis import feas as FE
+
+    env = base_env(TRITON_CACHE_DIR=str(fresh_cache()))
+    res_dir = OUT / "results_diag"
+    shutil.rmtree(res_dir, ignore_errors=True)
+    out = {}
+    cells = FE.required_cells("P4", "D384")
+    for n in [TEF_FAULT] + CHAIN_T:
+        rid = ids[n]["run_id"]
+        ck = sorted((OUT / "ckpt" / rid / "milestones").glob("step_0000020*_bf16.pt"))[0]
+        rc, text, wall = evaluate(ck, ["--suite", "FD", "--label", "tef20", "--n-contexts", "2", "--pass", "P4",
+                                       "--only", item_files(cells)], env, f"diag_{n}_P4.log", res_dir)
+        got = len(list((res_dir / rid / "tef20-P4-n2" / "FD").glob("*.jsonl")))
+        tail = [x for x in text.splitlines() if x.startswith('{"n_cells"')]
+        out[n] = {"rc": rc, "cells": got, "expected": len(cells), "wall_s": round(wall, 1),
+                  "leaks": len(SCORE_RE.findall(text)), "summary": tail[-1] if tail else None}
+        log(f"diag P4 {n}: rc={rc} cells={got}/{len(cells)} {wall:.0f}s leaks={out[n]['leaks']}")
+    ctl = sorted((REPO / "experiments" / "s0" / "smoke" / "ckpt").glob("S0SMT-*/milestones/*_bf16.pt"))[-1]
+    rc, text, _ = evaluate(ctl, ["--suite", "FD", "--label", "ctl", "--n-contexts", "2", "--only",
+                                 item_files(cells[:1]), "--runs-root", str(REPO / "experiments" / "s0" / "smoke" / "runs")],
+                           env, "diag_control.log", OUT / "results_control_diag")
+    out["control"] = {"rc": rc, "prints_scores": bool(SCORE_RE.search(text)),
+                      "tail": [x[:200] for x in text.splitlines() if x.strip()][-6:]}
+    log(f"diag control: rc={rc} prints_scores={out['control']['prints_scores']}")
+    (OUT / "diag_result.json").write_text(json.dumps(out, indent=1))
+    return out
+
+
 def phase_verdict() -> dict:
     res = {}
     for f in ("fakes_result.json", "gpu_result.json"):
@@ -402,11 +446,13 @@ def main() -> int:
     a = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     phases = a.phase.split(",")
-    ids = make_yamls() if {"yaml", "gpu"} & set(phases) else {}
+    ids = make_yamls() if {"yaml", "gpu", "diag"} & set(phases) else {}
     if "fakes" in phases:
         phase_fakes()
     if "gpu" in phases:
         phase_gpu(ids)
+    if "diag" in phases:
+        phase_diag(ids)
     if "decide" in phases:
         ids = json.loads((OUT / "yaml_check.json").read_text())["runs"]
         print(json.dumps(decision_code(ids, OUT / "results"), indent=1))
