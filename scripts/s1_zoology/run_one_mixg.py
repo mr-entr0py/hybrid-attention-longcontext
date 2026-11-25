@@ -146,6 +146,9 @@ def build_mix_config(OM, run_id: str):
     for T, kv in ((2048, 512), (4096, 1024)):
         cfg.data.test_configs.append(MQARConfig(vocab_size=base.vocab_size, num_examples=1000, input_seq_len=T,
                                                 num_kv_pairs=kv))
+    # Long test configs: dense fp32 attention scores at T=4096 need 4 GiB per test batch of 32 (OOM under the
+    # 0.44 memory cap), so evaluate with test batch 8. Training batch is unchanged.
+    cfg.data.batch_size = (cfg.data.batch_size[0], 8)
     if sp["epochs"]:
         cfg.max_epochs = sp["epochs"]
     if sp["noes"]:
