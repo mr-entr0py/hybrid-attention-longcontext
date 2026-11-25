@@ -66,8 +66,13 @@ def short_overrides(n: str) -> dict:
     else:
         s = 10 if ssmax else 30
         ck, ms, val = 10, [10] if ssmax else [15, 30], s
-    return {"schedule.steps": s, "checkpoint.every": ck, "checkpoint.milestone_steps": ms,
-            "checkpoint.milestone_tokens": [], "validation.every": val}
+    out = {"schedule.steps": s, "checkpoint.every": ck, "checkpoint.milestone_steps": ms,
+           "checkpoint.milestone_tokens": [], "validation.every": val}
+    if n.endswith("_B090"):
+        # both branches are shortened to the same step count, so they would share one run id; this alert-only
+        # reference value (throughput_alert after 3600 s; no effect on training) keeps the two lineages distinct
+        out["runtime.g0_tok_s"] = 1.0
+    return out
 
 
 def make_yamls() -> dict:
@@ -94,6 +99,7 @@ def make_yamls() -> dict:
         assert c.exp_stage == "S2" and c.schedule.steps == short_overrides(n)["schedule.steps"], n
         ids[n] = {"run_id": c.run_id, "parent_run_id": c.parent_run_id, "steps": c.schedule.steps}
     byid = {v["run_id"] for v in ids.values()}
+    assert len(byid) == len(ids), f"duplicate run ids among the shortened runs: {len(byid)} ids for {len(ids)} runs"
     assert all(v["parent_run_id"] in byid for v in ids.values() if v["parent_run_id"]), "parent chain broken"
     (OUT / "yaml_check.json").write_text(json.dumps({"added_overrides": report, "runs": ids}, indent=1))
     log(f"yaml: {len(ids)} shortened copies; only overrides/parent differ; parent chain resolves")
@@ -279,7 +285,7 @@ def phase_gpu(ids: dict) -> dict:
             leaks += [f"{n}/{pid}: {m.group(0)[:40]}" for m in SCORE_RE.finditer(text)]
             log(f"eval {n} {pid}: rc={rc} in {wall:.0f} s")
             if rc != 0:
-                raise SystemExit(f"FEAS-SMOKE: evaluate {n} {pid} exit {rc}; see logs/eval_{n}_{pid}.log")
+                log(f"eval {n} {pid} FAILED (recorded; eval_exit will FAIL); see logs/eval_{n}_{pid}.log")
             if time.time() - t0 > 0.3 * 3600:
                 raise SystemExit("FEAS-SMOKE: attempt passed 0.3 GPU-h; stopped as registered")
         metas = list((results / rid).rglob("_meta.json"))
@@ -287,7 +293,8 @@ def phase_gpu(ids: dict) -> dict:
             blob = mp.read_text()
             if not all(k in blob for k in ("pass", "dtype", "autocast", "tf32", "attention")):
                 meta_bad.append(str(mp.relative_to(results)))
-    res["eval_exit"] = {"pass": all(v == 0 for v in rcs.values()), "n": len(rcs)}
+    res["eval_exit"] = {"pass": all(v == 0 for v in rcs.values()), "n": len(rcs),
+                        "failed": sorted(k for k, v in rcs.items() if v != 0)}
     res["eval_meta"] = {"pass": not meta_bad, "bad": meta_bad[:10]}
     ev = results / "_eval_log.jsonl"
     leaks += [f"_eval_log: {m.group(0)[:40]}" for m in SCORE_RE.finditer(ev.read_text() if ev.is_file() else "")]
@@ -343,6 +350,9 @@ def decision_code(ids: dict, results: Path) -> dict:
         return p.returncode, p.stdout + p.stderr
 
     rows101 = [dataclasses.asdict(d) for d in design]
+    if not rows101:
+        return {"decide_refuses_incomplete": {"pass": False, "why": "no design cells"},
+                "decide_full_trace_on_fixture": {"pass": False, "why": "no design cells"}}
     (OUT / "design_seed101.json").write_text(json.dumps(rows101))
     rc, text = decide(fix, OUT / "design_seed101.json", OUT / "lm2_seed101.json", OUT / "must_not_exist.json",
                       "decide_incomplete.log")
