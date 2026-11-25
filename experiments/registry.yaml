@@ -1,0 +1,152 @@
+# Experiment ledger: one entry per experiment, in the order the experiments were run.
+#
+# This is the human-facing ledger. Training runs are queued separately, in registry.jsonl
+# (run queue, append-only).
+#
+# scripts/build_index.py validates this file and regenerates:
+#   experiments/INDEX.md
+#   the experiments table between the BEGIN/END markers in README.md
+#
+# Status vocabulary:
+#   reproduced                    published result reproduced within the pre-registered criterion
+#   partially-reproduced          some pre-registered criteria met, others not
+#   not-passed-as-registered      ran; a frozen criterion was missed (diagnosis in the write-up)
+#   measured                      measurement, not a reproduction (no pass/fail target)
+#   verified                      infrastructure verification against fixed thresholds
+#   planned                       pre-registered, not yet run
+#
+# commit: the first commit of this repository that contains the experiment's results. Code state
+# at run time (including any uncommitted files) is recorded in each run's provenance block.
+
+experiments:
+  - id: "001"
+    slug: zoology-mqar-reference
+    title: Zoology MQAR with Zoology's own code
+    date: 2026-11-09
+    tag: R1 / G-RP(a)
+    papers: [arora2023_zoology, yang2024_gated_deltanet]
+    status: reproduced
+    commit: 58e934e
+    file: experiments/001-zoology-mqar-reference.md
+    headline: "attention >= 0.9997; GDN 0.989 (d128) -> 0.994 (d256), non-decreasing in width"
+
+  - id: "002"
+    slug: infrastructure-verification
+    title: Infrastructure verification suite VT-01 to VT-20 (gate G0)
+    date: 2026-11-10
+    tag: S0 / G0
+    papers: [qwen2025_qwen3, yang2024_gated_deltanet]
+    status: verified
+    commit: d6568c5
+    file: experiments/002-infrastructure-verification.md
+    headline: "447/447 VT-01..20 pass; Qwen3 transplant 7e-7, fla GDN transplant 4.6e-4; state bytes exact"
+
+  - id: "003"
+    slug: training-throughput
+    title: Training throughput and memory on an idle GPU
+    date: 2026-11-10
+    tag: bench
+    papers: []
+    status: measured
+    commit: d4791cd
+    file: experiments/003-training-throughput.md
+    headline: "D384 127-138K tok/s (4K), 107/98/78K tok/s at 32K for k = 0/3/12; peak <= 6.0 GiB"
+
+  - id: "004"
+    slug: environment-integrity
+    title: Environment integrity (kernel profile, GPU queue, fault tagging)
+    date: 2026-11-10
+    tag: R2
+    papers: []
+    status: not-passed-as-registered
+    commit: 9d4bd98
+    file: experiments/004-environment-integrity.md
+    headline: "longest 32K kernel 25.2 ms (PASS); single-GPU-queue rule not in force at the time"
+
+  - id: "005"
+    slug: reference-exactness-battery
+    title: Exactness against independent references (VT-21 to VT-25)
+    date: 2026-11-10
+    tag: R3
+    papers: [arora2023_zoology, qwen2025_qwen3]
+    status: not-passed-as-registered
+    commit: 9d4bd98
+    file: experiments/005-reference-exactness-battery.md
+    headline: "VT-25 PASS; VT-21..24 miss uncalibrated tolerances; one generator flaw found and fixed"
+
+  - id: "006"
+    slug: lambada-published-checkpoints
+    title: LAMBADA on published checkpoints through our scorer
+    date: 2026-11-10
+    tag: R7
+    papers: [biderman2023pythia, paperno2016_lambada, wang2025_systematic_hybrid_linear_attention]
+    status: partially-reproduced
+    commit: 9d4bd98
+    file: experiments/006-lambada-published-checkpoints.md
+    headline: "GDN-340M 0.3435 (PASS); Pythia fp32 off-target, fp16 anchors reproduce exactly"
+
+  - id: "007"
+    slug: our-mixers-in-zoology-harness
+    title: Our attention and Gated DeltaNet layers inside Zoology's harness
+    date: 2026-11-10
+    tag: R4 / G-RP(b)
+    papers: [arora2023_zoology, yang2024_gated_deltanet]
+    status: reproduced
+    commit: 9d4bd98
+    file: experiments/007-our-mixers-in-zoology-harness.md
+    headline: "within 0.0004 of Zoology in all 4 cells (tolerance 0.03)"
+
+  - id: "008"
+    slug: mqar-width-64
+    title: MQAR below ceiling at d = 64, Zoology's GDN vs ours, 3 seeds each
+    date: 2026-11-10
+    tag: R5
+    papers: [arora2023_zoology, yang2024_gated_deltanet]
+    status: reproduced
+    commit: 9d4bd98
+    file: experiments/008-mqar-width-64.md
+    headline: "1024/256 cell: 0.296 (d64) < 0.925 (d128) < 0.957 (d256); ours - Zoology = -0.018"
+
+  - id: "009"
+    slug: inference-cost-session-1
+    title: Inference cost benchmarks, session 1 of 2
+    date: 2026-11-10
+    tag: S6 cost (early)
+    papers: []
+    status: measured
+    commit: 1e19f21
+    file: experiments/009-inference-cost-session-1.md
+    headline: "32K prefill 52/77/154 ms for k = 0/3/12; 32K sequences in 8 GiB 5,185/56/14"
+
+  - id: "010"
+    slug: o4-soak
+    title: GPU soak test to localise Xid-8 watchdog faults
+    date: null
+    tag: O4
+    papers: []
+    status: planned
+    commit: null
+    file: null
+    headline: "pre-registered in experiments/prereg/O4_soak.v2.yaml"
+
+  - id: "011"
+    slug: r6-known-answer-recall
+    title: Known-answer recall through the full pipeline (data -> trainer -> scorer)
+    date: null
+    tag: R6
+    papers: []
+    status: planned
+    commit: null
+    file: null
+    headline: "pre-registered in experiments/prereg/R6.v2.yaml"
+
+  - id: "012"
+    slug: feas-pilots
+    title: FEAS pilots (scale, Stage-B budget, SSMax, task-exposure mix)
+    date: null
+    tag: S2
+    papers: []
+    status: planned
+    commit: null
+    file: null
+    headline: "decision rules in experiments/prereg/DTS10_acceptance.v2.yaml"

@@ -1,6 +1,6 @@
 # Continuation audit: 2026-11-10 ~15:40 IST
 
-**Author:** orchestrator/PI (Opus 5.5).
+**Author:** orchestrator/PI.
 
 **Method:** everything below was checked against files, logs, git, processes, `nvidia-smi` and `journalctl -k`. Nothing is taken from status labels alone.
 

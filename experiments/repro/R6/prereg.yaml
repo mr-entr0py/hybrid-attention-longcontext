@@ -1,0 +1,76 @@
+# R6 known-answer associative recall in our pipeline: PI-fixed readings and preconditions, version 2.
+# Pre-registration supplement (PI FINAL rulings, 2026-11-10; written before R6 ran). The criteria are those of
+# reproduction_plan.md v1.0 §2.6 (SHA-256 6bc14af6...8adcebc), copied unchanged; this file only fixes readings the
+# plan leaves open. Supersedes R6.yaml v1 (never ran; stays on record unchanged).
+id: R6
+version: 2
+supersedes: "R6.yaml v1, sha256 49ec85f6a235f29db0eab15d8878b3ae83a6a9b3418be02598c839e82a228816"
+why_v2: >-
+  Adversarial review O4: v1's reading R6-R3(ii) anchored the "answer-token training loss falls" clause at
+  <= 0.5 x its steps-1-50 mean. With V = 16,384 (protocol §6.2) the initial answer CE is ~ln V = 9.70 nats and
+  learning only "answers are digits" gives ~ln 10 = 2.30, already below half of any plausible early mean, so (ii)
+  reduced to "score < 0.05 at any look => FAIL", even at 50M, contradicting the plan's 150M extension for slow
+  learners. v2 anchors (ii) at an absolute level on the retrieval family, and adds a report-only GDN ('--')
+  chain-consistency measurement (R6(a) covers only the AA cache path).
+gate_role: "G-RV: R6 not FAIL"
+plan_text_being_read: "FAIL if EM < 0.5 at 150M, or if the answer-token training loss falls while held-out EM stays near 0 (plan §2.6); failure tree: 'Low training answer loss but low evaluation EM -> train/eval format mismatch'"
+preconditions:
+  - "O4 v2 complete: O4-Z and O4-B run and reported, O4-A PASS (experiments/prereg/O4_soak.v2.yaml)"
+  - "R2-LIVE v2 L1/L2 merged with C1 PASS (R6 windows are part of the R2-LIVE C2 compliance window)"
+  - "VT-24r v2 PASS; R6's own evaluation items are generated with the fixed generator and pass VT-24r K1 (oracle) before the first R6 evaluation"
+  - "per-family answer-CE logging merged (implementation requirement below), with its test passing"
+  - "committed clean tree with D050 (answer_norm block) and D051 (conv init N(0, 0.02)); commit recorded in every run"
+  - "TRITON_CACHE_DIR = .cache/triton-diag (reproduction item); memory fraction 0.44; GPU lock"
+implementation_requirements:
+  family_ce_logging: >-
+    Non-semantic, metrics-only: TEFStream carries a per-token answer-family code (retrieval R1-type, retrieval
+    R-load-type, other); the trainer logs per optimizer step the mean answer-token CE (natural log, nats per token)
+    over R1-type and R-load-type answer tokens (field answer_ce_retrieval) beside the existing components. The loss
+    is unchanged (bitwise on CPU fakes with logging on/off) and VT-17 batch hashes are unchanged.
+configuration:   # plan §2.6, unchanged
+  models: "ModelConfig.for_scale('D384', pattern='AA', n_layers=2) and pattern='--', each built by build_model(cfg, seed_index=300)"
+  data: "TEFStream(seed_index=300, seq_len=32768, micro_batch=1, accum=2, synthetic_share=1.0, buckets=(1024,)), D014 loss weighting with answer_norm block (D050); 65,536 tokens per step; 50M tokens = 763 steps; 100M = 1,526; 150M = 2,289"
+  optimizer: "AdamW per §7.1; schedule 100-step linear warm-up to 1e-3, then constant; production mode, bf16 autocast, activation checkpointing as the TEF recipe"
+  eval_items: "repro stream, namespace dev (word list B, template T1, dev filler), T = 1,024: R1 D in {3, 15}, R-load N in {8, 32}, and their C0 nofill versions; 200 contexts x 4 queries per cell"
+  scoring: "production path: scripts/evaluate.py, cache path, bf16 autocast, canonical bf16-rounded weights (D052(i))"
+readings:
+  R6-R1_metric: "known-answer score = unweighted mean of EM_tf over the two primary cells R1 D=3 @1K and R-load N=8 @1K (each cell = mean over its 800 queries), on the AA model"
+  R6-R2_looks: >-
+    Evaluations at 50M tokens (step 763). If the score is < 0.90 at 50M, the SAME run continues (no restart) and is
+    evaluated at 100M (step 1,526) and 150M (step 2,289). PASS at the first look with score >= 0.90 (training stops
+    there). These three looks are the only ones that bear on the verdict; any other evaluation is report-only.
+    (A score < 0.5 at 50M also continues, because the plan's FAIL rule is defined at 150M.)
+  R6-R3_fail: >-
+    FAIL iff (i) score < 0.50 at 150M, or (ii) at any look the format-mismatch signature holds: the mean of
+    answer_ce_retrieval over the 50 optimizer steps before the look is <= 0.50 nats per answer token AND the score
+    is < 0.05.
+  R6-R3_basis: >-
+    ln 16384 = 9.70 nats (untrained); ln 10 = 2.30 (digit prior: knows only that answers are digits); 0.50 nats per
+    token = geometric-mean p(gold digit) >= 0.61, i.e. the model retrieves training answers. The training 1K items
+    span harder levels (D up to 20, N up to the 0.75-l cap) than the two eval cells (D = 3, N = 8), so a correctly
+    wired pipeline at that training CE scores far above 0.05 on them; a slow learner keeps retrieval CE above 0.50
+    while its score is low, so (ii) cannot fire on slow learning. R1-type and R-load-type answer tokens are used
+    instead of the pooled answer CE because, with equal item counts per family and 4 / 4 / 1 answer tokens per query
+    (retrieval / M-hop / aggregation; data/tef.py ANSWER_LEN), 5/9 of TEF answer tokens come from M-hop and
+    aggregation items, which a 2-layer model may never learn, and R3-type and distance-type items are a fifth of
+    the retrieval family; a pooled anchor would be miscalibrated.
+  R6-R4_inconclusive: >-
+    INCONCLUSIVE iff not PASS and not FAIL at 150M, i.e. 0.50 <= score < 0.90 at 150M (the rising case named by the
+    plan and the plateau case it omits). INCONCLUSIVE never blocks: FEAS proceeds flagged (plan §4.1).
+  R6-R5_chain_consistency: >-
+    (a) evaluated on the AA checkpoint at the verdict look: EM_tf flip rate between the scorer's cache path and a
+    single-pass ForwardOnlyAdapter forward under the same bf16 autocast and the same bf16-rounded weights (the
+    training-precision forward), over ALL queries of the 8 R6 cells (6,400 queries); point estimate < 1% (I-29).
+    Report-only alongside: flip rate against a single-pass forward with fp32 weights and no autocast.
+  R6-R6_overall: "R6 = FAIL if (a) fails or (b) FAILs; PASS if (a) passes and (b) PASSes; otherwise INCONCLUSIVE"
+  R6-R7_baseline: "the '--' model trains to the same token count as AA's verdict look and is scored on the same cells; descriptive only (plan (c))"
+  R6-R8_infra: "R6 is a gate run: an attempt whose window contains an infra event (any PR-27 v2 class, or device/host OOM) is discarded before any of its evaluations is read and repeated in full from step 0 with checkpoints moved aside; at most 3 full repeats, then BLOCKED and the PI decides"
+  R6-R9_gdn_chain_report_only: >-
+    On the '--' checkpoint of R6-R7: the same chain-consistency measurement as R6-R5 (cache path vs single-pass,
+    same bf16 autocast and bf16-rounded weights, all 6,400 queries), plus its restricted rate over informative
+    cells (FEAS-PREC v2 definition) and the fp32 single-pass comparison. Never part of R6's verdict. Pre-registered
+    meaning: a pooled or restricted flip rate >= 1% fires the RR-G0-1/RR-G0-2 reopen trigger (GDN cache-path
+    artefact on a trained model): the PI logs a decision row before FEAS, after VT-06/07 are re-run on that
+    checkpoint.
+outputs: "experiments/repro/R6/{prereg.yaml (copy of this file + plan §2.6 block), runs/, eval/, r6_results.json}"
+gpu_h: "0.3 (50M) to 0.6 (150M), priced at the R2e-X rates"

@@ -1,0 +1,246 @@
+[gpu_lock] 21:20:15 'X1-mix-k0-s124' acquired after 0.0 s
+TrainConfig(
+    data=DataConfig(
+        train_configs=[
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=100000,
+                input_seq_len=64,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=4,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=20000,
+                input_seq_len=128,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=8,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=20000,
+                input_seq_len=256,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=16,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=20000,
+                input_seq_len=256,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=32,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=20000,
+                input_seq_len=256,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=64,
+                random_non_queries=True,
+                include_slices=True
+            )
+        ],
+        test_configs=[
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=64,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=4,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=64,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=8,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=64,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=16,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=128,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=32,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=256,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=64,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=512,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=128,
+                random_non_queries=True,
+                include_slices=True
+            ),
+            MQARConfig(
+                vocab_size=8192,
+                num_examples=1000,
+                input_seq_len=1024,
+                name='multiquery_ar',
+                power_a=0.01,
+                num_kv_pairs=256,
+                random_non_queries=True,
+                include_slices=True
+            )
+        ],
+        batch_size=(256, 32),
+        seed=124,
+        cache_dir='/home/sedrica-lynx/Downloads/outeropt/data/zoology',
+        force_cache=False,
+        num_passes=1
+    ),
+    model=ModelConfig(
+        sequence_mixer=ModuleConfig(
+            name='zoology.mixers.hybrid.Hybrid',
+            kwargs={
+                'configs': [
+                    {
+                        'name': 'zoology.mixers.base_conv.BaseConv',
+                        'kwargs': {
+                            'l_max': 1024,
+                            'kernel_size': 3,
+                            'implicit_long_conv': True
+                        }
+                    },
+                    {'name': 'our_mixers.OurGdnBf16Zoology', 'kwargs': {}},
+                    {
+                        'name': 'zoology.mixers.base_conv.BaseConv',
+                        'kwargs': {
+                            'l_max': 1024,
+                            'kernel_size': 3,
+                            'implicit_long_conv': True
+                        }
+                    },
+                    {'name': 'our_mixers.OurGdnBf16Zoology', 'kwargs': {}},
+                    {
+                        'name': 'zoology.mixers.base_conv.BaseConv',
+                        'kwargs': {
+                            'l_max': 1024,
+                            'kernel_size': 3,
+                            'implicit_long_conv': True
+                        }
+                    },
+                    {'name': 'our_mixers.OurGdnBf16Zoology', 'kwargs': {}}
+                ]
+            }
+        ),
+        state_mixer=ModuleConfig(name='torch.nn.Identity', kwargs={}),
+        d_model=64,
+        n_layers=6,
+        multiplier=1,
+        max_position_embeddings=0,
+        learnable_word_embeddings=True,
+        embedding_init_type='default',
+        vocab_size=8192,
+        resid_dropout=0.0,
+        embed_dropout=0.1,
+        drop_path=0.0,
+        layer_norm_epsilon=1e-05,
+        pad_vocab_size_multiple=1,
+        block_type='TransformerBlock',
+        name='mix-LLL'
+    ),
+    logger=LoggerConfig(project_name=None, entity=None),
+    max_epochs=32,
+    loss_type='ce',
+    input_type='discrete',
+    early_stopping_metric='valid/accuracy',
+    early_stopping_threshold=0.99,
+    slice_keys=['num_kv_pairs'],
+    learning_rate=0.001,
+    weight_decay=0.1,
+    seed=124,
+    launch_id=None,
+    sweep_id='011026-original-mqar-repro-v15f465c',
+    run_id='mix-k0-s124'
+)
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_15bf299f6d692b5422e61162a759a116.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_731d65face89484b4660cd72239b524d.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_2ea3194c66eeaa0e73daa27517555883.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_1f13a9d3ade905325c97d1eefa82f2c5.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_c2161d54897eaa5fc46068a1084c07f0.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_cbc958bb0b2a9cc09711ffe8ccce6e18.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_a9f224504d7d7c9fa79fd153407e50ff.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_67c559029285e7912974bde2e6586c40.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_9bfc3bd0c7f179759dcb9595cdfd740d.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_0ef03510d9850058e81c2e9b020dd0c6.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_e19d7cf786dcc65414487b9d06b61509.pt...
+Loading data from on-disk cache at /home/sedrica-lynx/Downloads/outeropt/data/zoology/data_e1cd9949451e5de336cce52a487a34df.pt...
+Need to install causal_conv1d: pip install causal_conv1d
+Need to install causal_conv1d: pip install causal_conv1d
+[x1] mix-k0-s124 epoch 0 valid/acc=0.8077 1024/256=0.1610 t=31s
+[x1] mix-k0-s124 epoch 1 valid/acc=0.8262 1024/256=0.2081 t=61s
+[x1] mix-k0-s124 epoch 2 valid/acc=0.8364 1024/256=0.2293 t=92s
+[x1] mix-k0-s124 epoch 3 valid/acc=0.8436 1024/256=0.2375 t=122s
+[x1] mix-k0-s124 epoch 4 valid/acc=0.8496 1024/256=0.2452 t=153s
+[x1] mix-k0-s124 epoch 5 valid/acc=0.8567 1024/256=0.2566 t=183s
+[x1] mix-k0-s124 epoch 6 valid/acc=0.8597 1024/256=0.2598 t=214s
+[x1] mix-k0-s124 epoch 7 valid/acc=0.8662 1024/256=0.2762 t=244s
+[x1] mix-k0-s124 epoch 8 valid/acc=0.8708 1024/256=0.2885 t=275s
+[x1] mix-k0-s124 epoch 9 valid/acc=0.8708 1024/256=0.2845 t=305s
+[x1] mix-k0-s124 epoch 10 valid/acc=0.8752 1024/256=0.2965 t=336s
+[x1] mix-k0-s124 epoch 11 valid/acc=0.8748 1024/256=0.3020 t=366s
+[x1] mix-k0-s124 epoch 12 valid/acc=0.8762 1024/256=0.3032 t=396s
+[x1] mix-k0-s124 epoch 13 valid/acc=0.8800 1024/256=0.3128 t=427s
+[x1] mix-k0-s124 epoch 14 valid/acc=0.8792 1024/256=0.3121 t=457s
+[x1] mix-k0-s124 epoch 15 valid/acc=0.8807 1024/256=0.3139 t=488s
+[x1] mix-k0-s124 epoch 16 valid/acc=0.8807 1024/256=0.3131 t=518s
+[x1] mix-k0-s124 epoch 17 valid/acc=0.8816 1024/256=0.3136 t=548s
+[x1] mix-k0-s124 epoch 18 valid/acc=0.8826 1024/256=0.3163 t=579s
+[x1] mix-k0-s124 epoch 19 valid/acc=0.8817 1024/256=0.3122 t=609s
+[x1] mix-k0-s124 epoch 20 valid/acc=0.8812 1024/256=0.3091 t=643s
+[x1] mix-k0-s124 epoch 21 valid/acc=0.8831 1024/256=0.3145 t=677s
+[x1] mix-k0-s124 epoch 22 valid/acc=0.8838 1024/256=0.3178 t=707s
+[x1] mix-k0-s124 epoch 23 valid/acc=0.8841 1024/256=0.3186 t=738s
+[x1] mix-k0-s124 epoch 24 valid/acc=0.8852 1024/256=0.3206 t=768s
+[x1] mix-k0-s124 epoch 25 valid/acc=0.8858 1024/256=0.3221 t=801s
+[x1] mix-k0-s124 epoch 26 valid/acc=0.8864 1024/256=0.3242 t=832s
+[x1] mix-k0-s124 epoch 27 valid/acc=0.8865 1024/256=0.3249 t=862s
+[x1] mix-k0-s124 epoch 28 valid/acc=0.8876 1024/256=0.3283 t=892s
+[x1] mix-k0-s124 epoch 29 valid/acc=0.8878 1024/256=0.3300 t=923s
+[x1] mix-k0-s124 epoch 30 valid/acc=0.8879 1024/256=0.3300 t=953s
+[x1] mix-k0-s124 epoch 31 valid/acc=0.8881 1024/256=0.3301 t=984s
+[x1] wrote /home/sedrica-lynx/Downloads/outeropt/experiments/explore/X1_mqar_composition/runs/mix-k0-s124.json final_acc=0.8881 1024/256=0.33014453125 wall=984s collapsed=False kernels={'zoology_gdn': {'module': 'zoology.mixers.gated_delta_net', 'calls': 0, 'first_call_dtypes': None}, 'hybridlc_gdn': {'module': 'hybridlc.models.linear', 'calls': 291744, 'first_call_dtypes': {'q': 'torch.bfloat16', 'k': 'torch.bfloat16', 'v': 'torch.bfloat16', 'g': 'torch.bfloat16', 'beta': 'torch.bfloat16'}}}
+[gpu_lock] 21:36:41 'X1-mix-k0-s124' released

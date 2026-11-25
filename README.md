@@ -168,11 +168,11 @@ flowchart LR
 
 ## How the research was run
 
-The project is run as a small "research organisation" of AI agents (Claude Opus 5.5) orchestrated from Claude Code. The repository is its external memory.
+The project is organised as a small research team with separate roles: specialist researchers, independent adversarial reviewers, builders, verifiers and a principal investigator who owns the decisions. The repository is the team's shared memory: every decision, protocol, result and review is a file in it.
 
 ```mermaid
 flowchart LR
-    U([Project owner]) --> O[Orchestrator / PI<br/>Claude Opus 5.5]
+    U([Project owner]) --> O[Principal investigator<br/>owns decisions]
     O --> R1[Nemotron-H<br/>deep read]
     O --> R2[Architecture<br/>researcher]
     O --> R3[Evaluation<br/>researcher]
@@ -448,4 +448,3 @@ This work builds on, and reproduces results from:
 - [EleutherAI lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) and Pythia;
 - the Gated DeltaNet, Nemotron-H, Nemotron-Flash, Waleffe et al. and Wang et al. papers, among others cited in `reports/literature/`.
 
-Research orchestration, agent work and documentation were carried out with Claude Code (Anthropic Claude Opus 5.5) under the project owner's direction.

@@ -1,0 +1,70 @@
+exp_stage: S0G0
+stage: A
+scale: D384
+config_name: C3
+model: {d_model: 384, d_ff: 1024, n_layers: 12, vocab_size: 16384, pattern: --A---A---A-, attn_head_dim: 64, rope_theta: 500000.0,
+  nope: false, ssmax: false, init_std: 0.02, tie_embeddings: true, norm_eps: 1.0e-05, conv_size: 4, gdn_head_dim: 64, gdn_expand_v: 2.0,
+  name: C3}
+optim:
+  name: adamw
+  fused: true
+  betas: [0.9, 0.95]
+  eps: 1.0e-08
+  weight_decay: 0.1
+  no_wd_name_patterns: [ssmax]
+  grad_clip: 1.0
+  z_loss_coef: 0.0001
+  ce_chunk: 4096
+  ignore_index: 1
+schedule: {kind: warmup_constant, steps: 40, peak_lr: 0.002, warmup_steps: 500, stable_until: null, start_step: 0}
+data:
+  stream: stage
+  stage: A
+  seq_len: 4096
+  micro_batch: 2
+  accum: 16
+  mix: {}
+  data_seed: 0
+  kwargs: {}
+seed_index: 0
+validation:
+  every: 0
+  stage: LM2
+  seq_len: 4096
+  micro_batch: 2
+  n_batches: 64
+  data_seed: 0
+  mix: {}
+  final_n_batches: 0
+  at_start: false
+  kwargs: {}
+checkpoint:
+  every: 1000000
+  keep_last: 2
+  milestone_steps: []
+  milestone_tokens: []
+  save_final: false
+logging: {every: 10, trace_every_step: true, attn_stats: true}
+gdiv: {ema_decay: 0.99, margin: 1.0, patience: 50, max_restarts: 1, fallback_lr: null}
+oom: {max_consecutive: 3}
+runtime:
+  device: cuda
+  mem_fraction: 0.44
+  precision: bf16
+  audit: false
+  activation_checkpointing: false
+  env: {}
+  g0_tok_s: null
+  cpu_threads: null
+  throughput_tolerance: 0.3
+  throughput_alert_after_s: 3600.0
+impl: {model_factory: 'hybridlc.models.build:build_model', stage_stream: 'hybridlc.data.loader:StageStream', tef_stream: 'hybridlc.data.tef:TEFStream',
+  loss_fn: 'hybridlc.models.loss:chunked_ce', model_config: 'hybridlc.models.config:ModelConfig'}
+paths: {runs_root: experiments/s0/g0/runs_root/runs, ckpt_root: experiments/s0/g0/runs_root/ckpt, registry: experiments/s0/g0/runs_root/registry.jsonl}
+parent_run_id: null
+parent_ckpt: null
+model_meta: {name: C3, scale: D384, k: 3, tier: A, pattern: --A---A---A-}
+source: /home/sedrica-lynx/Downloads/outeropt/experiments/s0/g0/yaml/A_D384_C3.yaml
+tag: null
+branch: main
+run_id: S0G0-D384-C3-s0-c0751b61
