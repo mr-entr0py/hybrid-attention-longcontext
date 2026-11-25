@@ -1,6 +1,12 @@
 # STATUS (read first on every fresh session)
 
-_Last updated: 2026-11-10 ~20:50 IST by the orchestrator/PI._
+_Last updated: 2026-11-25 20:55 IST by the orchestrator (Opus). The detailed log for 11-14 to 11-25 is in ~/outeropt-queue/HANDOFF.md and PLAN_TO_FRIDAY.md._
+
+**2026-11-25:**
+- The user approved D092–D098 and DEV-05..09 (see decisions.md).
+- O4-A PASS; VT-24r and VT-13r PASS.
+- VT-22b, VT-23b and R6 are FAIL-as-registered, each carried as a named residual risk.
+- FEAS has not started. The GPU window ends 26 Nov 00:00 and is being used for X1, an exploratory MQAR composition sweep (P005).
 
 ## Current stage
 - **Pre-FEAS.** S0 is done, G-RP PASSED, and the reproductions have run and been audited.
@@ -35,7 +41,7 @@ H1–H6 are untested. The predictions written down in advance are in protocol §
 3. FEAS-SMOKE, then S2 FEAS if G-RV permits and O4 clears.
 
 ## Resume procedure (when the user says "continue")
-0. **First check whether another Claude Code process is still running a workflow** (`ps -eo pid,lstart,cmd | grep 'claude code'`; look for recently modified agent-*.jsonl files under the workflow's transcript dir). Never resume a workflow that is still live elsewhere; that creates duplicate implementers.
+0. **First check whether another orchestrator process is still running a workflow** (`ps -eo pid,lstart,cmd`; look for recently modified agent-*.jsonl files under the workflow's transcript dir). Never resume a workflow that is still live elsewhere; that creates duplicate implementers.
 1. `git add -A && git commit -m WIP` (large artefacts are git-ignored).
 2. Resume each workflow above whose notification showed failed or stopped agents, using `resumeFromRunId`.
 3. Check detached jobs and gpu_lock logs; restart any dead job with its launcher.
