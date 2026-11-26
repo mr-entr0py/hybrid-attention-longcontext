@@ -41,3 +41,15 @@
 
 ## Named residual risks
 RR-G0-1…6, RR-R2, RR-VT21, RR-VT22, RR-VT22b, RR-VT23, RR-VT23b, RR-R5-D1, RR-R5-power, RR-R6, RR-R7, RR-Xid-Z, RR-D052i. See reports/decisions.md.
+
+## Errata, 2026-11-26 08:35 (after the independent audit; findings below re-checked by the executor unless marked)
+These supersede the table rows above, which are left as written.
+- **SUITE-PF:** the row omitted run 1. Run 1: **5 failed**, 585 passed, 4 skipped, 5 xfailed, 2 xpassed (failures in test_vt13_training (1), test_vt18_rescore_audit (3), test_vt18_round2 (1)). Run 2: 0 failed. Neither is the registered command; the VT-25 seed sweep has not run.
+- **VT-24r:** the saved FAIL stands. The 57 K4 CPU tests ran at 14:41 on 24 Nov, **before** the final dev item manifest (16:43, commit 63658a1), so they are not evidence for the final items. The row's wording that K4 evidence exists is withdrawn.
+- **O4-Z:** exposure was 0.663 h (39.8 min) against the registered 60 min; the result file marks the window valid; no decision row for this was found.
+- **R2-LIVE C2:** the auditor reports that the executor's scan does not count FEAS `interrupted` rows or VT-22b's missing infra block, and never checks that the CARLA client was idle (not re-checked here).
+- **FEAS runs:** four attempts were interrupted by the executor's smoke-test pauses (00:29, 01:17, 01:48 twice); each restarted from step 0 of its stage. The earlier statement that pauses cost little by resuming from checkpoints was inaccurate for these four.
+- **FEAS-SMOKE:** attempt 3 was stopped at the registered 0.3 GPU-h limit. Attempt 4: FAIL (as registered), only W3; it ran under exceptions D099 (memory cap), D100 (W3) and D101 (time limit), all added during the attempts. In attempts 1-2 the metadata check was vacuous.
+- **VT-22b:** the auditor reports it exercised the `efficient` R-ATT backend while FEAS evaluation uses `tiled` (not yet verified by the executor).
+- **Independent audit (fresh AI agent, not a human):** NOT PASSED as registered; **FEAS entry BLOCKED**. See reports/gates/G-RV.md.
+
