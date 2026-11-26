@@ -210,6 +210,20 @@ def files_in(d: Path) -> set[str]:
     return {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file()}
 
 
+EVAL_CAP_D099 = "0.85"  # decision D099: only for P0 + P2/P3 re-score on k=12 checkpoints, only on an exclusive GPU
+DISPLAY_CLIENTS = ("gnome-remote-desktop", "Xorg", "gnome-shell", "Xwayland")
+
+
+def assert_gpu_exclusive() -> None:
+    """D099 condition: no other compute process on the GPU immediately before a raised-cap step."""
+    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"],
+                         capture_output=True, text=True, check=True).stdout
+    others = [ln for ln in out.splitlines() if ln.strip() and not any(c in ln for c in DISPLAY_CLIENTS)
+              and ln.split(",")[0].strip() != str(os.getpid())]
+    if others:
+        raise SystemExit(f"D099: GPU not exclusive, the 0.85 cap is not allowed now: {others}")
+
+
 def evaluate(ckpt: Path, suite_args: list[str], env: dict, logname: str, results: Path) -> tuple[int, str, float]:
     cmd = [PY, "scripts/evaluate.py", "--ckpt", str(ckpt), "--results-root", str(results),
            "--runs-root", str(OUT / "runs"), "--registry", str(OUT / "registry.jsonl"), *suite_args]
@@ -289,6 +303,10 @@ def phase_gpu(ids: dict) -> dict:
         for pid, extra in (("P0", ["--rescore", "--rescore-ref", "both"]), ("P1", ["--pass", "P1"]),
                            ("P4", ["--pass", "P4", "--only", p4_cells])):
             # evaluate.py appends -P1 / -P4 and -n2 to the base label itself
+            if pid == "P0" and n.startswith("C12"):
+                assert_gpu_exclusive()
+                extra = [*extra, "--mem-fraction", EVAL_CAP_D099]
+                log(f"eval {n} {pid}: mem fraction {EVAL_CAP_D099} (D099; GPU exclusive)")
             rc, text, wall = evaluate(ck, ["--suite", "FD", "--label", "tef20", "--n-contexts", "2", *extra], env,
                                       f"eval_{n}_{pid}.log", results)
             rcs[f"{n}/{pid}"] = rc
@@ -435,6 +453,11 @@ def phase_verdict() -> dict:
            "ts": time.strftime("%FT%T%z"), "items": res, "verdict": "PASS" if all(v["pass"] for v in res.values()) else "FAIL",
            "mechanism_note": "shortening applied through the overrides block of generated YAML copies, not CLI -o (see driver "
                              "docstring); cadence overrides include checkpoint.every and validation.every"}
+    failing = sorted(k for k, v in res.items() if not v["pass"])
+    out["failing_items"] = failing
+    out["exceptions"] = {"D099": "0.85 evaluation memory cap for P0+re-score on k=12 checkpoints",
+                         "D100": "w3_new_triton_files is a named residual (RR-W3-fp32); the verdict above is not changed by it"}
+    out["feas_evaluation_permitted_under_D100"] = failing in ([], ["w3_new_triton_files"])
     (OUT / "smoke_result.json").write_text(json.dumps(out, indent=1))
     log(f"verdict {out['verdict']}: failing = {[k for k, v in res.items() if not v['pass']]}")
     return out
