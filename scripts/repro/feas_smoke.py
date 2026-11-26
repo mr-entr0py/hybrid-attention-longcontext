@@ -210,6 +210,7 @@ def files_in(d: Path) -> set[str]:
     return {str(p.relative_to(d)) for p in d.rglob("*") if p.is_file()}
 
 
+BUDGET_H = 0.5  # decision D101 (registered hard stop: 0.3 GPU-h)
 EVAL_CAP_D099 = "0.85"  # decision D099: only for P0 + P2/P3 re-score on k=12 checkpoints, only on an exclusive GPU
 DISPLAY_CLIENTS = ("gnome-remote-desktop", "Xorg", "gnome-shell", "Xwayland")
 
@@ -231,6 +232,41 @@ def evaluate(ckpt: Path, suite_args: list[str], env: dict, logname: str, results
     p = subprocess.run(cmd, cwd=REPO, env=env, capture_output=True, text=True, timeout=900)
     (OUT / "logs" / logname).write_text(p.stdout + "\n--- stderr ---\n" + p.stderr)
     return p.returncode, p.stdout + p.stderr, time.time() - t
+
+
+def check_meta(run_dir: Path, rid: str) -> list[str]:
+    """Every result cell has <cell>_meta.json with the precision fields its pass requires; P0 cells that were
+    re-scored hold both P2 and P3 records. Returns the problems (an empty pass directory is a problem)."""
+    want = {"tef20-n2": ("P0", "bf16-rounded", True), "tef20-P1-n2": ("P1", "float32", True),
+            "tef20-P4-n2": ("P4", "float32", False)}
+    bad = []
+    for lab, (pid, weights, autocast) in want.items():
+        rows = sorted((run_dir / lab / "FD").glob("*.jsonl"))
+        if not rows:
+            bad.append(f"{rid}/{lab}: no result files")
+        for f in rows:
+            mp = f.with_name(f.stem + "_meta.json")
+            if not mp.is_file():
+                bad.append(f"{rid}/{lab}/{f.stem}: no meta")
+                continue
+            m = json.loads(mp.read_text())
+            found = {}
+
+            def walk(d):
+                for k, v in d.items():
+                    walk(v) if isinstance(v, dict) else found.setdefault(k, v)
+
+            walk(m)
+            lacking = [k for k in ("pass_id", "weights_dtype", "autocast_bf16", "cudnn_allow_tf32", "matmul_allow_tf32",
+                                   "attention_backend") if k not in found]
+            if lacking or (found.get("pass_id"), found.get("weights_dtype"), found.get("autocast_bf16")) != (pid, weights, autocast):
+                bad.append(f"{rid}/{lab}/{f.stem}: lacking={lacking} got="
+                           f"{(found.get('pass_id'), found.get('weights_dtype'), found.get('autocast_bf16'))}")
+    rr = sorted((run_dir / "tef20-n2" / "FD").glob("*_rescore.json"))
+    if len(rr) < len(list((run_dir / "tef20-n2" / "FD").glob("*.jsonl"))) or any(
+            not {"P2", "P3"} <= set(json.loads(x.read_text())) for x in rr):
+        bad.append(f"{rid}: P2/P3 re-score records incomplete ({len(rr)} files)")
+    return bad
 
 
 def phase_gpu(ids: dict) -> dict:
@@ -261,8 +297,8 @@ def phase_gpu(ids: dict) -> dict:
             log(f"train {n}: {st[-1] if st else 'no rows'} in {timings['runs'][n]} s")
             if not st or st[-1] != "completed":
                 raise SystemExit(f"FEAS-SMOKE: run {n} ({rid}) did not complete: {st}")
-            if time.time() - t0 > 0.3 * 3600:
-                raise SystemExit("FEAS-SMOKE: attempt passed 0.3 GPU-h; stopped as registered")
+            if time.time() - t0 > BUDGET_H * 3600:
+                raise SystemExit(f"FEAS-SMOKE: attempt passed {BUDGET_H} GPU-h; stopped")
 
     chain(CHAIN_AB, env, "ab")
     jf = OUT / "journal_injected.txt"
@@ -318,22 +354,13 @@ def phase_gpu(ids: dict) -> dict:
             log(f"eval {n} {pid}: rc={rc} in {wall:.0f} s")
             if rc != 0:
                 log(f"eval {n} {pid} FAILED (recorded; eval_exit will FAIL); see logs/eval_{n}_{pid}.log")
-            if time.time() - t0 > 0.3 * 3600:
-                raise SystemExit("FEAS-SMOKE: attempt passed 0.3 GPU-h; stopped as registered")
+            if time.time() - t0 > BUDGET_H * 3600:
+                raise SystemExit(f"FEAS-SMOKE: attempt passed {BUDGET_H} GPU-h; stopped")
         n_p4 = len(list((results / rid / "tef20-P4-n2" / "FD").glob("*.jsonl")))
         if n_p4 < len(FE.required_cells("P4", "D384")):
             rcs[f"{n}/P4-cells"] = 1
             log(f"eval {n} P4 scored {n_p4} cells, expected {len(FE.required_cells('P4', 'D384'))}")
-        metas = list((results / rid).rglob("_meta.json"))
-        for lab in ("tef20-P1-n2", "tef20-P4-n2"):  # fp32-weight passes must really have scored fp32 weights
-            mp = results / rid / lab / "FD" / "_meta.json"
-            blob = " ".join(m.read_text() for m in (results / rid / lab).rglob("_meta.json"))
-            if "bf16-rounded" in blob or "float32" not in blob:
-                meta_bad.append(f"{rid}/{lab}: eval weights are not fp32")
-        for mp in metas:
-            blob = mp.read_text()
-            if not all(k in blob for k in ("pass", "dtype", "autocast", "tf32", "attention")):
-                meta_bad.append(str(mp.relative_to(results)))
+        meta_bad += check_meta(results / rid, rid)
     res["eval_exit"] = {"pass": all(v == 0 for v in rcs.values()), "n": len(rcs),
                         "failed": sorted(k for k, v in rcs.items() if v != 0)}
     res["eval_meta"] = {"pass": not meta_bad, "bad": meta_bad[:10]}
