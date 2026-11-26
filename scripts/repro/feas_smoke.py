@@ -239,6 +239,8 @@ def phase_gpu(ids: dict) -> dict:
     t0 = time.time()
     timings: dict = {"runs": {}, "eval": {}}
     res: dict = {}
+    for stale in ("gpu_result.json", "smoke_result.json", "feas_decisions.json", "timings.json"):
+        (OUT / stale).unlink(missing_ok=True)  # a crashed attempt must never inherit an earlier attempt's results
     for sub in ("runs", "ckpt", "results", "results_fixture", "logs/gpu"):
         shutil.rmtree(OUT / sub, ignore_errors=True)
     (OUT / "registry.jsonl").unlink(missing_ok=True)
@@ -299,7 +301,8 @@ def phase_gpu(ids: dict) -> dict:
     rcs, leaks, meta_bad = {}, [], []
     for n in tefs:
         rid = ids[n]["run_id"]
-        ck = sorted((OUT / "ckpt" / rid / "milestones").glob("step_0000020*_bf16.pt"))[0]
+        # the full checkpoint: P0/P2 round it to bf16 on load (identical to the milestone); P1/P3/P4 need its fp32 weights
+        ck = OUT / "ckpt" / rid / "final.pt"
         for pid, extra in (("P0", ["--rescore", "--rescore-ref", "both"]), ("P1", ["--pass", "P1"]),
                            ("P4", ["--pass", "P4", "--only", p4_cells])):
             # evaluate.py appends -P1 / -P4 and -n2 to the base label itself
@@ -322,6 +325,11 @@ def phase_gpu(ids: dict) -> dict:
             rcs[f"{n}/P4-cells"] = 1
             log(f"eval {n} P4 scored {n_p4} cells, expected {len(FE.required_cells('P4', 'D384'))}")
         metas = list((results / rid).rglob("_meta.json"))
+        for lab in ("tef20-P1-n2", "tef20-P4-n2"):  # fp32-weight passes must really have scored fp32 weights
+            mp = results / rid / lab / "FD" / "_meta.json"
+            blob = " ".join(m.read_text() for m in (results / rid / lab).rglob("_meta.json"))
+            if "bf16-rounded" in blob or "float32" not in blob:
+                meta_bad.append(f"{rid}/{lab}: eval weights are not fp32")
         for mp in metas:
             blob = mp.read_text()
             if not all(k in blob for k in ("pass", "dtype", "autocast", "tf32", "attention")):
@@ -425,7 +433,8 @@ def phase_diag(ids: dict) -> dict:
     cells = FE.required_cells("P4", "D384")
     for n in [TEF_FAULT] + CHAIN_T:
         rid = ids[n]["run_id"]
-        ck = sorted((OUT / "ckpt" / rid / "milestones").glob("step_0000020*_bf16.pt"))[0]
+        # the full checkpoint: P0/P2 round it to bf16 on load (identical to the milestone); P1/P3/P4 need its fp32 weights
+        ck = OUT / "ckpt" / rid / "final.pt"
         rc, text, wall = evaluate(ck, ["--suite", "FD", "--label", "tef20", "--n-contexts", "2", "--pass", "P4",
                                        "--only", item_files(cells)], env, f"diag_{n}_P4.log", res_dir)
         got = len(list((res_dir / rid / "tef20-P4-n2" / "FD").glob("*.jsonl")))
