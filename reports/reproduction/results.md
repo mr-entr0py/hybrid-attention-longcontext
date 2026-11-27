@@ -53,3 +53,8 @@ These supersede the table rows above, which are left as written.
 - **VT-22b:** the auditor reports it exercised the `efficient` R-ATT backend while FEAS evaluation uses `tiled` (not yet verified by the executor).
 - **Independent audit (fresh AI agent, not a human):** NOT PASSED as registered; **FEAS entry BLOCKED**. See reports/gates/G-RV.md.
 
+## Note, 2026-11-27 08:35 (shared GPU; FEAS scoring stopped)
+- **A foreign compute process (another CARLA-environment Python process, about 320-345 MiB) shared the 5080 from 26 Nov 15:40.** Lock-monitor samples show it during core training (27 of 36 stages completed after it appeared), 9 of 12 core scorings and two FEAS P0 passes (27 Nov 06:54-07:58). **The executor did not notice at the time** (its checks read utilisation, not the process list). At 27 Nov 08:28 it showed 0.2% CPU, about 2 CPU-minutes in 17 h, and no SM activity in three pmon samples; **idleness over the whole window is not established.** All of those jobs ran at the 0.44 memory cap. The project rule not to disturb the other user's job may have been affected by compute sharing. The core results are unregistered; no training fault was recorded.
+- **FEAS scoring stopped at 12 of 15 passes** (27 Nov 07:58): before the first remaining k=12 P0 pass, the D099 exclusivity check found that process and refused the 0.85 cap. The three k=12 P0 passes have not run. No DTS10-commit note, no FEAS decision, no FEAS score read. The chain log's "FEAS scoring rc=0" line is wrong: the driver exited through that refusal.
+- Before any later FEAS decision: run S2T-D384-C0-s101-6851aad2 P0 holds two sets of files (partial pass of 26 Nov and the complete rerun as .r2); the older ones must be set aside first, without reading scores.
+
